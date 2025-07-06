@@ -10,7 +10,31 @@ workload:
   service:
     type: ClusterIP
     port: 5678
-  
+
+service:
+  type: ClusterIP
+  port: 3000
+  targetPort: 3000
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 250m
+    memory: 128Mi
+
+pvc:
+  enabled: true
+  name: n8n-claim0
+  storageClassName: standard
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+
+
 env:
   DB_TYPE: postgresdb
   DB_POSTGRESDB_HOST: postgres-service.n8n.svc.cluster.local

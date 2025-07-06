@@ -1,0 +1,55 @@
+microservice:
+  name: n8n
+  namespace: n8n-development
+  replicas: 1
+
+workload:
+  image:
+  repository: n8nio/n8n
+  tag: latest
+
+service:
+  type: LoadBalancer
+  ports:
+    - name: "5678"
+      port: 5678
+      targetPort: 5678
+      protocol: TCP
+  selector:
+    service: n8n
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 250m
+    memory: 128Mi
+
+pvc:
+  enabled: true
+  name: n8n-claim0
+  storageClassName: standard
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+
+
+env:
+  DB_TYPE: postgresdb
+  DB_POSTGRESDB_HOST: postgres-service.n8n.svc.cluster.local
+  N8N_HOST: n8n-development
+  N8N_PORT: 5678
+  N8N_PROTOCOL: http
+  N8N_BASIC_AUTH_ACTIVE: 'false'
+  N8N_BASIC_AUTH_USER: ''
+  N8N_BASIC_AUTH_PASSWORD: ''
+  N8N_EDITOR_BASE_URL: ''
+  N8N_PUBLIC_API_ENABLED: 'true'
+  N8N_SKIP_WEBHOOK_DNS_RESOLUTION: 'false'
+
+secret:
+  N8N_ENCRYPTION_KEY: 'a-very-secure-key'
+  

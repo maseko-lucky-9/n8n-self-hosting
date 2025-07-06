@@ -2,20 +2,20 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    service: n8n
-  name: n8n
-  namespace: n8n-development
+    service: {{ .Values.microservice.name }}
+  name: {{ .Values.microservice.name }}
+  namespace: {{ .Values.microservice.namespace }}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      service: n8n
+      service: {{ .Values.microservice.name }}
   strategy:
     type: Recreate
   template:
     metadata:
       labels:
-        service: n8n
+        service: {{ .Values.microservice.name }}
     spec:
       initContainers:
         - name: volume-permissions
