@@ -26,3 +26,4 @@ env:
 
 secret:
   N8N_ENCRYPTION_KEY: 'a-very-secure-key'
+  
