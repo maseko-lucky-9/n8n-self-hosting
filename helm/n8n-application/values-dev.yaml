@@ -1,55 +1,99 @@
-microservice:
-  name: n8n
-  namespace: n8n-development
-  replicas: 1
+# Default values for n8n-application
+replicaCount: 1
+namespace: n8n-development
 
-workload:
-  image:
+image:
   repository: n8nio/n8n
-  tag: latest
+  pullPolicy: IfNotPresent
+  # ❌ CRITICAL: Should not use "latest"
+  tag: "1.19.4"  # Use specific version
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # ❌ MEDIUM: Should create service account
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  runAsUser: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+    - ALL
 
 service:
-  type: LoadBalancer
-  ports:
-      name: "5678"
-      port: 5678
-      targetPort: 5678
-      protocol: TCP
-  selector:
-    service: n8n
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-protocols: "TLSv1.2 TLSv1.3"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+  hosts:
+    - host: n8n.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: n8n-tls
+      hosts:
+        - n8n.local
 
 resources:
   limits:
-    cpu: 500m
-    memory: 256Mi
+    memory: 1Gi
   requests:
-    cpu: 250m
-    memory: 128Mi
+    cpu: 500m
+    memory: 512Mi
 
-pvc:
-  enabled: true
-  name: n8n-claim0
-  storageClassName: standard
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 2Gi
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
 
+nodeSelector: {}
 
-env:
-  DB_TYPE: postgresdb
-  DB_POSTGRESDB_HOST: postgres-service.n8n.svc.cluster.local
-  N8N_HOST: n8n-development
-  N8N_PORT: 5678
-  N8N_PROTOCOL: http
-  N8N_BASIC_AUTH_ACTIVE: 'false'
-  N8N_BASIC_AUTH_USER: ''
-  N8N_BASIC_AUTH_PASSWORD: ''
-  N8N_EDITOR_BASE_URL: ''
-  N8N_PUBLIC_API_ENABLED: 'true'
-  N8N_SKIP_WEBHOOK_DNS_RESOLUTION: 'false'
+tolerations: []
 
-secret:
-  N8N_ENCRYPTION_KEY: 'a-very-secure-key'
+affinity: {}
+
+# n8n specific configuration
+n8n:
+  host: "0.0.0.0"
+  port: 5678
+  protocol: "https"
   
+# Database configuration
+database:
+  type: "postgresdb"
+  host: "postgresql.default.svc.cluster.local"
+  port: 5432
+  database: "n8n"
+  username: "n8n"
+  password: "changeme"  # ❌ CRITICAL: Should be in external secret
+
+# Persistence
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 2Gi

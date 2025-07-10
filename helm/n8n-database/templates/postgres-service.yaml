@@ -4,9 +4,11 @@ metadata:
   labels:
     service: postgres-n8n
   name: postgres-service
-  namespace: n8n-development
+  namespace: {{ .Values.namespace }}
 spec:
-  clusterIP: None
+  selector:
+    app: postgres
+  type: ClusterIP
   ports:
     - name: "5432"
       port: 5432

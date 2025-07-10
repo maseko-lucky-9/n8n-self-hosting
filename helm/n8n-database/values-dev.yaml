@@ -1,53 +1,70 @@
-microservice:
-  name: n8n
-  namespace: n8n-development
-  replicas: 1
+# Global settings
+global:
+  storageClass: ""
 
-workload:
+# Namespace
+namespace: n8n-development
+
+# PostgreSQL configuration
+postgres:
   image:
-  repository: n8nio/n8n
-  tag: latest
+    repository: postgres
+    tag: "15-alpine"
+    pullPolicy: IfNotPresent
+  
+  # Authentication
+  auth:
+    database: "n8n"
+    username: "n8n"
+    password: ""  # Leave empty to auto-generate
+    existingSecret: ""  # Use existing secret instead
+  
+  # Resources
+  resources:
+    limits:
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+  
+  # Persistence
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 8Gi
+    accessModes:
+      - ReadWriteOnce
+  
+  # Security
+  securityContext:
+    enabled: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+  
+  # Service configuration
   service:
     type: ClusterIP
-    port: 5678
-
-service:
-  type: ClusterIP
-  port: 3000
-  targetPort: 3000
-
-resources:
-  limits:
-    cpu: 500m
-    memory: 256Mi
-  requests:
-    cpu: 250m
-    memory: 128Mi
-
-pvc:
-  enabled: true
-  name: n8n-claim0
-  storageClassName: standard
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 2Gi
-
-
-env:
-  DB_TYPE: postgresdb
-  DB_POSTGRESDB_HOST: postgres-service.n8n.svc.cluster.local
-  N8N_HOST: n8n-development
-  N8N_PORT: 5678
-  N8N_PROTOCOL: http
-  N8N_BASIC_AUTH_ACTIVE: 'false'
-  N8N_BASIC_AUTH_USER: ''
-  N8N_BASIC_AUTH_PASSWORD: ''
-  N8N_EDITOR_BASE_URL: ''
-  N8N_PUBLIC_API_ENABLED: 'true'
-  N8N_SKIP_WEBHOOK_DNS_RESOLUTION: 'false'
-
-secret:
-  N8N_ENCRYPTION_KEY: 'a-very-secure-key'
+    port: 5432
+    annotations: {}
   
+  # PostgreSQL configuration
+  postgresqlConfiguration:
+    max_connections: 100
+    shared_buffers: 128MB
+    effective_cache_size: 512MB
+    maintenance_work_mem: 64MB
+    checkpoint_completion_target: 0.9
+    wal_buffers: 16MB
+    default_statistics_target: 100
+
+# Monitoring
+monitoring:
+  enabled: false
+  serviceMonitor:
+    enabled: false
+
+# Network Policy
+networkPolicy:
+  enabled: false
+  allowedNamespaces: []
