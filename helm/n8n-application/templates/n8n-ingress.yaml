@@ -4,12 +4,12 @@ metadata:
   name: n8n-ingress
   namespace: n8n-development
   annotations:
-    konghq.com/strip-path: "true"
+    konghq.com/strip-path: "false"
     kubernetes.io/ingress.class: "kong"
 spec:
   ingressClassName: kong
   rules:
-  - host: n8n.local  # Fake local domain
+#   - host: n8n.local  # Fake local domain
     http:
       paths:
       - path: /
