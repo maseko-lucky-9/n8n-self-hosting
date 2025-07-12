@@ -51,7 +51,7 @@ spec:
                   name: postgres-secret
                   key: POSTGRES_PASSWORD
             - name: POSTGRES_DB
-              value: n8n_dev
+              value: n8n
             - name: POSTGRES_NON_ROOT_USER
               valueFrom:
                 secretKeyRef:
