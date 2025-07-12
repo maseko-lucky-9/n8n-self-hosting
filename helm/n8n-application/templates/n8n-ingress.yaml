@@ -10,7 +10,7 @@ spec:
   ingressClassName: kong
   rules:
 #   - host: n8n.local  # Fake local domain
-    http:
+  - http:
       paths:
       - path: /
         pathType: Prefix
