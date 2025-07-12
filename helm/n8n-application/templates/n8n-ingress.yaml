@@ -8,8 +8,7 @@ metadata:
     kubernetes.io/ingress.class: "kong"
 spec:
   rules:
-  - host: n8n.local.com  # Replace with your domain
-    http:
+  - http:
       paths:
       - path: /
         pathType: Prefix
