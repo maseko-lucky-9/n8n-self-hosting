@@ -4,19 +4,17 @@ metadata:
   name: n8n-ingress
   namespace: n8n-development
   annotations:
-    konghq.com/strip-path: "false"
-    kubernetes.io/ingress.class: "kong"
-    konghq.com/plugins: rate-limiting
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
 spec:
-  ingressClassName: kong
   rules:
-#   - host: n8n.local  # Fake local domain
-  - http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: n8n
-            port:
-              number: 5678
+    - host: n8n.local      # Change this to your domain or local hostname
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: n8n
+                port:
+                  number: 5678
