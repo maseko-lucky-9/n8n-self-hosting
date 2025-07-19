@@ -8,7 +8,7 @@ metadata:
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
 spec:
   rules:
-    - host: n8n.local      # Change this to your domain or local hostname
+    - host: n8n.local 
       http:
         paths:
           - path: /
