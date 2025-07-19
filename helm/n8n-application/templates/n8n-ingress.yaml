@@ -3,9 +3,6 @@ kind: Ingress
 metadata:
   name: n8n-ingress
   namespace: n8n-development
-  annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
 spec:
   ingressClassName: nginx
   rules:
