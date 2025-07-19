@@ -4,7 +4,7 @@ metadata:
   name: n8n-ingress
   namespace: n8n-development
 spec:
-  ingressClassName: nginx
+  ingressClassName: kong
   rules:
     - host: n8n.local
       http:
