@@ -21,11 +21,12 @@ spec:
         service: postgres-n8n-svn
     spec:
       containers:
-        - image: postgres:11
+        - image: postgres:15.3
+          imagePullPolicy: IfNotPresent
           name: postgres
           resources:
             limits:
-              memory: 4Gi
+              memory: 8Gi
             requests:
               cpu: "1"
               memory: 2Gi
