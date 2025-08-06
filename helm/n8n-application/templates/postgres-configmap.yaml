@@ -7,82 +7,11 @@ data:
   init-data.sh: |
     #!/bin/bash
     set -e;
-    
-    # Function to check if database exists and is compatible
-    check_database_compatibility() {
-      if [ -f "/var/lib/postgresql/data/pgdata/PG_VERSION" ]; then
-        echo "Database files found, checking compatibility..."
-        # Check if we need to run pg_upgrade or if database is compatible
-        if [ -f "/var/lib/postgresql/data/pgdata/postgresql.conf" ]; then
-          echo "Existing PostgreSQL installation detected"
-          # Try to start PostgreSQL to check compatibility
-          pg_ctl -D /var/lib/postgresql/data/pgdata start -w || {
-            echo "WARNING: Database files may be incompatible. Consider clearing the persistent volume if this is a fresh deployment."
-            echo "To clear data, delete the PVC and redeploy."
-          }
-        fi
-      else
-        echo "No existing database files found, initializing fresh database..."
-      fi
-    }
-    
-    # Check database compatibility before proceeding
-    check_database_compatibility
-    
-    # Wait for PostgreSQL to be ready
-    until pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"; do
-      echo "Waiting for PostgreSQL to be ready..."
-      sleep 2
-    done
-    
     if [ -n "${POSTGRES_NON_ROOT_USER:-}" ] && [ -n "${POSTGRES_NON_ROOT_PASSWORD:-}" ]; then
-    	echo "Setting up n8n user with proper permissions..."
     	psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
-    		-- Create the n8n user if it doesn't exist
-    		DO \$\$
-    		BEGIN
-    			IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '${POSTGRES_NON_ROOT_USER}') THEN
-    				CREATE USER "${POSTGRES_NON_ROOT_USER}" WITH PASSWORD '${POSTGRES_NON_ROOT_PASSWORD}';
-    				RAISE NOTICE 'Created user %', '${POSTGRES_NON_ROOT_USER}';
-    			ELSE
-    				-- Update password if user exists
-    				ALTER USER "${POSTGRES_NON_ROOT_USER}" WITH PASSWORD '${POSTGRES_NON_ROOT_PASSWORD}';
-    				RAISE NOTICE 'Updated password for user %', '${POSTGRES_NON_ROOT_USER}';
-    			END IF;
-    		END
-    		\$\$;
-    		
-    		-- Grant all privileges on the database
+    		CREATE USER "${POSTGRES_NON_ROOT_USER}" WITH PASSWORD '${POSTGRES_NON_ROOT_PASSWORD}';
     		GRANT ALL PRIVILEGES ON DATABASE ${POSTGRES_DB} TO "${POSTGRES_NON_ROOT_USER}";
-    		
-    		-- Connect to the database as the n8n user to set up schema permissions
-    		\c ${POSTGRES_DB};
-    		
-    		-- Grant usage on schema
-    		GRANT USAGE ON SCHEMA public TO "${POSTGRES_NON_ROOT_USER}";
-    		
-    		-- Grant all privileges on all tables in the public schema
-    		GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "${POSTGRES_NON_ROOT_USER}";
-    		
-    		-- Grant all privileges on all sequences in the public schema
-    		GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO "${POSTGRES_NON_ROOT_USER}";
-    		
-    		-- Grant all privileges on all functions in the public schema
-    		GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO "${POSTGRES_NON_ROOT_USER}";
-    		
-    		-- Grant create privilege on the public schema (for creating tables)
-    		GRANT CREATE ON SCHEMA public TO "${POSTGRES_NON_ROOT_USER}";
-    		
-    		-- Set default privileges for future tables, sequences, and functions
-    		ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO "${POSTGRES_NON_ROOT_USER}";
-    		ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO "${POSTGRES_NON_ROOT_USER}";
-    		ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO "${POSTGRES_NON_ROOT_USER}";
-    		
-    		-- Make the user the owner of the public schema (if possible)
-    		ALTER SCHEMA public OWNER TO "${POSTGRES_NON_ROOT_USER}";
     	EOSQL
-    	
-    	echo "n8n user setup completed successfully."
     else
     	echo "SETUP INFO: No Environment variables given!"
     fi
