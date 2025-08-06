@@ -21,8 +21,7 @@ spec:
         service: postgres-n8n-svn
     spec:
       containers:
-        - image: postgres:15.3
-          imagePullPolicy: IfNotPresent
+        - image: postgres:11
           name: postgres
           resources:
             limits:
@@ -67,14 +66,6 @@ spec:
               value: postgres-service
             - name: POSTGRES_PORT
               value: '5432'
-            # Add PostgreSQL compatibility settings
-            - name: POSTGRES_INITDB_ARGS
-              value: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
-            - name: POSTGRES_SHARED_PRELOAD_LIBRARIES
-              value: "pg_stat_statements"
-            # Add compatibility mode for older database files
-            - name: POSTGRES_COMPATIBILITY_MODE
-              value: "true"
       restartPolicy: Always
       volumes:
         - name: postgresql-pv
