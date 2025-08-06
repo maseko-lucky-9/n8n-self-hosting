@@ -6,8 +6,7 @@ metadata:
 spec:
   ingressClassName: kong
   rules:
-    - host: n8n.local
-      http:
+    - http:
         paths:
           - path: /
             pathType: Prefix
