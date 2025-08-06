@@ -7,6 +7,34 @@ data:
   init-data.sh: |
     #!/bin/bash
     set -e;
+    
+    # Function to check if database exists and is compatible
+    check_database_compatibility() {
+      if [ -f "/var/lib/postgresql/data/pgdata/PG_VERSION" ]; then
+        echo "Database files found, checking compatibility..."
+        # Check if we need to run pg_upgrade or if database is compatible
+        if [ -f "/var/lib/postgresql/data/pgdata/postgresql.conf" ]; then
+          echo "Existing PostgreSQL installation detected"
+          # Try to start PostgreSQL to check compatibility
+          pg_ctl -D /var/lib/postgresql/data/pgdata start -w || {
+            echo "WARNING: Database files may be incompatible. Consider clearing the persistent volume if this is a fresh deployment."
+            echo "To clear data, delete the PVC and redeploy."
+          }
+        fi
+      else
+        echo "No existing database files found, initializing fresh database..."
+      fi
+    }
+    
+    # Check database compatibility before proceeding
+    check_database_compatibility
+    
+    # Wait for PostgreSQL to be ready
+    until pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"; do
+      echo "Waiting for PostgreSQL to be ready..."
+      sleep 2
+    done
+    
     if [ -n "${POSTGRES_NON_ROOT_USER:-}" ] && [ -n "${POSTGRES_NON_ROOT_PASSWORD:-}" ]; then
     	psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
     		CREATE USER "${POSTGRES_NON_ROOT_USER}" WITH PASSWORD '${POSTGRES_NON_ROOT_PASSWORD}';
