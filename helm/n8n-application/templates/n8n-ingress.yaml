@@ -8,7 +8,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: n8n.local
+    - host: localhost
       http:
         paths:
           - path: /
