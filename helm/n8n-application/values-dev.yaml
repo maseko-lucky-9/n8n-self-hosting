@@ -41,12 +41,19 @@ service:
   port: 80
 
 ingress:
-  enabled: false
-  className: "nginx"
+  enabled: true
+  className: "kong"
   annotations:
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/ssl-protocols: "TLSv1.2 TLSv1.3"
-    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    konghq.com/strip-path: "true"
+    konghq.com/protocols: "https"
+    konghq.com/methods: "GET,POST,PUT,DELETE,OPTIONS"
+    konghq.com/headers: "X-Forwarded-For,X-Forwarded-Proto,X-Forwarded-Host"
+    konghq.com/plugins: "cors,rate-limiting"
+    konghq.com/cors-origins: "*"
+    konghq.com/cors-methods: "GET,POST,PUT,DELETE,OPTIONS"
+    konghq.com/cors-headers: "Content-Type,Authorization"
+    konghq.com/rate-limiting-requests: "100"
+    konghq.com/rate-limiting-period: "60"
   hosts:
     - host: n8n.local
       paths:
