@@ -2,14 +2,16 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    service: postgres-n8n-svn
-  name: postgres
-  namespace: n8n-development
+    app.kubernetes.io/name: {{ include "n8n-application.name" . | quote }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  name: {{ include "n8n-application.fullname" . }}-postgres
+  namespace: {{ .Release.Namespace }}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      service: postgres-n8n-svn
+      app.kubernetes.io/name: {{ include "n8n-application.name" . | quote }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
   strategy:
     rollingUpdate:
       maxSurge: 1
@@ -18,10 +20,17 @@ spec:
   template:
     metadata:
       labels:
-        service: postgres-n8n-svn
+        app.kubernetes.io/name: {{ include "n8n-application.name" . | quote }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
+      serviceAccountName: {{ include "n8n-application.fullname" . }}-postgres-sa
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
       containers:
-        - image: postgres:11
+        - image: postgres:11.17
           name: postgres
           resources:
             limits:
@@ -39,7 +48,7 @@ spec:
               subPath: init-data.sh
           env:
             - name: PGDATA
-              value: /var/lib/postgresql/data/pgdata      
+              value: /var/lib/postgresql/data/pgdata
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
@@ -51,7 +60,10 @@ spec:
                   name: postgres-secret
                   key: POSTGRES_PASSWORD
             - name: POSTGRES_DB
-              value: n8n_dev
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_DB
             - name: POSTGRES_NON_ROOT_USER
               valueFrom:
                 secretKeyRef:
@@ -62,18 +74,34 @@ spec:
                 secretKeyRef:
                   name: postgres-secret
                   key: POSTGRES_NON_ROOT_PASSWORD
-            - name:   POSTGRES_HOST
-              value: postgres-service
+            - name: POSTGRES_HOST
+              value: {{ include "n8n-application.fullname" . }}-postgres-service
             - name: POSTGRES_PORT
               value: '5432'
+          securityContext:
+            allowPrivilegeEscalation: false
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - "$(POSTGRES_NON_ROOT_USER)"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - "$(POSTGRES_NON_ROOT_USER)"
+            initialDelaySeconds: 30
+            periodSeconds: 20
       restartPolicy: Always
       volumes:
         - name: postgresql-pv
           persistentVolumeClaim:
-            claimName: postgresql-pv
-        - name: postgres-secret
-          secret:
-            secretName: postgres-secret
+            claimName: {{ include "n8n-application.fullname" . }}-postgres-pvc
         - name: init-data
           configMap:
             name: init-data
