@@ -13,4 +13,5 @@ spec:
       targetPort: 5432
       protocol: TCP
   selector:
-    service: postgres-n8n-svn
+    app.kubernetes.io/name: {{ include "n8n-application.name" . | quote }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
