@@ -17,14 +17,14 @@ Edit `helm/n8n-application/values-dev.yaml` and replace `n8n.yourdomain.com` wit
 ```yaml
 ingress:
   hosts:
-    - host: n8n.yourcompany.com  # Replace with your actual domain
+    - host: n8n.yourcompany.com # Replace with your actual domain
       paths:
         - path: /
           pathType: Prefix
   tls:
     - secretName: n8n-tls
       hosts:
-        - n8n.yourcompany.com  # Replace with your actual domain
+        - n8n.yourcompany.com # Replace with your actual domain
 ```
 
 ### 2. Create TLS Secret
@@ -53,9 +53,9 @@ spec:
     privateKeySecretRef:
       name: letsencrypt-prod
     solvers:
-    - http01:
-        ingress:
-          class: kong
+      - http01:
+          ingress:
+            class: kong
 ```
 
 Then update your ingress to use cert-manager:
@@ -79,10 +79,19 @@ kubectl create secret tls n8n-tls \
 
 ### 3. Deploy the Application
 
+````bash
 ```bash
-# From the helm/n8n-application directory
-helm upgrade --install n8n-app . -f values-dev.yaml -n n8n-development
+# Run the deployment script from the repository root
+./deploy.sh
+````
+
+Alternatively, if running manually from root:
+
+```bash
+helm upgrade --install n8n-application ./helm/n8n-application -f ./helm/n8n-application/values-dev.yaml -n n8n-development
 ```
+
+````
 
 ### 4. Verify Deployment
 
@@ -92,7 +101,7 @@ Check that all resources are running:
 kubectl get all -n n8n-development
 kubectl get ingress -n n8n-development
 kubectl describe ingress n8n-app-ingress -n n8n-development
-```
+````
 
 ### 5. Configure DNS
 
@@ -105,6 +114,7 @@ kubectl get svc -n kong-system kong-proxy
 ## Network Access
 
 Once configured, your n8n application will be accessible at:
+
 - **HTTPS**: `https://n8n.yourdomain.com`
 - **HTTP**: Will redirect to HTTPS
 
@@ -154,4 +164,4 @@ kubectl port-forward -n n8n-development svc/n8n 5678:5678
 2. Choose and implement TLS certificate method
 3. Deploy the updated configuration
 4. Test external access
-5. Configure monitoring and alerts 
+5. Configure monitoring and alerts

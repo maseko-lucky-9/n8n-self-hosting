@@ -17,15 +17,18 @@ spec:
       labels:
         service: n8n
     spec:
-      serviceAccountName: postgres-sa
+      serviceAccountName: {{ include "n8n-application.fullname" . }}-postgres-sa
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
-        runAsUser: 999
-        fsGroup: 999
+        runAsUser: 1000
+        fsGroup: 1000
       initContainers:
         - name: volume-permissions
           image: busybox:1.36
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
           command: ["sh", "-c", "chown 1000:1000 /data"]
           volumeMounts:
             - name: n8n-claim0
@@ -44,7 +47,7 @@ spec:
             - name: DB_POSTGRESDB_PORT
               value: "5432"
             - name: DB_POSTGRESDB_DATABASE
-              value: n8n_dev
+              value: n8n
             - name: DB_POSTGRESDB_USER
               valueFrom:
                 secretKeyRef:
@@ -82,24 +85,4 @@ spec:
         - name: postgres-secret
           secret:
             secretName: postgres-secret
-      containers:
-      - name: postgres
-        image: postgres:11.17
-        securityContext:
-          allowPrivilegeEscalation: false
-        readinessProbe:
-          exec:
-            command:
-            - pg_isready
-            - -U
-            - "$(POSTGRES_NON_ROOT_USER)"
-          initialDelaySeconds: 10
-          periodSeconds: 10
-        livenessProbe:
-          exec:
-            command:
-            - pg_isready
-            - -U
-            - "$(POSTGRES_NON_ROOT_USER)"
-          initialDelaySeconds: 30
-          periodSeconds: 20
+

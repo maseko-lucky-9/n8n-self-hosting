@@ -1,7 +1,7 @@
 kind: PersistentVolumeClaim
 apiVersion: v1
 metadata:
-  name: postgresql-pv
+  name: {{ include "n8n-application.fullname" . }}-postgres-pvc
   namespace: n8n-development
 spec:
   accessModes:

@@ -103,4 +103,7 @@ persistence:
   enabled: true
   storageClass: ""
   accessMode: ReadWriteOnce
-  size: 2Gi
+
+# External Secrets Configuration
+externalSecrets:
+  enabled: false
