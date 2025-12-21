@@ -43,7 +43,7 @@ spec:
             - name: DB_TYPE
               value: postgresdb
             - name: DB_POSTGRESDB_HOST
-              value: postgres-service
+              value: {{ include "n8n-application.fullname" . }}-postgres
             - name: DB_POSTGRESDB_PORT
               value: "5432"
             - name: DB_POSTGRESDB_DATABASE
@@ -58,6 +58,8 @@ spec:
                 secretKeyRef:
                   name: postgres-secret
                   key: POSTGRES_NON_ROOT_PASSWORD
+            - name: DB_POSTGRESDB_CONNECTION_TIMEOUT
+              value: "60000"
             - name: N8N_PROTOCOL
               value: http
             - name: N8N_PORT
