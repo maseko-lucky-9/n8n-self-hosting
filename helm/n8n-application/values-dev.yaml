@@ -97,6 +97,7 @@ database:
   database: "n8n"
   username: "n8n"
   password: "changeme"  # ❌ CRITICAL: Should be in external secret
+  connectionTimeout: 60000
 
 # Persistence
 persistence:
