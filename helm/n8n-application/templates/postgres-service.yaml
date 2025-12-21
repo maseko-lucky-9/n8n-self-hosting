@@ -6,7 +6,7 @@ metadata:
   name: {{ include "n8n-application.fullname" . }}-postgres
   namespace: n8n-development
 spec:
-  clusterIP: None
+  clusterIP: ""
   ports:
     - name: "5432"
       port: 5432
