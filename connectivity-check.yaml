@@ -1,0 +1,23 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: connectivity-check
+  namespace: n8n-development
+spec:
+  template:
+    spec:
+      containers:
+      - name: debug
+        image: busybox:1.36
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "Test 1: Resolving DNS..."
+          nslookup n8n-application-postgres.n8n-development.svc.cluster.local
+          
+          echo "Test 2: Testing TCP Connection..."
+          nc -zv n8n-application-postgres.n8n-development.svc.cluster.local 5432
+          
+          echo "Done."
+      restartPolicy: Never
+  backoffLimit: 1
