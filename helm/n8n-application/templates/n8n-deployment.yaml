@@ -43,7 +43,7 @@ spec:
             - name: DB_TYPE
               value: postgresdb
             - name: DB_POSTGRESDB_HOST
-              value: {{ include "n8n-application.fullname" . }}-postgres
+              value: {{ include "n8n-application.fullname" . }}-postgres.{{ .Release.Namespace }}.svc.cluster.local
             - name: DB_POSTGRESDB_PORT
               value: "5432"
             - name: DB_POSTGRESDB_DATABASE
