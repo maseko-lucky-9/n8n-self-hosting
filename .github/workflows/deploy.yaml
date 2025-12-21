@@ -19,6 +19,6 @@ jobs:
       - name: Ensure ArgoCD Application exists
         run: |
           echo "Applying ArgoCD Application Manifest..."
-          kubectl apply -f argocd/n8n-application.yaml
+          microk8s kubectl apply -f argocd/n8n-application.yaml
           
           echo "Deployment initiated. ArgoCD will sync changes shortly."
