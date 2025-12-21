@@ -1,0 +1,24 @@
+name: Deploy to ArgoCD
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'helm/n8n-application/**'
+      - 'argocd/**'
+      - '.github/workflows/deploy.yaml'
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Ensure ArgoCD Application exists
+        run: |
+          echo "Applying ArgoCD Application Manifest..."
+          kubectl apply -f argocd/n8n-application.yaml
+          
+          echo "Deployment initiated. ArgoCD will sync changes shortly."
