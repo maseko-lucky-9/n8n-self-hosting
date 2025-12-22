@@ -2,6 +2,9 @@
 global:
   storageClass: ""
 
+# Override the fullname to simplify service discovery
+fullnameOverride: "n8n-database"
+
 # Namespace
 namespace: n8n-development
 

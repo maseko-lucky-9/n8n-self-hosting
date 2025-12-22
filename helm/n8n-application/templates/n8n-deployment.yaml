@@ -43,23 +43,17 @@ spec:
             - name: DB_TYPE
               value: postgresdb
             - name: DB_POSTGRESDB_HOST
-              value: {{ include "n8n-application.fullname" . }}-postgres.{{ .Release.Namespace }}.svc.cluster.local
+              value: {{ .Values.database.host }}
             - name: DB_POSTGRESDB_PORT
-              value: "5432"
+              value: "{{ .Values.database.port }}"
             - name: DB_POSTGRESDB_DATABASE
-              value: n8n
+              value: {{ .Values.database.database }}
             - name: DB_POSTGRESDB_USER
-              valueFrom:
-                secretKeyRef:
-                  name: postgres-secret
-                  key: POSTGRES_NON_ROOT_USER
+              value: {{ .Values.database.username }}
             - name: DB_POSTGRESDB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: postgres-secret
-                  key: POSTGRES_NON_ROOT_PASSWORD
+              value: {{ .Values.database.password }}
             - name: DB_POSTGRESDB_CONNECTION_TIMEOUT
-              value: "60000"
+              value: "{{ .Values.database.connectionTimeout }}"
             - name: N8N_PROTOCOL
               value: http
             - name: N8N_PORT

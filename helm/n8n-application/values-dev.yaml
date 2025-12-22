@@ -92,11 +92,11 @@ n8n:
 # Database configuration
 database:
   type: "postgresdb"
-  host: "postgresql.default.svc.cluster.local"
+  host: "n8n-database.n8n-development.svc.cluster.local"
   port: 5432
   database: "n8n"
   username: "n8n"
-  password: "changeme"  # ❌ CRITICAL: Should be in external secret
+  password: "n8n_dev_pass123"
   connectionTimeout: 60000
 
 # Persistence
