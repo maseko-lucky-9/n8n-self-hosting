@@ -15,10 +15,8 @@ postgres:
   # Authentication
   auth:
     database: "n8n"
-    username: "postgres"  # Superuser
-    password: "postgres123"  # Superuser password - Change in production!
-    appUsername: "n8n"  # Application user (non-root)
-    appPassword: "n8n_dev_pass123"  # Application password
+    username: "postgres"
+    password: "postgres123"  # Change in production!
     existingSecret: ""  # Use existing secret instead
   
   # Resources
