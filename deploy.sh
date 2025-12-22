@@ -26,6 +26,7 @@ fi
 
 echo "Running helm upgrade --install..."
 helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -f "$VALUES_FILE" -n "$NAMESPACE" --create-namespace
+# helm upgrade --install "n8n-application" "./helm/n8n-application" -f "./helm/n8n-application/values-dev.yaml" -n "n8n-development" --create-namespace
 
 echo ""
 echo "Deployment command executed successfully."
