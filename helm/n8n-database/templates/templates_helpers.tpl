@@ -32,4 +32,29 @@ Create chart name and version as used by the chart label.
 Common labels
 */}}
 {{- define "n8n-database.labels" -}}
-helm.sh/chart: {{ include "n8n-
+helm.sh/chart: {{ include "n8n-database.chart" . }}
+{{ include "n8n-database.selectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+Selector labels
+*/}}
+{{- define "n8n-database.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "n8n-database.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
+Create the name of the secret to use
+*/}}
+{{- define "n8n-database.secretName" -}}
+{{- if .Values.postgres.auth.existingSecret }}
+{{- .Values.postgres.auth.existingSecret }}
+{{- else }}
+{{- include "n8n-database.fullname" . }}-secret
+{{- end }}
+{{- end }}
