@@ -53,12 +53,12 @@ spec:
           valueFrom:
             secretKeyRef:
               name: {{ include "n8n-database.secretName" . }}
-              key: POSTGRES_USER
+              key: POSTGRES_NON_ROOT_USER
         - name: POSTGRES_NON_ROOT_PASSWORD
           valueFrom:
             secretKeyRef:
               name: {{ include "n8n-database.secretName" . }}
-              key: POSTGRES_PASSWORD
+              key: POSTGRES_NON_ROOT_PASSWORD
         ports:
         - containerPort: 5432
           name: postgres
