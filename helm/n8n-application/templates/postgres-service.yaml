@@ -4,9 +4,9 @@ metadata:
   labels:
     service: postgres-n8n-svn
   name: {{ include "n8n-application.fullname" . }}-postgres
-  namespace: n8n-development
+  namespace: {{ .Release.Namespace }}
 spec:
-  clusterIP: ""
+  type: ClusterIP
   ports:
     - name: "5432"
       port: 5432
