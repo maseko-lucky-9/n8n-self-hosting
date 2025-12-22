@@ -4,9 +4,9 @@ metadata:
   labels:
     service: postgres-n8n-svn
   name: postgres-service
-  namespace: n8n-development
+  namespace: {{ .Release.Namespace }}
 spec:
-  clusterIP: None
+  type: ClusterIP
   ports:
     - name: "5432"
       port: 5432
@@ -15,3 +15,4 @@ spec:
   selector:
     app.kubernetes.io/name: {{ include "n8n-application.name" . | quote }}
     app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: postgres
