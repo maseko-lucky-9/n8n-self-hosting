@@ -15,8 +15,8 @@ postgres:
   # Authentication
   auth:
     database: "n8n"
-    username: "n8n"
-    password: ""  # Leave empty to auto-generate
+    username: "postgres"
+    password: "postgres123"  # Change in production!
     existingSecret: ""  # Use existing secret instead
   
   # Resources

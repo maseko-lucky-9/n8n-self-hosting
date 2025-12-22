@@ -1,0 +1,103 @@
+# Production Environment Configuration for n8n
+
+# Global settings
+global:
+  storageClass: "fast-ssd"
+
+# Namespace
+namespace: n8n-production
+
+# PostgreSQL configuration
+postgres:
+  image:
+    repository: postgres
+    tag: "15-alpine"
+    pullPolicy: IfNotPresent
+  
+  # Authentication
+  auth:
+    database: "n8n"
+    username: "n8n_prod"
+    password: "CHANGE_ME_PROD_PASSWORD"  # Must be changed before deployment
+    existingSecret: ""
+  
+  # Resources
+  resources:
+    limits:
+      memory: 4Gi
+    requests:
+      cpu: 1000m
+      memory: 1Gi
+  
+  # Persistence
+  persistence:
+    enabled: true
+    storageClass: "fast-ssd"
+    size: 100Gi
+    accessModes:
+      - ReadWriteOnce
+  
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 5432
+    annotations: {}
+
+# N8N Application configuration
+database:
+  username: "n8n_prod"
+  password: "CHANGE_ME_PROD_PASSWORD"  # Must be changed before deployment
+  host: "postgres-service"
+  port: 5432
+  database: "n8n"
+  ssl: true
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+  hosts:
+    - host: n8n.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: n8n-prod-tls
+      hosts:
+        - n8n.example.com
+
+# Resource limits for N8N
+resources:
+  limits:
+    memory: 4Gi
+    cpu: 2000m
+  requests:
+    cpu: 1000m
+    memory: 1Gi
+
+# Replica count
+replicaCount: 2
+
+# High Availability settings
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Network Policy
+networkPolicy:
+  enabled: true
+  allowedNamespaces:
+    - ingress-nginx
+
+# Pod Security
+podSecurityPolicy:
+  enabled: true
+
+# Backup configuration
+backup:
+  enabled: true
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  retention: 30  # days
