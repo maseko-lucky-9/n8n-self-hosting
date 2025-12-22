@@ -92,7 +92,7 @@ n8n:
 # Database configuration
 database:
   type: "postgresdb"
-  host: "n8n-database.n8n-development.svc.cluster.local"
+  host: "n8n-application-postgres.n8n-development.svc.cluster.local"
   port: 5432
   database: "n8n"
   username: "n8n"
