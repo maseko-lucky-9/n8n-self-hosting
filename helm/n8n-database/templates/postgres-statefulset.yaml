@@ -49,6 +49,16 @@ spec:
               key: POSTGRES_PASSWORD
         - name: PGDATA
           value: /var/lib/postgresql/data/pgdata
+        - name: POSTGRES_NON_ROOT_USER
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "n8n-database.secretName" . }}
+              key: POSTGRES_USER
+        - name: POSTGRES_NON_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "n8n-database.secretName" . }}
+              key: POSTGRES_PASSWORD
         ports:
         - containerPort: 5432
           name: postgres
@@ -64,21 +74,29 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 5
           successThreshold: 1
-          failureThreshold: 6
+          failureThreshold: 3
         readinessProbe:
           exec:
             command:
             - /bin/sh
             - -c
             - exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h 127.0.0.1 -p 5432
-          initialDelaySeconds: 5
-          periodSeconds: 10
+          initialDelaySeconds: 10
+          periodSeconds: 5
           timeoutSeconds: 5
           successThreshold: 1
-          failureThreshold: 6
+          failureThreshold: 3
         volumeMounts:
         - name: postgres-storage
           mountPath: /var/lib/postgresql/data
+        - name: init-script
+          mountPath: /docker-entrypoint-initdb.d
+          readOnly: true
+      volumes:
+      - name: init-script
+        configMap:
+          name: {{ include "n8n-database.fullname" . }}-init-data
+          defaultMode: 0755
   volumeClaimTemplates:
   - metadata:
       name: postgres-storage
