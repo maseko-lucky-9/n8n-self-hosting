@@ -43,22 +43,26 @@ spec:
             - name: DB_TYPE
               value: postgresdb
             - name: DB_POSTGRESDB_HOST
-              value: {{ .Values.database.host }}
+              value: postgres-service
             - name: DB_POSTGRESDB_PORT
-              value: "{{ .Values.database.port }}"
+              value: "5432"
             - name: DB_POSTGRESDB_DATABASE
-              value: {{ .Values.database.database }}
+              value: n8n
             - name: DB_POSTGRESDB_USER
-              value: {{ .Values.database.username }}
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_NON_ROOT_USER
             - name: DB_POSTGRESDB_PASSWORD
-              value: {{ .Values.database.password }}
-            - name: DB_POSTGRESDB_CONNECTION_TIMEOUT
-              value: "{{ .Values.database.connectionTimeout }}"
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_NON_ROOT_PASSWORD
             - name: N8N_PROTOCOL
               value: http
             - name: N8N_PORT
               value: "5678"
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: n8nio/n8n
           name: n8n
           ports:
             - containerPort: 5678

@@ -2,9 +2,6 @@
 global:
   storageClass: ""
 
-# Override the fullname to simplify service discovery
-fullnameOverride: "n8n-database"
-
 # Namespace
 namespace: n8n-development
 
@@ -18,10 +15,8 @@ postgres:
   # Authentication
   auth:
     database: "n8n"
-    username: "postgres"  # Superuser
-    password: "postgres123"  # Superuser password - Change in production!
-    appUsername: "n8n"  # Application user (non-root)
-    appPassword: "n8n_dev_pass123"  # Application password
+    username: "n8n"
+    password: ""  # Leave empty to auto-generate
     existingSecret: ""  # Use existing secret instead
   
   # Resources

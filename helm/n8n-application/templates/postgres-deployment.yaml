@@ -85,7 +85,7 @@ spec:
               command:
                 - pg_isready
                 - -U
-                - "$(POSTGRES_USER)"
+                - "$(POSTGRES_NON_ROOT_USER)"
             initialDelaySeconds: 10
             periodSeconds: 10
             failureThreshold: 3
@@ -94,7 +94,7 @@ spec:
               command:
                 - pg_isready
                 - -U
-                - "$(POSTGRES_USER)"
+                - "$(POSTGRES_NON_ROOT_USER)"
             initialDelaySeconds: 30
             periodSeconds: 20
       restartPolicy: Always

@@ -3,10 +3,10 @@ kind: Service
 metadata:
   labels:
     service: postgres-n8n-svn
-  name: {{ include "n8n-application.fullname" . }}-postgres
-  namespace: {{ .Release.Namespace }}
+  name: postgres-service
+  namespace: n8n-development
 spec:
-  type: ClusterIP
+  clusterIP: None
   ports:
     - name: "5432"
       port: 5432
