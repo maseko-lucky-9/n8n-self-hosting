@@ -8,6 +8,7 @@ on:
       - 'helm/n8n-application/**'
       - 'argocd/**'
       - '.github/workflows/deploy.yaml'
+  workflow_dispatch: {}
 
 jobs:
   deploy:
