@@ -42,18 +42,11 @@ service:
 
 ingress:
   enabled: true
-  className: "kong"
+  className: "public"
   annotations:
-    konghq.com/strip-path: "true"
-    konghq.com/protocols: "https"
-    konghq.com/methods: "GET,POST,PUT,DELETE,OPTIONS"
-    konghq.com/headers: "X-Forwarded-For,X-Forwarded-Proto,X-Forwarded-Host"
-    konghq.com/plugins: "cors,rate-limiting"
-    konghq.com/cors-origins: "*"
-    konghq.com/cors-methods: "GET,POST,PUT,DELETE,OPTIONS"
-    konghq.com/cors-headers: "Content-Type,Authorization"
-    konghq.com/rate-limiting-requests: "100"
-    konghq.com/rate-limiting-period: "60"
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
   hosts:
     - host: n8n.local
       paths:

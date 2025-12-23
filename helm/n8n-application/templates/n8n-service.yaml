@@ -3,7 +3,7 @@ kind: Service
 metadata:
   labels:
     service: n8n-svn
-  name: n8n
+  name: { { include "n8n-application.fullname" . } }
   namespace: n8n-development
 spec:
   type: ClusterIP
