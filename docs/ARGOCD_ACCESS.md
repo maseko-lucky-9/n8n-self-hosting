@@ -7,7 +7,7 @@ This document provides a quick reference for starting, accessing, and using the 
 If ArgoCD is not already running or you are setting up a fresh cluster, use the automated bootstrap script:
 
 ```bash
-./bootstrap-argocd.sh
+./scripts/bootstrap-argocd.sh
 ```
 
 _This script installs ArgoCD, applies the n8n application manifest, and waits for the server to be ready._

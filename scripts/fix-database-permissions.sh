@@ -6,7 +6,7 @@
 set -e
 
 NAMESPACE="n8n-development"
-POSTGRES_DEPLOYMENT="postgres"
+POSTGRES_DEPLOYMENT="n8n-application-postgres"
 N8N_DEPLOYMENT="n8n"
 
 echo "=== n8n Database Permissions Fix ==="
@@ -35,7 +35,7 @@ check_current_state() {
     
     echo ""
     echo "3. Checking PostgreSQL pod status..."
-    kubectl get pods -n $NAMESPACE -l service=postgres-n8n-svn
+    kubectl get pods -n $NAMESPACE -l app.kubernetes.io/component=postgres
     
     echo ""
     echo "4. Checking n8n pod status..."
@@ -67,7 +67,7 @@ restart_n8n() {
 # Function to check PostgreSQL logs
 check_postgres_logs() {
     echo "Checking PostgreSQL pod logs..."
-    POD_NAME=$(kubectl get pods -n $NAMESPACE -l service=postgres-n8n-svn -o jsonpath='{.items[0].metadata.name}')
+    POD_NAME=$(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/component=postgres -o jsonpath='{.items[0].metadata.name}')
     
     if [ -n "$POD_NAME" ]; then
         echo "Pod: $POD_NAME"

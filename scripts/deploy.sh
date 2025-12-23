@@ -5,10 +5,13 @@
 
 set -e
 
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+ROOT_DIR="$SCRIPT_DIR/.."
+
 RELEASE_NAME="n8n-application"
 NAMESPACE="n8n-development"
-CHART_PATH="./helm/n8n-application"
-VALUES_FILE="./helm/n8n-application/values-dev.yaml"
+CHART_PATH="$ROOT_DIR/helm/n8n-application"
+VALUES_FILE="$ROOT_DIR/helm/n8n-application/values-dev.yaml"
 
 echo "=== Deploying $RELEASE_NAME to $NAMESPACE ==="
 

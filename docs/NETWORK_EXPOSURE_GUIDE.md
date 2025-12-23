@@ -82,7 +82,7 @@ kubectl create secret tls n8n-tls \
 ````bash
 ```bash
 # Run the deployment script from the repository root
-./deploy.sh
+scripts/deploy.sh
 ````
 
 Alternatively, if running manually from root:

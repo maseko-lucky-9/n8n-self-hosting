@@ -6,7 +6,8 @@
 set -e
 
 NAMESPACE="n8n-development"
-PVC_NAME="postgresql-pv"
+PVC_NAME="n8n-application-postgres-pvc"
+POSTGRES_DEPLOYMENT="n8n-application-postgres"
 
 echo "=== PostgreSQL Database Compatibility Fix ==="
 echo "This script helps resolve database compatibility issues."
@@ -25,16 +26,16 @@ check_current_state() {
     
     echo ""
     echo "2. Checking PostgreSQL deployment..."
-    if kubectl get deployment postgres -n $NAMESPACE >/dev/null 2>&1; then
+    if kubectl get deployment $POSTGRES_DEPLOYMENT -n $NAMESPACE >/dev/null 2>&1; then
         echo "   ✓ PostgreSQL deployment exists"
-        kubectl get deployment postgres -n $NAMESPACE
+        kubectl get deployment $POSTGRES_DEPLOYMENT -n $NAMESPACE
     else
         echo "   ✗ PostgreSQL deployment not found"
     fi
     
     echo ""
     echo "3. Checking PostgreSQL pod status..."
-    kubectl get pods -n $NAMESPACE -l service=postgres-n8n-svn
+    kubectl get pods -n $NAMESPACE -l app.kubernetes.io/component=postgres
 }
 
 # Function to clear persistent volume (WARNING: This will delete all data)
@@ -67,10 +68,10 @@ clear_persistent_volume() {
 # Function to restart PostgreSQL deployment
 restart_postgres() {
     echo "Restarting PostgreSQL deployment..."
-    kubectl rollout restart deployment postgres -n $NAMESPACE
+    kubectl rollout restart deployment $POSTGRES_DEPLOYMENT -n $NAMESPACE
     
     echo "Waiting for rollout to complete..."
-    kubectl rollout status deployment postgres -n $NAMESPACE
+    kubectl rollout status deployment $POSTGRES_DEPLOYMENT -n $NAMESPACE
     
     echo "PostgreSQL deployment restarted successfully."
 }
@@ -78,7 +79,7 @@ restart_postgres() {
 # Function to check PostgreSQL logs
 check_logs() {
     echo "Checking PostgreSQL pod logs..."
-    POD_NAME=$(kubectl get pods -n $NAMESPACE -l service=postgres-n8n-svn -o jsonpath='{.items[0].metadata.name}')
+    POD_NAME=$(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/component=postgres -o jsonpath='{.items[0].metadata.name}')
     
     if [ -n "$POD_NAME" ]; then
         echo "Pod: $POD_NAME"

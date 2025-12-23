@@ -20,7 +20,7 @@ This typically happens when:
 Run the provided script for an automated fix:
 
 ```bash
-./fix-database-permissions.sh
+./scripts/fix-database-permissions.sh
 ```
 
 ### Option 2: Manual Fix

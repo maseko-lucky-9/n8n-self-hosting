@@ -23,8 +23,10 @@ We provide a deployment script to handle path resolution and release naming auto
 2.  **Deploy**:
     Run the deployment script from the root of the repository:
 
+    Scripts are located in the `scripts/` directory.
+
     ```bash
-    ./deploy.sh
+    ./scripts/deploy.sh
     ```
 
     _Note: This script installs/upgrades the `n8n-application` release using `values-dev.yaml`._
@@ -42,7 +44,7 @@ Key configurations:
 
 - **Database**: Defaults to checking for a `postgres-secret` (auto-generated if ExternalSecrets is disabled).
 - **External Secrets**: Disabled by default (`externalSecrets.enabled: false`) for easier local development.
-- **Ingress**: Configured for `n8n.local` with Kong annotation support.
+- **Ingress**: Configured for `n8n.local` (Defaults to Nginx class). See [`docs/NETWORK_EXPOSURE_GUIDE.md`](docs/NETWORK_EXPOSURE_GUIDE.md) for details.
 
 ## Troubleshooting & Known Issues
 

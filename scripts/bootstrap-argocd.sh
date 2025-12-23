@@ -19,8 +19,10 @@ echo "Waiting for ArgoCD server to be ready (this may take a few minutes)..."
 kubectl wait --for=condition=available deployment/argocd-server -n argocd --timeout=300s
 
 # 3. Apply n8n Application
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+ROOT_DIR="$SCRIPT_DIR/.."
 echo "Applying n8n Application manifest..."
-kubectl apply -f argocd/n8n-application.yaml
+kubectl apply -f "$ROOT_DIR/argocd/n8n-application.yaml"
 
 echo "=== Bootstrap Complete ==="
 echo "ArgoCD is running and n8n-application has been configured."
