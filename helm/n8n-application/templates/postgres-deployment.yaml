@@ -31,7 +31,7 @@ spec:
         runAsUser: 999
         fsGroup: 999
       containers:
-        - image: postgres:11
+        - image: postgres:15-alpine
           name: postgres
           resources:
             limits:
