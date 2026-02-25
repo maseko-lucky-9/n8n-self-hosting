@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script to fix PostgreSQL database compatibility issues
-# This script provides options to resolve the "FATAL: database files are incompatible with server" error
+# This script provides options to resolve the "FATAL: database files are incompatible with server" erro
 
 set -euo pipefail
 

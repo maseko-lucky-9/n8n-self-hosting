@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script to fix PostgreSQL database permissions for n8n
-# This script resolves the "permission denied for schema public" error
+# This script resolves the "permission denied for schema public" erro
 
 set -euo pipefail
 
