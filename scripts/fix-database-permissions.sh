@@ -3,9 +3,9 @@
 # Script to fix PostgreSQL database permissions for n8n
 # This script resolves the "permission denied for schema public" error
 
-set -e
+set -euo pipefail
 
-NAMESPACE="n8n-development"
+NAMESPACE="${1:-n8n-local}"
 POSTGRES_DEPLOYMENT="n8n-application-postgres"
 N8N_DEPLOYMENT="n8n"
 

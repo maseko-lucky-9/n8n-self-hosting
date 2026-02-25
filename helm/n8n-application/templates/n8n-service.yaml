@@ -4,7 +4,7 @@ metadata:
   labels:
     service: n8n-svn
   name: {{ include "n8n-application.fullname" . }}
-  namespace: n8n-development
+  namespace: {{ .Release.Namespace }}
 spec:
   type: ClusterIP
   ports:

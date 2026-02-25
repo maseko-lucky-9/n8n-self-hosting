@@ -3,9 +3,9 @@
 # Script to fix PostgreSQL database compatibility issues
 # This script provides options to resolve the "FATAL: database files are incompatible with server" error
 
-set -e
+set -euo pipefail
 
-NAMESPACE="n8n-development"
+NAMESPACE="${1:-n8n-local}"
 PVC_NAME="n8n-application-postgres-pvc"
 POSTGRES_DEPLOYMENT="n8n-application-postgres"
 
@@ -59,7 +59,7 @@ clear_persistent_volume() {
         echo "PVC deleted successfully."
         echo ""
         echo "Now redeploy the application to create a fresh database:"
-        echo "   helm upgrade --install n8n-application ./helm/n8n-application -f ./helm/n8n-application/values-dev.yaml"
+        echo "   helm upgrade --install n8n-application ./helm/n8n-application -f ./helm/n8n-application/values-local.yaml"
     else
         echo "Operation cancelled."
     fi

@@ -1,21 +1,37 @@
 #!/bin/bash
 
 # Deployment script for n8n-application
-# Standardizes release name and paths
+# Usage: ./scripts/deploy.sh [local|live]
+# Defaults to 'local' if no argument provided
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 ROOT_DIR="$SCRIPT_DIR/.."
 
+ENV="${1:-local}"
+
+case "$ENV" in
+    local)
+        NAMESPACE="n8n-local"
+        VALUES_FILE="$ROOT_DIR/helm/n8n-application/values-local.yaml"
+        ;;
+    live)
+        NAMESPACE="n8n-live"
+        VALUES_FILE="$ROOT_DIR/helm/n8n-application/values-live.yaml"
+        ;;
+    *)
+        echo "Error: Unknown environment '$ENV'. Use 'local' or 'live'."
+        exit 1
+        ;;
+esac
+
 RELEASE_NAME="n8n-application"
-NAMESPACE="n8n-development"
 CHART_PATH="$ROOT_DIR/helm/n8n-application"
-VALUES_FILE="$ROOT_DIR/helm/n8n-application/values-dev.yaml"
 
-echo "=== Deploying $RELEASE_NAME to $NAMESPACE ==="
+echo "=== Deploying $RELEASE_NAME to $NAMESPACE (env: $ENV) ==="
 
-# Check if we are in the root directory
+# Check if chart directory exists
 if [ ! -d "$CHART_PATH" ]; then
     echo "Error: Chart directory not found at $CHART_PATH"
     echo "Please run this script from the repository root."
@@ -29,7 +45,6 @@ fi
 
 echo "Running helm upgrade --install..."
 helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -f "$VALUES_FILE" -n "$NAMESPACE" --create-namespace
-# helm upgrade --install "n8n-application" "./helm/n8n-application" -f "./helm/n8n-application/values-dev.yaml" -n "n8n-development" --create-namespace
 
 echo ""
 echo "Deployment command executed successfully."

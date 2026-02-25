@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: n8n-application
+  name: n8n-root
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
@@ -10,13 +10,12 @@ spec:
   source:
     repoURL: https://github.com/maseko-lucky-9/n8n-self-hosting.git
     targetRevision: HEAD
-    path: helm/n8n-application
-    helm:
-      valueFiles:
-        - values-dev.yaml
+    path: argocd/applications
+    directory:
+      recurse: true
   destination:
     server: https://kubernetes.default.svc
-    namespace: n8n-development
+    namespace: argocd
   syncPolicy:
     automated:
       prune: true

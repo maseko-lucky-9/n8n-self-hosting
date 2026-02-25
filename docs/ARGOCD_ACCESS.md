@@ -42,13 +42,13 @@ Open the following link:
 
 ## 4. Managing n8n Application
 
-Once logged in, you should see the `n8n-application` tile.
+Once logged in, you should see the `n8n-root` tile, which manages `n8n-local` and `n8n-live` child apps.
 
 ### Syncing Changes
 
 ArgoCD syncs configuration from your **GitHub Repository**, not your local computer.
 
-1.  Make changes locally (e.g., edit `values-dev.yaml`).
+1.  Make changes locally (e.g., edit `values-local.yaml` or `values-live.yaml`).
 2.  Push changes to GitHub:
     ```bash
     git add .

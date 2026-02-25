@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: connectivity-check
-  namespace: n8n-development
+  namespace: n8n-local
 spec:
   template:
     spec:
@@ -13,10 +13,10 @@ spec:
         args:
         - |
           echo "Test 1: Resolving DNS..."
-          nslookup n8n-application-postgres.n8n-development.svc.cluster.local
+          nslookup n8n-application-postgres.n8n-local.svc.cluster.local
           
           echo "Test 2: Testing TCP Connection..."
-          nc -zv n8n-application-postgres.n8n-development.svc.cluster.local 5432
+          nc -zv n8n-application-postgres.n8n-local.svc.cluster.local 5432
           
           echo "Done."
       restartPolicy: Never

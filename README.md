@@ -2,14 +2,21 @@
 
 This repository contains the Helm chart and configuration for self-hosting n8n with a PostgreSQL database on Kubernetes.
 
+## Environments
+
+| Environment | Runtime           | Namespace   | Values File         |
+| ----------- | ----------------- | ----------- | ------------------- |
+| **Local**   | WSL + Minikube    | `n8n-local` | `values-local.yaml` |
+| **Live**    | Ubuntu + MicroK8s | `n8n-live`  | `values-live.yaml`  |
+
 ## Prerequisites
 
-- **Kubernetes Cluster**: Minikube, Kind, or a managed cluster.
+- **Kubernetes Cluster**: Minikube (local) or MicroK8s (live).
 - **kubectl**: Installed and configured.
 - **Helm**: v3+ installed.
 - **WSL (Windows Users)**: Recommended for running the deployment scripts.
 
-## Quick Start (Installation)
+## Quick Start (Local Development)
 
 We provide a deployment script to handle path resolution and release naming automatically.
 
@@ -20,49 +27,54 @@ We provide a deployment script to handle path resolution and release naming auto
     cd n8n-self-hosting
     ```
 
-2.  **Deploy**:
-    Run the deployment script from the root of the repository:
-
-    Scripts are located in the `scripts/` directory.
+2.  **Deploy** (defaults to local environment):
 
     ```bash
-    ./scripts/deploy.sh
+    ./scripts/deploy.sh          # deploys to n8n-local
+    ./scripts/deploy.sh live     # deploys to n8n-live
     ```
-
-    _Note: This script installs/upgrades the `n8n-application` release using `values-dev.yaml`._
 
 3.  **Verify Status**:
     ```bash
-    kubectl get pods -n n8n-development
+    kubectl get pods -n n8n-local
     ```
 
 ## Configuration
 
-The main configuration file is [`helm/n8n-application/values-dev.yaml`](./helm/n8n-application/values-dev.yaml).
+The main configuration files are:
+
+- [`helm/n8n-application/values-local.yaml`](./helm/n8n-application/values-local.yaml) — Local development
+- [`helm/n8n-application/values-live.yaml`](./helm/n8n-application/values-live.yaml) — Production (MicroK8s)
 
 Key configurations:
 
-- **Database**: Defaults to checking for a `postgres-secret` (auto-generated if ExternalSecrets is disabled).
-- **External Secrets**: Disabled by default (`externalSecrets.enabled: false`) for easier local development.
-- **Ingress**: Configured for `n8n.local` (Defaults to Nginx class). See [`docs/NETWORK_EXPOSURE_GUIDE.md`](docs/NETWORK_EXPOSURE_GUIDE.md) for details.
+- **Database**: Uses a `postgres-secret` Kubernetes Secret for credentials.
+- **External Secrets**: Disabled for local, enabled for live (Vault/ESO).
+- **Ingress**: `n8n.local` for local dev, real domain for live. See [`docs/NETWORK_EXPOSURE_GUIDE.md`](docs/NETWORK_EXPOSURE_GUIDE.md) for details.
+
+## ArgoCD (GitOps)
+
+This repository uses an App of Apps pattern:
+
+- **Root app** (`argocd/n8n-application.yaml`) manages child applications
+- **Child apps** in `argocd/applications/` deploy the Helm chart per environment
+- Local environment: auto-sync enabled
+- Live environment: manual sync (triggered via CI or ArgoCD UI)
+
+See [`docs/ARGOCD_ACCESS.md`](docs/ARGOCD_ACCESS.md) for dashboard access.
 
 ## Troubleshooting & Known Issues
-
-If you encounter issues during deployment, check the following common fixes that have been applied or might be needed.
 
 ### 1. Database Migration Error: `function gen_random_uuid() does not exist`
 
 **Symptoms**: n8n pod restarts with log error: `Error running database migrations`.
-**Cause**: The PostgreSQL image doesn't enable the `pgcrypto` extension by default, and if the volume persists, init scripts won't run again.
+**Cause**: The PostgreSQL image doesn't enable the `pgcrypto` extension by default.
 **Fix**:
 Execute into the postgres pod and enable the extension manually:
 
 ```bash
-# Get the postgres pod name
-kubectl get pods -n n8n-development
-
-# Connect and run the SQL command
-kubectl exec -n n8n-development <POSTGRES_POD_NAME> -- psql -U n8n -d n8n -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+kubectl get pods -n n8n-local
+kubectl exec -n n8n-local <POSTGRES_POD_NAME> -- psql -U n8n -d n8n -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
 ```
 
 _Then restart the n8n pod._
@@ -79,12 +91,6 @@ _Then restart the n8n pod._
 **Cause**: Service selector mismatch. The `postgres-service` didn't select any pods.
 **Fix**: The `postgres-service.yaml` has been updated to use dynamic selectors (`app.kubernetes.io/name`). Ensure your Helm chart is up to date.
 
-### 4. Database Name Mismatch
-
-**Symptoms**: Log error `database "n8n_dev" does not exist`.
-**Cause**: Discrepancy between the database created (`n8n` in values.yaml) and the database n8n expects (`n8n_dev`).
-**Fix**: Both `values-dev.yaml` and `n8n-deployment.yaml` are now synchronized to use `n8n`.
-
 ## Manual Verification
 
 To verify the deployment is working correctly:
@@ -92,7 +98,7 @@ To verify the deployment is working correctly:
 1.  **Check Pods**:
 
     ```bash
-    kubectl get pods -n n8n-development
+    kubectl get pods -n n8n-local
     ```
 
     _All pods should be 1/1 Running._
@@ -100,13 +106,13 @@ To verify the deployment is working correctly:
 2.  **Check Logs**:
 
     ```bash
-    kubectl logs -n n8n-development -l service=n8n
+    kubectl logs -n n8n-local -l service=n8n
     ```
 
     _Look for "Editor is now accessible via: ..."_
 
 3.  **Port Forward (Local Access)**:
     ```bash
-    kubectl port-forward -n n8n-development svc/n8n 5678:5678
+    kubectl port-forward -n n8n-local svc/n8n 5678:5678
     ```
     Access at http://localhost:5678

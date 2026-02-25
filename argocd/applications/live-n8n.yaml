@@ -1,23 +1,21 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: n8n-development-db
+  name: n8n-live
   namespace: argocd
 spec:
   project: default
   source:
     repoURL: https://github.com/maseko-lucky-9/n8n-self-hosting.git
     targetRevision: HEAD
-    path: helm/n8n-database
+    path: helm/n8n-application
     helm:
       valueFiles:
-        - values-dev.yaml
+        - values-live.yaml
   destination:
     server: https://kubernetes.default.svc
-    namespace: n8n-development
+    namespace: n8n-live
+  # LIVE: No automated sync — manual or CI-triggered only
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
     syncOptions:
-    - CreateNamespace=true
+      - CreateNamespace=true

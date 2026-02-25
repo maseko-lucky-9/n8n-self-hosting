@@ -28,21 +28,21 @@ Run the provided script for an automated fix:
 1. **Restart PostgreSQL deployment to apply new permissions:**
 
    ```bash
-   kubectl rollout restart deployment postgres -n n8n-development
-   kubectl rollout status deployment postgres -n n8n-development
+   kubectl rollout restart deployment postgres -n n8n-local
+   kubectl rollout status deployment postgres -n n8n-local
    ```
 
 2. **Restart n8n deployment:**
 
    ```bash
-   kubectl rollout restart deployment n8n -n n8n-development
-   kubectl rollout status deployment n8n -n n8n-development
+   kubectl rollout restart deployment n8n -n n8n-local
+   kubectl rollout status deployment n8n -n n8n-local
    ```
 
 3. **Verify the fix:**
    ```bash
-   kubectl get pods -n n8n-development
-   kubectl logs <n8n-pod-name> -n n8n-development
+   kubectl get pods -n n8n-local
+   kubectl logs <n8n-pod-name> -n n8n-local
    ```
 
 ### Option 3: Helm Upgrade
@@ -50,7 +50,7 @@ Run the provided script for an automated fix:
 If you want to apply all changes at once:
 
 ```bash
-helm upgrade --install n8n-application ./helm/n8n-application -f ./helm/n8n-application/values-dev.yaml
+helm upgrade --install n8n-application ./helm/n8n-application -f ./helm/n8n-application/values-local.yaml
 ```
 
 ## Changes Made
@@ -68,7 +68,7 @@ Updated `helm/n8n-application/templates/postgres-configmap.yaml` with:
 
 Updated `helm/n8n-application/templates/n8n-deployment.yaml`:
 
-- Changed `DB_POSTGRESDB_HOST` from `postgres-service.n8n-development.svc.cluster.local` to `postgres-service`
+- Changed `DB_POSTGRESDB_HOST` from `postgres-service.n8n-local.svc.cluster.local` to `postgres-service`
 - This ensures proper service discovery within the same namespace
 
 ### 3. Comprehensive Permissions Granted
@@ -86,20 +86,20 @@ The init script now grants:
 ### 1. Check PostgreSQL Logs
 
 ```bash
-kubectl logs <postgres-pod-name> -n n8n-development | grep -i "n8n user setup"
+kubectl logs <postgres-pod-name> -n n8n-local | grep -i "n8n user setup"
 ```
 
 ### 2. Check n8n Logs
 
 ```bash
-kubectl logs <n8n-pod-name> -n n8n-development | grep -i "database"
+kubectl logs <n8n-pod-name> -n n8n-local | grep -i "database"
 ```
 
 ### 3. Test Database Connection
 
 ```bash
 # Connect to PostgreSQL pod
-kubectl exec -it <postgres-pod-name> -n n8n-development -- psql -U n8n_dev -d n8n_dev
+kubectl exec -it <postgres-pod-name> -n n8n-local -- psql -U n8n_dev -d n8n_dev
 
 # Check user permissions
 \du n8n_developer
@@ -112,13 +112,13 @@ kubectl exec -it <postgres-pod-name> -n n8n-development -- psql -U n8n_dev -d n8
 1. **Check if the init script ran:**
 
    ```bash
-   kubectl logs <postgres-pod-name> -n n8n-development | grep -i "n8n user setup"
+   kubectl logs <postgres-pod-name> -n n8n-local | grep -i "n8n user setup"
    ```
 
 2. **Manually grant permissions:**
 
    ```bash
-   kubectl exec -it <postgres-pod-name> -n n8n-development -- psql -U n8n_dev -d n8n_dev -c "
+   kubectl exec -it <postgres-pod-name> -n n8n-local -- psql -U n8n_dev -d n8n_dev -c "
    GRANT USAGE ON SCHEMA public TO n8n_developer;
    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO n8n_developer;
    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO n8n_developer;
@@ -130,8 +130,8 @@ kubectl exec -it <postgres-pod-name> -n n8n-development -- psql -U n8n_dev -d n8
 
 3. **Clear and recreate the database (if possible):**
    ```bash
-   kubectl delete pvc postgresql-pv -n n8n-development
-   helm upgrade --install n8n-application ./helm/n8n-application -f ./helm/n8n-application/values-dev.yaml
+   kubectl delete pvc postgresql-pv -n n8n-local
+   helm upgrade --install n8n-application ./helm/n8n-application -f ./helm/n8n-application/values-local.yaml
    ```
 
 ## Prevention
@@ -151,7 +151,7 @@ To prevent this issue in the future:
 - **Schema**: public
 - **Host**: postgres-service
 - **Port**: 5432
-- **Namespace**: n8n-development
+- **Namespace**: n8n-local
 
 ## Next Steps
 

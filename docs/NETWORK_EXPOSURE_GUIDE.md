@@ -12,7 +12,7 @@ This guide explains how to properly expose your n8n application to the network u
 
 ### 1. Update Domain Configuration
 
-Edit `helm/n8n-application/values-dev.yaml` and replace `n8n.yourdomain.com` with your actual domain:
+Edit `helm/n8n-application/values-local.yaml` and replace `n8n.yourdomain.com` with your actual domain:
 
 ```yaml
 ingress:
@@ -74,7 +74,7 @@ If you have your own certificate:
 kubectl create secret tls n8n-tls \
   --cert=path/to/your/certificate.crt \
   --key=path/to/your/private.key \
-  --namespace=n8n-development
+  --namespace=n8n-local
 ```
 
 ### 3. Deploy the Application
@@ -88,7 +88,7 @@ scripts/deploy.sh
 Alternatively, if running manually from root:
 
 ```bash
-helm upgrade --install n8n-application ./helm/n8n-application -f ./helm/n8n-application/values-dev.yaml -n n8n-development
+helm upgrade --install n8n-application ./helm/n8n-application -f ./helm/n8n-application/values-local.yaml -n n8n-local
 ```
 
 ````
@@ -98,9 +98,9 @@ helm upgrade --install n8n-application ./helm/n8n-application -f ./helm/n8n-appl
 Check that all resources are running:
 
 ```bash
-kubectl get all -n n8n-development
-kubectl get ingress -n n8n-development
-kubectl describe ingress n8n-app-ingress -n n8n-development
+kubectl get all -n n8n-local
+kubectl get ingress -n n8n-local
+kubectl describe ingress n8n-app-ingress -n n8n-local
 ````
 
 ### 5. Configure DNS
@@ -141,13 +141,13 @@ The current configuration includes:
 
 ```bash
 # Check ingress status
-kubectl describe ingress -n n8n-development
+kubectl describe ingress -n n8n-local
 
 # Check Kong logs
 kubectl logs -n kong-system -l app=kong
 
 # Test service connectivity
-kubectl port-forward -n n8n-development svc/n8n 5678:5678
+kubectl port-forward -n n8n-local svc/n8n 5678:5678
 ```
 
 ## Production Considerations

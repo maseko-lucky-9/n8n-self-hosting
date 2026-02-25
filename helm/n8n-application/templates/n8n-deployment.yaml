@@ -4,7 +4,7 @@ metadata:
   labels:
     service: n8n
   name: n8n
-  namespace: n8n-development
+  namespace: { { .Release.Namespace } }
 spec:
   replicas: 1
   selector:
@@ -17,7 +17,7 @@ spec:
       labels:
         service: n8n
     spec:
-      serviceAccountName: {{ include "n8n-application.fullname" . }}-postgres-sa
+      serviceAccountName: { { include "n8n-application.serviceAccountName" . } }
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -62,15 +62,11 @@ spec:
               value: http
             - name: N8N_PORT
               value: "5678"
-          image: n8nio/n8n
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           name: n8n
           ports:
             - containerPort: 5678
-          resources:
-            requests:
-              memory: "250Mi"
-            limits:
-              memory: "500Mi"
+          resources: { { - toYaml .Values.resources | nindent 12 } }
           volumeMounts:
             - mountPath: /home/node/.n8n
               name: n8n-claim0
@@ -85,4 +81,3 @@ spec:
         - name: postgres-secret
           secret:
             secretName: postgres-secret
-

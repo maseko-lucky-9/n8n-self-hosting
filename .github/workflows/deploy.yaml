@@ -8,20 +8,26 @@ on:
       - 'helm/n8n-application/**'
       - 'argocd/**'
       - '.github/workflows/deploy.yaml'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - local
+          - live
 
 jobs:
   deploy:
-    runs-on: self-hosted
+    runs-on: [self-hosted, microk8s]
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Ensure ArgoCD Application exists
+      - name: Ensure ArgoCD Root Application exists
         run: |
-          echo "Applying ArgoCD Application Manifest..."
+          echo "Applying ArgoCD Root Application Manifest..."
           microk8s kubectl apply -f argocd/n8n-application.yaml
-          
-          echo "Deployment initiated. ArgoCD will sync changes shortly."
-
-          
+          echo "Root app applied. ArgoCD will sync child applications (local/live)."

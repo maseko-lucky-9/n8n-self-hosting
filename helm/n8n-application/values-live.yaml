@@ -1,0 +1,141 @@
+# Live Environment Configuration for n8n
+# Runtime: Ubuntu home server, MicroK8s (single-node)
+# Purpose: Production deployment
+
+replicaCount: 1  # LIVE: Single-node cluster, no HA
+
+namespace: n8n-live
+
+image:
+  repository: n8nio/n8n
+  pullPolicy: IfNotPresent
+  tag: "1.19.4"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+# LIVE: Strict security context
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  runAsUser: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true  # LIVE: Read-only root filesystem
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+    - ALL
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: "public"  # LIVE: MicroK8s ingress
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"  # LIVE: Real TLS
+    nginx.ingress.kubernetes.io/rate-limit: "100"  # LIVE: Rate limiting
+  hosts:
+    - host: n8n.yourdomain.com  # LIVE: Replace with your actual domain
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: n8n-live-tls
+      hosts:
+        - n8n.yourdomain.com  # LIVE: Replace with your actual domain
+
+# LIVE: Production-grade resources for homelab
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+# LIVE: Node.js memory tuning
+extraEnv:
+  - name: NODE_OPTIONS
+    value: "--max-old-space-size=768"
+
+autoscaling:
+  enabled: false  # LIVE: Single-node, no autoscaling
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# n8n specific configuration
+n8n:
+  host: "0.0.0.0"
+  port: 5678
+  protocol: "https"  # LIVE: HTTPS in production
+
+# PostgreSQL configuration
+postgres:
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+  persistence:
+    storageClass: "microk8s-hostpath"  # LIVE: MicroK8s storage
+    size: 20Gi
+
+# Database connection
+# LIVE: Passwords should be managed by Vault/ESO — do NOT put real passwords here
+database:
+  type: "postgresdb"
+  host: "postgres-service"
+  port: 5432
+  database: "n8n"
+  username: "n8n_live"
+  password: "VAULT_MANAGED"  # LIVE: Replace via ESO or --set override
+  ssl: true  # LIVE: Encrypt DB connections
+
+# N8N data persistence
+persistence:
+  enabled: true
+  storageClass: "microk8s-hostpath"  # LIVE: MicroK8s storage
+  accessMode: ReadWriteOnce
+  size: 5Gi
+
+# LIVE: Network isolation enabled
+networkPolicy:
+  enabled: true
+  allowedNamespaces:
+    - ingress-nginx
+
+# External Secrets Configuration
+externalSecrets:
+  enabled: true  # LIVE: Use Vault via ESO
+
+# LIVE: Automated backups
+backup:
+  enabled: true
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  retention: 30  # days

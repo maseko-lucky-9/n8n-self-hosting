@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: n8n-development
+  name: n8n-local
   namespace: argocd
 spec:
   project: default
@@ -11,13 +11,13 @@ spec:
     path: helm/n8n-application
     helm:
       valueFiles:
-        - values-dev.yaml
+        - values-local.yaml
   destination:
     server: https://kubernetes.default.svc
-    namespace: n8n-development
+    namespace: n8n-local
   syncPolicy:
-    automated:
+    automated:          # LOCAL: Auto-sync for rapid iteration
       prune: true
       selfHeal: true
     syncOptions:
-    - CreateNamespace=true
+      - CreateNamespace=true
