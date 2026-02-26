@@ -133,6 +133,18 @@ networkPolicy:
 # External Secrets Configuration
 externalSecrets:
   enabled: true  # LIVE: Use Vault via ESO
+  refreshInterval: "1h"  # How often ESO re-syncs from Vault
+  vault:
+    # In-cluster Vault server (adjust namespace if Vault is elsewhere)
+    address: "http://vault.vault.svc.cluster.local:8200"
+    kvPath: "secret"          # Vault KV v2 mount path
+    kvVersion: "v2"
+    # Path within the KV engine where postgres creds are stored
+    secretPath: "n8n/live/postgres"
+    auth:
+      mountPath: "kubernetes"   # Vault Kubernetes auth mount
+      role: "n8n-live"          # Vault role bound to the SA
+      serviceAccount: ""        # Defaults to the Helm release SA
 
 # LIVE: Automated backups
 backup:
