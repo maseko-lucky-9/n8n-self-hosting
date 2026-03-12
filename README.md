@@ -49,7 +49,7 @@ The main configuration files are:
 Key configurations:
 
 - **Database**: Uses a `postgres-secret` Kubernetes Secret for credentials.
-- **External Secrets**: Disabled for local, enabled for live (Vault/ESO).
+- **External Secrets**: Disabled for local, enabled for live (Vault/ESO). See [`docs/VAULT_INTEGRATION.md`](docs/VAULT_INTEGRATION.md).
 - **Ingress**: `n8n.local` for local dev, real domain for live. See [`docs/NETWORK_EXPOSURE_GUIDE.md`](docs/NETWORK_EXPOSURE_GUIDE.md) for details.
 
 ## ArgoCD (GitOps)
@@ -62,6 +62,16 @@ This repository uses an App of Apps pattern:
 - Live environment: manual sync (triggered via CI or ArgoCD UI)
 
 See [`docs/ARGOCD_ACCESS.md`](docs/ARGOCD_ACCESS.md) for dashboard access.
+
+## Secrets Management (Vault + ESO)
+
+In the live environment, all sensitive credentials are managed by [HashiCorp Vault](https://github.com/maseko-lucky-9/HashiCorp-Vault) and synced into Kubernetes Secrets via the External Secrets Operator (ESO).
+
+| Secret | Vault Path | K8s Secret |
+|---|---|---|
+| Postgres credentials | `secret/n8n/live/postgres` | `postgres-secret` |
+
+See [`docs/VAULT_INTEGRATION.md`](docs/VAULT_INTEGRATION.md) for the full setup guide, including unseal procedures, policy configuration, and secret rotation.
 
 ## Troubleshooting & Known Issues
 
