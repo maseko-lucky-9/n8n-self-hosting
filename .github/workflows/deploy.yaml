@@ -20,7 +20,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: [self-hosted, microk8s]
+    runs-on: self-hosted
     timeout-minutes: 10
     steps:
       - name: Checkout code
