@@ -29,6 +29,6 @@ jobs:
       - name: Ensure ArgoCD Root Application exists
         run: |
           echo "Applying ArgoCD Root Application Manifest..."
-          microk8s kubectl apply -f argocd/applications/live-n8n.yaml
+          kubectl apply -f argocd/applications/live-n8n.yaml
           echo "Root app applied. ArgoCD will sync child applications (local/live)."
           
