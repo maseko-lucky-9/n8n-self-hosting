@@ -53,14 +53,14 @@ ingress:
     cert-manager.io/cluster-issuer: "letsencrypt-prod"  # LIVE: Real TLS
     nginx.ingress.kubernetes.io/rate-limit: "100"  # LIVE: Rate limiting
   hosts:
-    - host: n8n.yourdomain.com  # LIVE: Replace with your actual domain
+    - host: n8n.local  # LIVE: Replace with your actual domain
       paths:
         - path: /
           pathType: Prefix
   tls:
     - secretName: n8n-live-tls
       hosts:
-        - n8n.yourdomain.com  # LIVE: Replace with your actual domain
+        - n8n.local  # LIVE: Replace with your actual domain
 
 # LIVE: Production-grade resources for homelab
 resources:
@@ -114,7 +114,7 @@ database:
   port: 5432
   database: "n8n"
   username: "n8n_live"
-  password: "VAULT_MANAGED"  # LIVE: Replace via ESO or --set override
+  password: "POSTGRES_PASSWORD"  # LIVE: Replace via ESO or --set override
   ssl: true  # LIVE: Encrypt DB connections
 
 # N8N data persistence
@@ -137,7 +137,7 @@ externalSecrets:
   vault:
     # In-cluster Vault server (adjust namespace if Vault is elsewhere)
     address: "http://vault.vault.svc.cluster.local:8200"
-    kvPath: "secret"          # Vault KV v2 mount path
+    kvPath: "secret/n8n/live/postgres"          # Vault KV v2 mount path
     kvVersion: "v2"
     # Path within the KV engine where postgres creds are stored
     secretPath: "n8n/live/postgres"
