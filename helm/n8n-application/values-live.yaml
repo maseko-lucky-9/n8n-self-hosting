@@ -141,7 +141,7 @@ persistence:
 networkPolicy:
   enabled: true
   allowedNamespaces:
-    - ingress-nginx
+    - ingress  # MicroK8s ingress controller namespace
 
 # External Secrets Configuration
 externalSecrets:
