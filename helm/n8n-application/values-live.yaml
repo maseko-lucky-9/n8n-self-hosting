@@ -13,7 +13,7 @@ image:
 
 imagePullSecrets: []
 nameOverride: ""
-fullnameOverride: ""
+fullnameOverride: "n8n-application"  # Ensures consistent resource names regardless of Helm release name
 
 serviceAccount:
   create: true
