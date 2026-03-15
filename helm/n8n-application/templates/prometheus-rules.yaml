@@ -1,0 +1,124 @@
+{{- if .Values.monitoring.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "n8n-application.fullname" . }}-alerts
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "n8n-application.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: n8n.rules
+      rules:
+        # Alert: n8n pod has been OOMKilled
+        - alert: N8nOOMKilled
+          expr: |
+            kube_pod_container_status_last_terminated_reason{
+              namespace="{{ .Release.Namespace }}",
+              container="n8n",
+              reason="OOMKilled"
+            } > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "n8n container was OOMKilled"
+            description: "n8n container in pod {{`{{ $labels.pod }}`}} was OOMKilled. Consider increasing memory limits."
+
+        # Alert: n8n pod in CrashLoopBackOff
+        - alert: N8nCrashLooping
+          expr: |
+            rate(kube_pod_container_status_restarts_total{
+              namespace="{{ .Release.Namespace }}",
+              container="n8n"
+            }[15m]) * 60 * 15 > 3
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "n8n is crash-looping"
+            description: "n8n pod {{`{{ $labels.pod }}`}} has restarted more than 3 times in the last 15 minutes."
+
+        # Alert: n8n pod not ready
+        - alert: N8nPodNotReady
+          expr: |
+            kube_pod_status_ready{
+              namespace="{{ .Release.Namespace }}",
+              condition="true",
+              pod=~"n8n.*"
+            } == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "n8n pod is not ready"
+            description: "n8n pod {{`{{ $labels.pod }}`}} has been in a non-ready state for more than 5 minutes."
+
+        # Alert: n8n high memory usage (>85% of limit)
+        - alert: N8nHighMemoryUsage
+          expr: |
+            container_memory_working_set_bytes{
+              namespace="{{ .Release.Namespace }}",
+              container="n8n"
+            } /
+            container_spec_memory_limit_bytes{
+              namespace="{{ .Release.Namespace }}",
+              container="n8n"
+            } > 0.85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "n8n memory usage above 85%"
+            description: "n8n is using {{`{{ $value | humanizePercentage }}`}} of its memory limit."
+
+        # Alert: PostgreSQL pod not ready
+        - alert: PostgresNotReady
+          expr: |
+            kube_pod_status_ready{
+              namespace="{{ .Release.Namespace }}",
+              condition="true",
+              pod=~".*postgres.*"
+            } == 0
+          for: 3m
+          labels:
+            severity: critical
+          annotations:
+            summary: "PostgreSQL pod is not ready"
+            description: "PostgreSQL pod {{`{{ $labels.pod }}`}} has been in a non-ready state for more than 3 minutes."
+
+        # Alert: PostgreSQL PVC nearly full (>80%)
+        - alert: PostgresPVCNearlyFull
+          expr: |
+            kubelet_volume_stats_used_bytes{
+              namespace="{{ .Release.Namespace }}",
+              persistentvolumeclaim=~".*postgres.*"
+            } /
+            kubelet_volume_stats_capacity_bytes{
+              namespace="{{ .Release.Namespace }}",
+              persistentvolumeclaim=~".*postgres.*"
+            } > 0.80
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PostgreSQL PVC is nearly full"
+            description: "PostgreSQL PVC is {{`{{ $value | humanizePercentage }}`}} full. Consider expanding storage."
+
+        # Alert: Backup CronJob failed
+        - alert: N8nBackupFailed
+          expr: |
+            kube_job_status_failed{
+              namespace="{{ .Release.Namespace }}",
+              job_name=~".*db-backup.*"
+            } > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "n8n database backup failed"
+            description: "Backup job {{`{{ $labels.job_name }}`}} has failed. Check logs for details."
+{{- end }}

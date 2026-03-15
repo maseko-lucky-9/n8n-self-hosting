@@ -1,0 +1,118 @@
+{{- if .Values.backup.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "n8n-application.fullname" . }}-db-backup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "n8n-application.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: {{ include "n8n-application.name" . }}
+            app.kubernetes.io/component: backup
+        spec:
+          serviceAccountName: {{ include "n8n-application.fullname" . }}-postgres-sa
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            fsGroup: 999
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: pg-backup
+              image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-secret
+                      key: POSTGRES_PASSWORD
+                - name: POSTGRES_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-secret
+                      key: POSTGRES_USER
+                - name: POSTGRES_DB
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-secret
+                      key: POSTGRES_DB
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+                  BACKUP_FILE="/backups/n8n_db_${TIMESTAMP}.sql.gz"
+
+                  echo "[$(date)] Starting backup of database ${POSTGRES_DB}..."
+                  pg_dump -h postgres-service -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+                    --no-owner --no-acl --clean --if-exists | gzip > "${BACKUP_FILE}"
+
+                  if [ $? -eq 0 ]; then
+                    echo "[$(date)] Backup completed: ${BACKUP_FILE} ($(du -h ${BACKUP_FILE} | cut -f1))"
+                  else
+                    echo "[$(date)] ERROR: Backup failed!"
+                    exit 1
+                  fi
+
+                  # Prune backups older than retention period
+                  echo "[$(date)] Pruning backups older than {{ .Values.backup.retention }} days..."
+                  find /backups -name "n8n_db_*.sql.gz" -mtime +{{ .Values.backup.retention }} -delete
+                  echo "[$(date)] Remaining backups:"
+                  ls -lh /backups/n8n_db_*.sql.gz 2>/dev/null || echo "  (none)"
+              resources:
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+              volumeMounts:
+                - name: backup-volume
+                  mountPath: /backups
+                - name: tmp
+                  mountPath: /tmp
+          restartPolicy: OnFailure
+          volumes:
+            - name: backup-volume
+              persistentVolumeClaim:
+                claimName: {{ include "n8n-application.fullname" . }}-backup-pvc
+            - name: tmp
+              emptyDir:
+                sizeLimit: 50Mi
+---
+# PVC for backup storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "n8n-application.fullname" . }}-backup-pvc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "n8n-application.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.postgres.persistence.storageClass }}
+  storageClassName: {{ .Values.postgres.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backup.storageSize | default "5Gi" }}
+{{- end }}

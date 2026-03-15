@@ -44,7 +44,7 @@ if [ ! -f "$VALUES_FILE" ]; then
 fi
 
 echo "Running helm upgrade --install..."
-helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" -f "$VALUES_FILE" -n "$NAMESPACE" --create-namespace
+microk8s helm3 upgrade --install "$RELEASE_NAME" "$CHART_PATH" -f "$VALUES_FILE" -n "$NAMESPACE" --create-namespace
 
 echo ""
 echo "Deployment command executed successfully."

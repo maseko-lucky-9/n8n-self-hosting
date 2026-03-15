@@ -1,0 +1,127 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "n8n-application.fullname" . }}-grafana-dashboard
+  namespace: {{ .Values.monitoring.grafanaDashboard.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "n8n-application.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+data:
+  n8n-dashboard.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "title": "n8n Pod Status",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+          "targets": [{
+            "expr": "kube_pod_status_ready{namespace=\"{{ .Release.Namespace }}\", pod=~\"n8n.*\", condition=\"true\"}",
+            "legendFormat": "Ready"
+          }],
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "NOT READY", "color": "red" }, "1": { "text": "READY", "color": "green" } } }
+              ]
+            }
+          }
+        },
+        {
+          "title": "Pod Restarts",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+          "targets": [{
+            "expr": "kube_pod_container_status_restarts_total{namespace=\"{{ .Release.Namespace }}\", container=\"n8n\"}",
+            "legendFormat": "Restarts"
+          }],
+          "fieldConfig": { "defaults": { "thresholds": { "steps": [{"color":"green","value":null},{"color":"yellow","value":3},{"color":"red","value":10}] } } }
+        },
+        {
+          "title": "PostgreSQL Status",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+          "targets": [{
+            "expr": "kube_pod_status_ready{namespace=\"{{ .Release.Namespace }}\", pod=~\".*postgres.*\", condition=\"true\"}",
+            "legendFormat": "Ready"
+          }],
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+              ]
+            }
+          }
+        },
+        {
+          "title": "n8n Memory Usage",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+          "targets": [
+            {
+              "expr": "container_memory_working_set_bytes{namespace=\"{{ .Release.Namespace }}\", container=\"n8n\"}",
+              "legendFormat": "Working Set"
+            },
+            {
+              "expr": "container_spec_memory_limit_bytes{namespace=\"{{ .Release.Namespace }}\", container=\"n8n\"}",
+              "legendFormat": "Limit"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "bytes" } }
+        },
+        {
+          "title": "n8n CPU Usage",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+          "targets": [
+            {
+              "expr": "rate(container_cpu_usage_seconds_total{namespace=\"{{ .Release.Namespace }}\", container=\"n8n\"}[5m])",
+              "legendFormat": "CPU Usage"
+            },
+            {
+              "expr": "kube_pod_container_resource_limits{namespace=\"{{ .Release.Namespace }}\", container=\"n8n\", resource=\"cpu\"}",
+              "legendFormat": "CPU Limit"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "short" } }
+        },
+        {
+          "title": "PostgreSQL Memory Usage",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+          "targets": [
+            {
+              "expr": "container_memory_working_set_bytes{namespace=\"{{ .Release.Namespace }}\", container=\"postgres\"}",
+              "legendFormat": "Working Set"
+            },
+            {
+              "expr": "container_spec_memory_limit_bytes{namespace=\"{{ .Release.Namespace }}\", container=\"postgres\"}",
+              "legendFormat": "Limit"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "bytes" } }
+        },
+        {
+          "title": "PVC Usage",
+          "type": "gauge",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+          "targets": [{
+            "expr": "kubelet_volume_stats_used_bytes{namespace=\"{{ .Release.Namespace }}\"} / kubelet_volume_stats_capacity_bytes{namespace=\"{{ .Release.Namespace }}\"}",
+            "legendFormat": "{{`{{ persistentvolumeclaim }}`}}"
+          }],
+          "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "thresholds": { "steps": [{"color":"green","value":null},{"color":"yellow","value":0.7},{"color":"red","value":0.85}] } } }
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["n8n", "kubernetes"],
+      "templating": { "list": [] },
+      "time": { "from": "now-6h", "to": "now" },
+      "title": "n8n Self-Hosted",
+      "uid": "n8n-self-hosted"
+    }
+{{- end }}

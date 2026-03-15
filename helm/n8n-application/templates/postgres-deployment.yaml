@@ -4,6 +4,7 @@ metadata:
   labels:
     app.kubernetes.io/name: {{ include "n8n-application.name" . | quote }}
     app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: postgres
   name: {{ include "n8n-application.fullname" . }}-postgres
   namespace: {{ .Release.Namespace }}
 spec:
@@ -12,17 +13,15 @@ spec:
     matchLabels:
       app.kubernetes.io/name: {{ include "n8n-application.name" . | quote }}
       app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: postgres
   strategy:
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 1
-    type: RollingUpdate
+    type: Recreate
   template:
     metadata:
       labels:
         app.kubernetes.io/name: {{ include "n8n-application.name" . | quote }}
         app.kubernetes.io/instance: {{ .Release.Name }}
-        app.kubernetes.io/component: postgres  # ADD THIS LINE
+        app.kubernetes.io/component: postgres
     spec:
       serviceAccountName: {{ include "n8n-application.fullname" . }}-postgres-sa
       automountServiceAccountToken: false
@@ -30,17 +29,17 @@ spec:
         runAsNonRoot: true
         runAsUser: 999
         fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
       containers:
-        - image: postgres:11
-          name: postgres
+        - name: postgres
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy | default "IfNotPresent" }}
           resources:
-            limits:
-              memory: 8Gi
-            requests:
-              cpu: "1"
-              memory: 2Gi
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
           ports:
             - containerPort: 5432
+              protocol: TCP
           volumeMounts:
             - name: postgresql-pv
               mountPath: /var/lib/postgresql/data
@@ -78,26 +77,32 @@ spec:
             - name: POSTGRES_HOST
               value: {{ include "n8n-application.fullname" . }}-postgres-service
             - name: POSTGRES_PORT
-              value: '5432'
+              value: "5432"
           securityContext:
             allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           readinessProbe:
             exec:
               command:
-                - pg_isready
-                - -U
-                - "$(POSTGRES_USER)"
+                - /bin/sh
+                - -c
+                - pg_isready -U postgres
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 3
             failureThreshold: 3
           livenessProbe:
             exec:
               command:
-                - pg_isready
-                - -U
-                - "$(POSTGRES_USER)"
+                - /bin/sh
+                - -c
+                - pg_isready -U postgres
             initialDelaySeconds: 30
             periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
       restartPolicy: Always
       volumes:
         - name: postgresql-pv

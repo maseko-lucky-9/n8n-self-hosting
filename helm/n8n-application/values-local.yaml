@@ -75,6 +75,10 @@ n8n:
   host: "0.0.0.0"
   port: 5678
   protocol: "http"  # LOCAL: No HTTPS locally
+  executionDataMaxAge: "336"       # 14 days for dev
+  executionDataPruneMaxCount: "10000"
+  logLevel: "debug"
+  logOutput: "console"
 
 # PostgreSQL configuration
 postgres:
@@ -130,3 +134,9 @@ externalSecrets:
 # Backup
 backup:
   enabled: false  # LOCAL: No backups needed
+
+# Monitoring
+monitoring:
+  enabled: false  # LOCAL: No monitoring needed
+  grafanaDashboard:
+    enabled: false

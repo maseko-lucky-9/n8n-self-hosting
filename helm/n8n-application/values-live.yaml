@@ -51,16 +51,23 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
     cert-manager.io/cluster-issuer: "letsencrypt-prod"  # LIVE: Real TLS
-    nginx.ingress.kubernetes.io/rate-limit: "100"  # LIVE: Rate limiting
+    nginx.ingress.kubernetes.io/limit-rps: "10"  # LIVE: Rate limiting (10 req/sec)
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: SAMEORIGIN";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-XSS-Protection: 1; mode=block";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
   hosts:
-    - host: n8n.local  # LIVE: Replace with your actual domain
+    - host: n8n.local  # [ACTION REQUIRED] Replace with your actual domain
       paths:
         - path: /
           pathType: Prefix
   tls:
     - secretName: n8n-live-tls
       hosts:
-        - n8n.local  # LIVE: Replace with your actual domain
+        - n8n.local  # [ACTION REQUIRED] Replace with your actual domain
 
 # LIVE: Production-grade resources for homelab
 resources:
@@ -88,6 +95,12 @@ n8n:
   host: "0.0.0.0"
   port: 5678
   protocol: "https"  # LIVE: HTTPS in production
+  # Execution pruning — prevents unbounded data growth
+  executionDataMaxAge: "168"       # 7 days (in hours)
+  executionDataPruneMaxCount: "50000"
+  # Structured JSON logging for observability
+  logLevel: "info"
+  logOutput: "console,file"
 
 # PostgreSQL configuration
 postgres:
@@ -151,3 +164,15 @@ backup:
   enabled: true
   schedule: "0 2 * * *"  # Daily at 2 AM
   retention: 30  # days
+  storageSize: 10Gi
+
+# LIVE: Monitoring & Alerting
+monitoring:
+  enabled: true
+  scrapeInterval: "30s"
+  scrapeTimeout: "10s"
+  additionalLabels:
+    release: prometheus  # Match your Prometheus Operator selector
+  grafanaDashboard:
+    enabled: true
+    namespace: ""  # Defaults to release namespace; set to "monitoring" if Grafana is there
