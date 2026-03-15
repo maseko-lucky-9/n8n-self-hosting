@@ -128,6 +128,8 @@ spec:
             {{- if .Values.securityContext.readOnlyRootFilesystem }}
             - mountPath: /tmp
               name: tmp-volume
+            - mountPath: /home/node/.cache
+              name: cache-volume
             {{- end }}
       restartPolicy: Always
       volumes:
@@ -136,6 +138,9 @@ spec:
             claimName: n8n-claim0
         {{- if .Values.securityContext.readOnlyRootFilesystem }}
         - name: tmp-volume
+          emptyDir:
+            sizeLimit: 100Mi
+        - name: cache-volume
           emptyDir:
             sizeLimit: 100Mi
         {{- end }}
