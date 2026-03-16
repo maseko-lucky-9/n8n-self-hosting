@@ -103,7 +103,40 @@ for RUN in 1 2 3; do
     log_pass "All 4 scripts pass syntax check"
   fi
 
-  # Test 12: ArgoCD YAML valid
+  # Test 12: No configuration-snippet in rendered output (blocked by MicroK8s ingress)
+  SNIPPET_COUNT=$(helm template t "$CHART" -f "$CHART/values-live.yaml" -n n8n-live 2>/dev/null | grep -c 'configuration-snippet' || true)
+  if [ "$SNIPPET_COUNT" -eq 0 ]; then
+    log_pass "LIVE: no configuration-snippet annotations"
+  else
+    log_fail "LIVE: found $SNIPPET_COUNT configuration-snippet annotations (blocked by MicroK8s)"
+  fi
+
+  # Test 13: TLS not enabled without cert-manager annotation
+  HAS_TLS=$(helm template t "$CHART" -f "$CHART/values-live.yaml" -n n8n-live 2>/dev/null | grep -c 'secretName: n8n-live-tls' || true)
+  HAS_ISSUER=$(helm template t "$CHART" -f "$CHART/values-live.yaml" -n n8n-live 2>/dev/null | grep -c 'cert-manager.io/cluster-issuer' || true)
+  if [ "$HAS_TLS" -gt 0 ] && [ "$HAS_ISSUER" -eq 0 ]; then
+    log_fail "LIVE: TLS enabled without cert-manager ClusterIssuer"
+  else
+    log_pass "LIVE: TLS/cert-manager configuration consistent"
+  fi
+
+  # Test 14: NetworkPolicy references correct MicroK8s ingress namespace
+  WRONG_NS=$(helm template t "$CHART" -f "$CHART/values-live.yaml" -n n8n-live 2>/dev/null | grep -c 'ingress-nginx' || true)
+  if [ "$WRONG_NS" -eq 0 ]; then
+    log_pass "LIVE: no references to ingress-nginx namespace"
+  else
+    log_fail "LIVE: found ingress-nginx references (MicroK8s uses 'ingress' namespace)"
+  fi
+
+  # Test 15: Postgres image sourced from values (not hardcoded)
+  PG_IMG=$(helm template t "$CHART" -f "$CHART/values-live.yaml" -n n8n-live 2>/dev/null | grep 'image: "postgres:' | head -1)
+  if echo "$PG_IMG" | grep -q '16-alpine'; then
+    log_pass "Postgres image is 16-alpine (from values)"
+  else
+    log_fail "Postgres image unexpected: $PG_IMG"
+  fi
+
+  # Test 16: ArgoCD YAML valid
   if python3 -c "import yaml,sys; [yaml.safe_load(open(f)) for f in sys.argv[1:]]" argocd/n8n-application.yaml argocd/applications/local-n8n.yaml argocd/applications/live-n8n.yaml 2>/dev/null; then
     log_pass "ArgoCD YAML valid"
   else

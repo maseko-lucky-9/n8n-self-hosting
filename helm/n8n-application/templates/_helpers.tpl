@@ -60,3 +60,15 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Validate: TLS must not be enabled without cert-manager annotation.
+Prevents broken ingress on restart when TLS secret doesn't exist.
+*/}}
+{{- define "n8n-application.validateTLS" -}}
+{{- if and .Values.ingress.enabled .Values.ingress.tls }}
+  {{- if not (index .Values.ingress.annotations "cert-manager.io/cluster-issuer") }}
+    {{- fail "ingress.tls is enabled but cert-manager.io/cluster-issuer annotation is not set. Either add the annotation or disable TLS." }}
+  {{- end }}
+{{- end }}
+{{- end }}

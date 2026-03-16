@@ -1,4 +1,5 @@
 {{- if .Values.ingress.enabled -}}
+{{- include "n8n-application.validateTLS" . -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -6,8 +7,9 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "n8n-application.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
   annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
