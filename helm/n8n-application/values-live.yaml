@@ -146,16 +146,24 @@ externalSecrets:
   enabled: true  # LIVE: Use Vault via ESO
   refreshInterval: "1h"  # How often ESO re-syncs from Vault
   vault:
-    # In-cluster Vault server (adjust namespace if Vault is elsewhere)
-    address: "http://vault.vault.svc.cluster.local:8200"
-    kvPath: "secret/n8n/live/postgres"          # Vault KV v2 mount path
+    # In-cluster Vault server -- HTTPS required (Vault TLS listener)
+    address: "https://vault.vault.svc.cluster.local:8200"
+    kvPath: "kv"              # KV v2 mount point only (not the full secret path)
     kvVersion: "v2"
-    # Path within the KV engine where postgres creds are stored
-    secretPath: "n8n/live/postgres"
+    # Full path within the KV engine where postgres creds are stored
+    # Must include 'secret/' prefix to match Vault policy: kv/data/secret/n8n/+/*
+    secretPath: "secret/n8n/live/postgres"
+    # CA certificate for Vault TLS verification
+    # Prereq: 'vault-tls-ca' Secret with key 'ca.crt' must exist in the namespace
+    caProvider:
+      type: Secret
+      name: vault-tls-ca
+      key: ca.crt
+      namespace: n8n-live
     auth:
-      mountPath: "kubernetes"   # Vault Kubernetes auth mount
-      role: "n8n-live"          # Vault role bound to the SA
-      serviceAccount: ""        # Defaults to the Helm release SA
+      mountPath: "kubernetes"             # Vault Kubernetes auth mount
+      role: "n8n-readonly"                # Vault role with read-only policy on kv/data/secret/n8n/+/*
+      serviceAccount: "external-secrets-n8n"  # Dedicated SA for ESO Vault auth
 
 # LIVE: Automated backups
 backup:
