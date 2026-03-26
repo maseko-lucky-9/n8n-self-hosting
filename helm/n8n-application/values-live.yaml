@@ -56,7 +56,7 @@ ingress:
     # nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     nginx.ingress.kubernetes.io/limit-rps: "10"  # LIVE: Rate limiting (10 req/sec)
   hosts:
-    - host: n8n.local  # [ACTION REQUIRED] Replace with your actual domain
+    - host: n8n.homelab.local
       paths:
         - path: /
           pathType: Prefix
@@ -64,7 +64,7 @@ ingress:
   # tls:
   #   - secretName: n8n-live-tls
   #     hosts:
-  #       - n8n.local
+  #       - n8n.homelab.local
   tls: []
 
 # LIVE: Production-grade resources for homelab
@@ -178,7 +178,7 @@ monitoring:
   scrapeInterval: "30s"
   scrapeTimeout: "10s"
   additionalLabels:
-    release: prometheus  # Match your Prometheus Operator selector
+    release: kube-prom-stack  # Match Prometheus Operator serviceMonitorSelector
   grafanaDashboard:
     enabled: true
     namespace: ""  # Defaults to release namespace; set to "monitoring" if Grafana is there

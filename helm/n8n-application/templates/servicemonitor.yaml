@@ -12,7 +12,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      service: n8n
+      service: n8n-svn
   endpoints:
     - port: "5678"
       path: /metrics
