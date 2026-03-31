@@ -42,13 +42,14 @@ spec:
             summary: "n8n is crash-looping"
             description: "n8n pod {{`{{ $labels.pod }}`}} has restarted more than 3 times in the last 15 minutes."
 
-        # Alert: n8n pod not ready
+        # Alert: n8n pod not ready (excludes completed CronJob backup pods)
         - alert: N8nPodNotReady
           expr: |
             kube_pod_status_ready{
               namespace="{{ .Release.Namespace }}",
               condition="true",
-              pod=~"n8n.*"
+              pod=~"n8n.*",
+              pod!~".*-db-backup-.*"
             } == 0
           for: 5m
           labels:
