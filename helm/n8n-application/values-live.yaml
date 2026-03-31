@@ -76,10 +76,12 @@ resources:
     cpu: 250m
     memory: 512Mi
 
-# LIVE: Node.js memory tuning
+# LIVE: Node.js memory tuning + Prometheus metrics
 extraEnv:
   - name: NODE_OPTIONS
     value: "--max-old-space-size=768"
+  - name: N8N_METRICS
+    value: "true"
 
 autoscaling:
   enabled: false  # LIVE: Single-node, no autoscaling
@@ -139,7 +141,8 @@ persistence:
 networkPolicy:
   enabled: true
   allowedNamespaces:
-    - ingress  # MicroK8s ingress controller namespace
+    - ingress        # MicroK8s ingress controller namespace
+    - observability  # Prometheus scraping
 
 # External Secrets Configuration
 externalSecrets:
