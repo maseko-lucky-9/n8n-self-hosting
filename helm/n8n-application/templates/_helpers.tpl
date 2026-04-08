@@ -67,8 +67,13 @@ Prevents broken ingress on restart when TLS secret doesn't exist.
 */}}
 {{- define "n8n-application.validateTLS" -}}
 {{- if and .Values.ingress.enabled .Values.ingress.tls }}
-  {{- if not (index .Values.ingress.annotations "cert-manager.io/cluster-issuer") }}
-    {{- fail "ingress.tls is enabled but cert-manager.io/cluster-issuer annotation is not set. Either add the annotation or disable TLS." }}
+  {{- $hasCertManager := index .Values.ingress.annotations "cert-manager.io/cluster-issuer" }}
+  {{- $hasExistingSecret := false }}
+  {{- range .Values.ingress.tls }}
+    {{- if .secretName }}{{- $hasExistingSecret = true }}{{- end }}
+  {{- end }}
+  {{- if not (or $hasCertManager $hasExistingSecret) }}
+    {{- fail "ingress.tls is enabled but neither cert-manager.io/cluster-issuer annotation nor a secretName is set." }}
   {{- end }}
 {{- end }}
 {{- end }}
