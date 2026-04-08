@@ -76,11 +76,14 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Allow n8n application pods
+    # Allow n8n main and worker pods
     - from:
         - podSelector:
             matchLabels:
               service: n8n
+        - podSelector:
+            matchLabels:
+              service: n8n-worker
       ports:
         - protocol: TCP
           port: 5432
