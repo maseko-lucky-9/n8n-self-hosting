@@ -1,4 +1,5 @@
 {{- if .Values.monitoring.enabled }}
+# n8n application metrics
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -12,7 +13,8 @@ metadata:
 spec:
   selector:
     matchLabels:
-      service: n8n-svn
+      # GAP-014: Cleaned up from "n8n-svn" to match deployment label convention
+      service: n8n
   endpoints:
     - port: "5678"
       path: /metrics
@@ -21,4 +23,30 @@ spec:
   namespaceSelector:
     matchNames:
       - {{ .Release.Namespace }}
+{{- if and .Values.postgres.metrics .Values.postgres.metrics.enabled }}
+---
+# GAP-006: PostgreSQL metrics via postgres-exporter sidecar
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "n8n-application.fullname" . }}-postgres
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "n8n-application.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      service: postgres
+  endpoints:
+    - port: "9187"
+      path: /metrics
+      interval: {{ .Values.monitoring.scrapeInterval | default "30s" }}
+      scrapeTimeout: {{ .Values.monitoring.scrapeTimeout | default "10s" }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+{{- end }}
 {{- end }}

@@ -82,6 +82,16 @@ spec:
       ports:
         - protocol: TCP
           port: 5432
+    # GAP-006: Allow Prometheus to scrape postgres-exporter metrics
+    {{- if and .Values.postgres.metrics .Values.postgres.metrics.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 9187
+    {{- end }}
   egress:
     # Allow DNS resolution
     - to: []
