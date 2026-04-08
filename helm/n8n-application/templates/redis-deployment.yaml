@@ -1,0 +1,74 @@
+{{- if .Values.queue.enabled }}
+# GAP-012: Redis for n8n queue mode. In-memory only — no AOF/RDB persistence.
+# Job queue is ephemeral: in-flight executions that survive a Redis restart are
+# automatically retried by n8n workers. Do NOT use this Redis for any other purpose.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "n8n-application.fullname" . }}-redis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "n8n-application.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "n8n-application.name" . | quote }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: redis
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "n8n-application.name" . | quote }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: redis
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: "{{ .Values.queue.redis.image | default "redis:7-alpine" }}"
+          imagePullPolicy: IfNotPresent
+          command: ["redis-server"]
+          args:
+            - "--save"
+            - ""
+            - "--appendonly"
+            - "no"
+            - "--protected-mode"
+            - "no"
+            - "--loglevel"
+            - "warning"
+          ports:
+            - containerPort: 6379
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            {{- toYaml .Values.queue.redisResources | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+{{- end }}

@@ -49,6 +49,16 @@ spec:
           port: 443
         - protocol: TCP
           port: 80
+    {{- if .Values.queue.enabled }}
+    # GAP-012: Allow egress to in-namespace Redis for queue mode
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    {{- end }}
 ---
 # NetworkPolicy: PostgreSQL — only accepts traffic from n8n pods and backup jobs
 apiVersion: networking.k8s.io/v1
@@ -100,4 +110,92 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+{{- if .Values.queue.enabled }}
+---
+# GAP-012: Redis NetworkPolicy — only accepts connections from n8n main + workers
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "n8n-application.fullname" . }}-redis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "n8n-application.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: redis
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              service: n8n
+        - podSelector:
+            matchLabels:
+              service: n8n-worker
+      ports:
+        - protocol: TCP
+          port: 6379
+  egress:
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# GAP-012: Worker NetworkPolicy — egress to postgres, redis, DNS, and HTTPS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "n8n-application.fullname" . }}-worker
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "n8n-application.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      service: n8n-worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow Prometheus to scrape worker health metrics
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 5679
+  egress:
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+{{- end }}
 {{- end }}

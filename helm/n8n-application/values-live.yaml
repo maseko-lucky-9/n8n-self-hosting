@@ -202,6 +202,30 @@ backup:
           cpu: 50m
           memory: 64Mi
 
+# GAP-012: Queue mode — main + worker architecture with dedicated Redis.
+# Enables RollingUpdate strategy on main and horizontal worker scaling.
+queue:
+  enabled: true
+  redis:
+    image: redis:7-alpine
+    port: 6379
+  redisResources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m  # LimitRange floor
+      memory: 64Mi
+  worker:
+    replicas: 1
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 50m  # LimitRange floor
+        memory: 256Mi
+
 # LIVE: Monitoring & Alerting
 monitoring:
   enabled: true
