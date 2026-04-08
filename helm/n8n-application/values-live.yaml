@@ -49,14 +49,16 @@ service:
 ingress:
   enabled: false
 
-# LIVE: Production-grade resources for homelab
+# GAP-017: Right-sized based on 7-day baseline (actual: 9m CPU / 142Mi RAM).
+# Requests give 5x CPU headroom and 1.8x RAM headroom over observed idle.
+# Memory limit kept at 1Gi to cover NODE_OPTIONS --max-old-space-size=768 + overhead.
 resources:
   limits:
-    cpu: 1000m
+    cpu: 500m
     memory: 1Gi
   requests:
-    cpu: 250m
-    memory: 512Mi
+    cpu: 50m
+    memory: 256Mi
 
 # LIVE: Node.js memory tuning + Prometheus metrics
 extraEnv:
@@ -95,11 +97,11 @@ postgres:
     pullPolicy: IfNotPresent
   resources:
     limits:
-      cpu: 500m
+      cpu: 250m
       memory: 512Mi
     requests:
-      cpu: 250m
-      memory: 256Mi
+      cpu: 50m
+      memory: 128Mi
   persistence:
     storageClass: "microk8s-hostpath"  # LIVE: MicroK8s storage
     size: 20Gi
@@ -112,11 +114,11 @@ postgres:
       pullPolicy: IfNotPresent
     resources:
       limits:
-        cpu: 100m
-        memory: 128Mi
-      requests:
         cpu: 50m
         memory: 64Mi
+      requests:
+        cpu: 20m
+        memory: 32Mi
 
 # Database connection
 # LIVE: Passwords should be managed by Vault/ESO — do NOT put real passwords here
