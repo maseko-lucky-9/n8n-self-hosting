@@ -51,21 +51,20 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
     # [ACTION REQUIRED] Uncomment when cert-manager + real domain is configured:
-    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
-    # nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    # nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"  # not needed — using homelab-tls wildcard
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     nginx.ingress.kubernetes.io/limit-rps: "10"  # LIVE: Rate limiting (10 req/sec)
   hosts:
     - host: n8n.homelab.local
       paths:
         - path: /
           pathType: Prefix
-  # [ACTION REQUIRED] Uncomment when cert-manager + real domain is configured:
-  # tls:
-  #   - secretName: n8n-live-tls
-  #     hosts:
-  #       - n8n.homelab.local
-  tls: []
+  tls:
+    - secretName: homelab-tls
+      hosts:
+        - n8n.homelab.local
+
 
 # LIVE: Production-grade resources for homelab
 resources:
