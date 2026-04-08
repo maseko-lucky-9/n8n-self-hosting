@@ -50,8 +50,7 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-body-size: "0"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
-    # [ACTION REQUIRED] Uncomment when cert-manager + real domain is configured:
-    # cert-manager.io/cluster-issuer: "letsencrypt-prod"  # not needed — using homelab-tls wildcard
+    cert-manager.io/cluster-issuer: homelab-ca
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     nginx.ingress.kubernetes.io/limit-rps: "10"  # LIVE: Rate limiting (10 req/sec)
