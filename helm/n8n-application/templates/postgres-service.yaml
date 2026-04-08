@@ -1,3 +1,28 @@
+# GAP-015: Headless service required by StatefulSet spec.serviceName.
+# Provides stable per-pod DNS: <pod>.postgres-headless.n8n-live.svc.cluster.local
+# Application connections still use the ClusterIP postgres-service below.
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    service: postgres-headless
+    app.kubernetes.io/name: {{ include "n8n-application.name" . | quote }}
+    app.kubernetes.io/component: postgres
+  name: postgres-headless
+  namespace: {{ .Release.Namespace }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: "5432"
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: {{ include "n8n-application.name" . | quote }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: postgres
+---
 apiVersion: v1
 kind: Service
 metadata:

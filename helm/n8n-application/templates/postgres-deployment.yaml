@@ -1,5 +1,12 @@
+# GAP-015: Postgres runs as a StatefulSet for stable identity, ordered lifecycle,
+# and correct Kubernetes workload classification for a stateful database.
+#
+# PVC note: The data volume is referenced via `volumes` (not volumeClaimTemplates)
+# to avoid a data migration of the existing postgres-pvc. For a single-replica
+# homelab this is functionally equivalent. Future work: adopt the PVC into
+# volumeClaimTemplates once a proper migration window is available.
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   labels:
     app.kubernetes.io/name: {{ include "n8n-application.name" . | quote }}
@@ -9,13 +16,15 @@ metadata:
   namespace: {{ .Release.Namespace }}
 spec:
   replicas: 1
+  serviceName: postgres-headless
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "n8n-application.name" . | quote }}
       app.kubernetes.io/instance: {{ .Release.Name }}
       app.kubernetes.io/component: postgres
-  strategy:
-    type: Recreate
   template:
     metadata:
       labels:
@@ -149,7 +158,6 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
         {{- end }}
-      restartPolicy: Always
       volumes:
         - name: postgresql-pv
           persistentVolumeClaim:
