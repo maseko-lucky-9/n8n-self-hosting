@@ -89,10 +89,10 @@ Write the `n8n-readonly` policy that grants ESO read access to N8N secrets:
 ```bash
 kubectl exec -n vault vault-0 -c vault -- \
   sh -c 'VAULT_ADDR=http://127.0.0.1:8200 vault policy write n8n-readonly - <<EOF
-path "secret/data/n8n/+/*" {
+path "kv/data/secret/n8n/+/*" {
   capabilities = ["read"]
 }
-path "secret/metadata/n8n/+/*" {
+path "kv/metadata/secret/n8n/+/*" {
   capabilities = ["read", "list"]
 }
 path "auth/token/lookup-self" {
@@ -115,22 +115,27 @@ kubectl exec -n vault vault-0 -- vault policy read n8n-readonly
 
 ```bash
 kubectl exec -n vault vault-0 -- vault write \
-  auth/kubernetes/role/n8n-live \
-  bound_service_account_names=n8n-self-hosting \
+  auth/kubernetes/role/n8n-readonly \
+  bound_service_account_names=external-secrets-n8n \
   bound_service_account_namespaces=n8n-live \
   policies=n8n-readonly \
-  ttl=1h
+  ttl=1h \
+  max_ttl=24h
 
 # Verify
-kubectl exec -n vault vault-0 -- vault read auth/kubernetes/role/n8n-live
+kubectl exec -n vault vault-0 -- vault read auth/kubernetes/role/n8n-readonly
 ```
+
+> **Note:** Two Kubernetes auth roles exist for n8n:
+> - `n8n-readonly` — binds SA `external-secrets-n8n` for ESO secret syncing (this step)
+> - `n8n-live` — binds SA `n8n-application` for direct pod access to Vault (used by Vault Agent Injector if enabled)
 
 ---
 
 ## Step 6 — Store Postgres Secrets in Vault (one-time, update on rotation)
 
 ```bash
-kubectl exec -n vault vault-0 -- vault write secret/data/n8n/live/postgres \
+kubectl exec -n vault vault-0 -- vault kv put kv/secret/n8n/live/postgres \
   data='{"POSTGRES_USER":"n8n_live","POSTGRES_PASSWORD":"<SECURE_PASS>","POSTGRES_DB":"n8n","POSTGRES_NON_ROOT_USER":"n8n_app","POSTGRES_NON_ROOT_PASSWORD":"<SECURE_PASS_2>"}'
 ```
 
@@ -140,6 +145,21 @@ kubectl exec -n vault vault-0 -- vault read secret/data/n8n/live/postgres
 ```
 
 > Use `openssl rand -base64 32` to generate secure passwords.
+
+---
+
+## Step 6b — Store App Secrets in Vault (one-time)
+
+```bash
+# Extract the existing encryption key from the running n8n pod first:
+kubectl exec -n n8n-live <n8n-pod> -c n8n -- cat /home/node/.n8n/config
+
+kubectl exec -n vault vault-0 -- vault kv put kv/secret/n8n/live/app \
+  N8N_ENCRYPTION_KEY="<EXTRACTED_KEY>" \
+  N8N_WEBHOOK_URL="https://n8n.homelab.local"
+```
+
+> **CRITICAL:** Use the EXTRACTED encryption key, not a new one. Generating a new key will make all existing workflow credentials unrecoverable.
 
 ---
 
@@ -249,14 +269,14 @@ externalSecrets:
   enabled: true
   refreshInterval: "1h"
   vault:
-    address: "http://vault.vault.svc.cluster.local:8200"
-    kvPath: "secret"
+    address: "https://vault.vault.svc.cluster.local:8200"
+    kvPath: "kv"
     kvVersion: "v2"
     secretPath: "n8n/live/postgres"
+    appSecretPath: "secret/n8n/live/app"
     auth:
       mountPath: "kubernetes"
-      role: "n8n-live"
-      serviceAccount: ""   # defaults to Helm release SA
+      role: "n8n-readonly"
+      serviceAccount: "external-secrets-n8n"
 ```
 
-To enable TLS (production hardening), update `address` to `https://vault.vault.svc.cluster.local:8200` and ensure cert-manager is configured in the Vault Helm chart.

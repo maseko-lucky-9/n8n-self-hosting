@@ -96,7 +96,7 @@ To prevent this issue in the future:
 ## Current Configuration
 
 - PostgreSQL Version: 15.3
-- Database: n8n_dev
+- Database: n8n
 - Persistent Volume: postgresql-pv
 - Namespace: n8n-local
 

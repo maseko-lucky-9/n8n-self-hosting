@@ -4,7 +4,7 @@
 
 **Error:** "FATAL: role 'postgres' does not exist"
 
-**Root Cause:** The n8n-database Helm chart had critical configuration mismatches:
+**Root Cause:** The n8n-application Helm chart had critical configuration mismatches:
 
 1. Secret template referenced undefined values keys (`postgres.user`, `postgres.password`, `postgres.database`)
 2. Values file defined keys under `postgres.auth.*` namespace - mismatch caused empty credentials
@@ -18,7 +18,7 @@
 
 ### 1. Fixed Secret Template Key Mapping
 
-**File:** `helm/n8n-database/templates/postgres-secret.yaml`
+**File:** `helm/n8n-application/templates/postgres-secret.yaml`
 
 **Change:** Updated template variable references to match values-local.yaml structure
 
@@ -40,7 +40,7 @@ POSTGRES_PASSWORD: {{ .Values.postgres.auth.password | b64enc }}
 
 ### 2. Fixed Service Selector Duplication
 
-**File:** `helm/n8n-database/templates/postgres-service.yaml`
+**File:** `helm/n8n-application/templates/postgres-service.yaml`
 
 **Change:** Removed duplicate selector block and unified label selection
 
@@ -58,17 +58,17 @@ selector:
   app.kubernetes.io/instance: {{ .Release.Name }}
 ```
 
-**Impact:** Service now properly discovers and routes to postgres StatefulSet pods
+**Impact:** Service now properly discovers and routes to postgres Deployment pods
 
 ---
 
 ### 3. Enhanced PostgreSQL Initialization
 
-**File:** `helm/n8n-database/templates/postgres-configmap.yaml`
+**File:** `helm/n8n-application/templates/postgres-configmap.yaml`
 
 **Changes:**
 
-- Renamed ConfigMap to use Helm naming convention: `{{ include "n8n-database.fullname" . }}-init-data`
+- Renamed ConfigMap to use Helm naming convention: `{{ include "n8n-application.fullname" . }}-init-data`
 - Improved initialization script with safety checks
 - Added check for superuser to prevent duplicate user creation attempts
 - Enhanced error messages
@@ -81,9 +81,9 @@ selector:
 
 ---
 
-### 4. Updated StatefulSet Configuration
+### 4. Updated Deployment Configuration
 
-**File:** `helm/n8n-database/templates/postgres-statefulset.yaml`
+**File:** `helm/n8n-application/templates/postgres-deployment.yaml`
 
 **Changes Added:**
 
@@ -93,12 +93,12 @@ a) **New Environment Variables:**
 - name: POSTGRES_NON_ROOT_USER
   valueFrom:
     secretKeyRef:
-      name: { { include "n8n-database.secretName" . } }
+      name: { { include "n8n-application.secretName" . } }
       key: POSTGRES_USER
 - name: POSTGRES_NON_ROOT_PASSWORD
   valueFrom:
     secretKeyRef:
-      name: { { include "n8n-database.secretName" . } }
+      name: { { include "n8n-application.secretName" . } }
       key: POSTGRES_PASSWORD
 ```
 
@@ -119,7 +119,7 @@ c) **ConfigMap Volume:**
 volumes:
 - name: init-script
   configMap:
-    name: {{ include "n8n-database.fullname" . }}-init-data
+    name: {{ include "n8n-application.fullname" . }}-init-data
     defaultMode: 0755
 ```
 
@@ -135,7 +135,7 @@ d) **Improved Probe Configuration:**
 
 ### 5. Updated Development Values
 
-**File:** `helm/n8n-database/values-local.yaml`
+**File:** `helm/n8n-application/values-local.yaml`
 
 **Changes:**
 
@@ -171,10 +171,10 @@ auth:
 
 ## Files Modified
 
-- ✅ `helm/n8n-database/templates/postgres-secret.yaml`
-- ✅ `helm/n8n-database/templates/postgres-service.yaml`
-- ✅ `helm/n8n-database/templates/postgres-configmap.yaml`
-- ✅ `helm/n8n-database/templates/postgres-statefulset.yaml`
+- ✅ `helm/n8n-application/templates/postgres-secret.yaml`
+- ✅ `helm/n8n-application/templates/postgres-service.yaml`
+- ✅ `helm/n8n-application/templates/postgres-configmap.yaml`
+- ✅ `helm/n8n-application/templates/postgres-deployment.yaml`
 - ✅ `helm/n8n-application/values-local.yaml`
 - ✅ `helm/n8n-application/values-live.yaml`
 
@@ -185,17 +185,17 @@ auth:
 1. **Deploy the fixes:**
 
    ```bash
-   # Delete existing postgres pod to force re-initialization
-   kubectl delete statefulset postgres-n8n-database -n n8n-local
+   # Delete existing postgres deployment to force re-initialization
+   kubectl delete deployment postgres -n n8n-local
 
-   # Re-apply or reinstall the Helm chart
-   helm upgrade --install n8n-database helm/n8n-database -f helm/n8n-database/values-local.yaml -n n8n-local
+   # Re-apply or reinstall the unified Helm chart
+   helm upgrade --install n8n-application helm/n8n-application -f helm/n8n-application/values-local.yaml -n n8n-local
    ```
 
 2. **Monitor pod startup:**
 
    ```bash
-   kubectl logs -f -n n8n-local postgres-n8n-database-0
+   kubectl logs -f -n n8n-local -l app=postgres
    ```
 
 3. **Update live passwords:**
@@ -210,8 +210,8 @@ auth:
 
 ## Security Recommendations
 
-1. ⚠️ **Never commit passwords** - Use external secrets management (AWS Secrets Manager, HashiCorp Vault, etc.)
-2. ✅ **Use StatefulSet** - Preserves data across pod restarts (already configured)
+1. ⚠️ **Never commit passwords** - Use HashiCorp Vault via External Secrets Operator (ESO)
+2. ✅ **Use PVC with Deployment** - Data is persisted via PersistentVolumeClaim across pod restarts
 3. ✅ **Enable Network Policies** - Restrict traffic (configured in prod values)
 4. ✅ **Pod Security Policies** - Enforce security standards (configured in prod values)
 5. ✅ **Resource Limits** - Prevent resource exhaustion (configured)

@@ -1,81 +1,58 @@
 # Network Exposure Guide for n8n Application
 
-This guide explains how to properly expose your n8n application to the network using Kong ingress controller.
+This guide explains how to properly expose your n8n application to the network using the MicroK8s nginx ingress controller.
 
 ## Prerequisites
 
-1. **Kong Ingress Controller**: Ensure Kong is installed and running in your cluster
-2. **Domain Name**: You need a domain name pointing to your cluster's external IP
-3. **TLS Certificate**: SSL certificate for your domain (Let's Encrypt recommended)
+1. **MicroK8s nginx Ingress Controller**: Ensure the `ingress` addon is enabled in MicroK8s (`microk8s enable ingress`)
+2. **Domain Name**: `n8n.homelab.local` (resolved via local DNS/hosts)
+3. **TLS Certificate**: Wildcard cert `homelab-tls` secret in the target namespace
 
 ## Configuration Steps
 
-### 1. Update Domain Configuration
+### 1. Ingress Architecture
 
-Edit `helm/n8n-application/values-local.yaml` and replace `n8n.yourdomain.com` with your actual domain:
+The live ingress is **not** managed by the Helm chart. The Helm chart's ingress is disabled in the live environment (`ingress.enabled: false` in `values-live.yaml`). The authoritative ingress resource is:
+
+```
+homelab-infra/ingress/manifests/n8n-ingress.yaml
+```
+
+This manifest uses:
+
+```yaml
+ingressClassName: public   # MicroK8s nginx ingress addon
+# Host: n8n.homelab.local
+# TLS secret: homelab-tls  (wildcard cert, pre-provisioned)
+# Annotations: nginx.ingress.kubernetes.io/auth-type: basic
+```
+
+For local/dev environments, you may enable the Helm-managed ingress in `values-local.yaml`:
 
 ```yaml
 ingress:
+  enabled: true
+  ingressClassName: public
   hosts:
-    - host: n8n.yourcompany.com # Replace with your actual domain
+    - host: n8n.homelab.local
       paths:
         - path: /
           pathType: Prefix
   tls:
-    - secretName: n8n-tls
+    - secretName: homelab-tls
       hosts:
-        - n8n.yourcompany.com # Replace with your actual domain
+        - n8n.homelab.local
 ```
 
-### 2. Create TLS Secret
+### 2. TLS Certificate
 
-You have two options for TLS certificates:
-
-#### Option A: Let's Encrypt with cert-manager (Recommended)
-
-Install cert-manager if not already installed:
+The homelab uses a pre-provisioned wildcard TLS secret named `homelab-tls`. Ensure the secret exists in the target namespace before deploying:
 
 ```bash
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.0/cert-manager.yaml
+kubectl get secret homelab-tls -n n8n-live
 ```
 
-Create a ClusterIssuer for Let's Encrypt:
-
-```yaml
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-prod
-spec:
-  acme:
-    server: https://acme-v02.api.letsencrypt.org/directory
-    email: your-email@yourcompany.com
-    privateKeySecretRef:
-      name: letsencrypt-prod
-    solvers:
-      - http01:
-          ingress:
-            class: kong
-```
-
-Then update your ingress to use cert-manager:
-
-```yaml
-metadata:
-  annotations:
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
-```
-
-#### Option B: Manual TLS Secret
-
-If you have your own certificate:
-
-```bash
-kubectl create secret tls n8n-tls \
-  --cert=path/to/your/certificate.crt \
-  --key=path/to/your/private.key \
-  --namespace=n8n-local
-```
+If it is missing, copy it from the source namespace or re-provision via your certificate management workflow.
 
 ### 3. Deploy the Application
 
@@ -105,17 +82,17 @@ kubectl describe ingress n8n-app-ingress -n n8n-local
 
 ### 5. Configure DNS
 
-Point your domain to your cluster's external IP address. You can find this IP by:
+Point `n8n.homelab.local` to your MicroK8s node IP. You can find the ingress controller's external IP by:
 
 ```bash
-kubectl get svc -n kong-system kong-proxy
+kubectl get svc -n ingress ingress-nginx-controller
 ```
 
 ## Network Access
 
 Once configured, your n8n application will be accessible at:
 
-- **HTTPS**: `https://n8n.yourdomain.com`
+- **HTTPS**: `https://n8n.homelab.local`
 - **HTTP**: Will redirect to HTTPS
 
 ## Security Features
@@ -132,22 +109,22 @@ The current configuration includes:
 
 ### Common Issues
 
-1. **Ingress not working**: Check Kong controller status
-2. **TLS errors**: Verify certificate secret exists and is valid
-3. **DNS resolution**: Ensure domain points to correct IP
+1. **Ingress not working**: Check MicroK8s nginx ingress controller status (`kubectl get pods -n ingress`)
+2. **TLS errors**: Verify `homelab-tls` secret exists in the target namespace and contains a valid wildcard cert
+3. **DNS resolution**: Ensure `n8n.homelab.local` resolves to your MicroK8s node IP
 4. **Service connectivity**: Verify n8n service is running
 
 ### Debug Commands
 
 ```bash
 # Check ingress status
-kubectl describe ingress -n n8n-local
+kubectl describe ingress -n n8n-live
 
-# Check Kong logs
-kubectl logs -n kong-system -l app=kong
+# Check nginx ingress controller logs
+kubectl logs -n ingress -l app.kubernetes.io/name=ingress-nginx
 
 # Test service connectivity
-kubectl port-forward -n n8n-local svc/n8n 5678:5678
+kubectl port-forward -n n8n-live svc/n8n 5678:5678
 ```
 
 ## Production Considerations

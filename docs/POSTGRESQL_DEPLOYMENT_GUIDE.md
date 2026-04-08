@@ -17,7 +17,7 @@ The PostgreSQL pod error "FATAL: role 'postgres' does not exist" has been resolv
 - ✅ Added `POSTGRES_NON_ROOT_USER` secret key (references `appUsername`)
 - ✅ Added `POSTGRES_NON_ROOT_PASSWORD` secret key (references `appPassword`)
 
-#### 3. **postgres-statefulset.yaml**
+#### 3. **postgres-deployment.yaml** (PostgreSQL runs as a Deployment, not a StatefulSet)
 
 - ✅ Updated `POSTGRES_NON_ROOT_USER` env var to use new secret key
 - ✅ Updated `POSTGRES_NON_ROOT_PASSWORD` env var to use new secret key
@@ -50,28 +50,30 @@ POSTGRES_NON_ROOT_USER = "n8n"          ← Different app user
 ### Step 1: Clean Up Existing Pod
 
 ```bash
-# Delete the existing StatefulSet to force re-initialization
-kubectl delete statefulset postgres-n8n-database -n n8n-local --ignore-not-found
+# Delete the existing Deployment to force re-initialization
+kubectl delete deployment postgres -n n8n-local --ignore-not-found
 
 # Wait for pod to be deleted
 kubectl get pods -n n8n-local -w
 
 # Optional: Delete PVC to start fresh (WARNING: deletes data)
-# kubectl delete pvc postgres-storage-postgres-n8n-database-0 -n n8n-local
+# kubectl delete pvc postgresql-pv -n n8n-local
 ```
 
 ### Step 2: Reinstall Helm Chart
 
+PostgreSQL is now part of the unified `helm/n8n-application` chart. There is no separate `helm/n8n-database` chart.
+
 ```bash
 # Option A: Fresh install
-helm install n8n-database helm/n8n-database \
-  -f helm/n8n-database/values-local.yaml \
+helm install n8n-application helm/n8n-application \
+  -f helm/n8n-application/values-local.yaml \
   -n n8n-local \
   --create-namespace
 
 # Option B: Upgrade existing
-helm upgrade --install n8n-database helm/n8n-database \
-  -f helm/n8n-database/values-local.yaml \
+helm upgrade --install n8n-application helm/n8n-application \
+  -f helm/n8n-application/values-local.yaml \
   -n n8n-local \
   --create-namespace
 ```
@@ -83,7 +85,7 @@ helm upgrade --install n8n-database helm/n8n-database \
 kubectl get pods -n n8n-local -w
 
 # Check pod logs for initialization messages
-kubectl logs -f -n n8n-local postgres-n8n-database-0
+kubectl logs -f -n n8n-local -l app=postgres
 
 # Expected log sequence:
 # 1. "database system is ready to accept connections"
@@ -94,8 +96,10 @@ kubectl logs -f -n n8n-local postgres-n8n-database-0
 ### Step 4: Verify PostgreSQL Initialization
 
 ```bash
-# Check postgres role exists
-kubectl exec -it -n n8n-local postgres-n8n-database-0 -- \
+# Check postgres role exists (get pod name first)
+PGPOD=$(kubectl get pod -n n8n-local -l app=postgres -o jsonpath='{.items[0].metadata.name}')
+
+kubectl exec -it -n n8n-local "$PGPOD" -- \
   psql -U postgres -d n8n -c "\du"
 
 # Expected output: Should show both 'postgres' and 'n8n' users
@@ -103,11 +107,11 @@ kubectl exec -it -n n8n-local postgres-n8n-database-0 -- \
 # n8n      | Create DB, Create Role    |
 
 # Check database exists
-kubectl exec -it -n n8n-local postgres-n8n-database-0 -- \
+kubectl exec -it -n n8n-local "$PGPOD" -- \
   psql -U postgres -c "\l"
 
 # Connect as n8n user (app user)
-kubectl exec -it -n n8n-local postgres-n8n-database-0 -- \
+kubectl exec -it -n n8n-local "$PGPOD" -- \
   psql -U n8n -d n8n -c "SELECT version();"
 ```
 
@@ -131,10 +135,10 @@ kubectl run -it --rm --image=postgres:15-alpine --restart=Never -n n8n-local -- 
 
 ```bash
 # Check pod events for errors
-kubectl describe pod -n n8n-local postgres-n8n-database-0
+kubectl describe pod -n n8n-local -l app=postgres
 
 # Check pod logs for initialization failures
-kubectl logs -n n8n-local postgres-n8n-database-0
+kubectl logs -n n8n-local -l app=postgres
 
 # Look for these common errors and solutions:
 # 1. "permission denied" on PGDATA → PVC permissions issue
@@ -146,13 +150,14 @@ kubectl logs -n n8n-local postgres-n8n-database-0
 
 ```bash
 # Check if PGDATA directory was properly initialized
-kubectl exec -it -n n8n-local postgres-n8n-database-0 -- ls -la /var/lib/postgresql/data/pgdata/
+PGPOD=$(kubectl get pod -n n8n-local -l app=postgres -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -it -n n8n-local "$PGPOD" -- ls -la /var/lib/postgresql/data/pgdata/
 
 # Should see: PG_VERSION, pg_wal, pg_xact, etc.
 
 # If missing, delete PVC and restart
-kubectl delete pvc postgres-storage-postgres-n8n-database-0 -n n8n-local
-kubectl delete pod postgres-n8n-database-0 -n n8n-local
+kubectl delete pvc postgresql-pv -n n8n-local
+kubectl rollout restart deployment postgres -n n8n-local
 ```
 
 ### If Init Script Fails
@@ -160,10 +165,11 @@ kubectl delete pod postgres-n8n-database-0 -n n8n-local
 ```bash
 # Check if ConfigMap exists and has correct script
 kubectl get configmap -n n8n-local
-kubectl describe configmap n8n-database-init-data -n n8n-local
+kubectl describe configmap -n n8n-local -l app.kubernetes.io/name=n8n-application
 
 # Verify init script permissions (should be 0755)
-kubectl exec -it -n n8n-local postgres-n8n-database-0 -- \
+PGPOD=$(kubectl get pod -n n8n-local -l app=postgres -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -it -n n8n-local "$PGPOD" -- \
   ls -la /docker-entrypoint-initdb.d/
 ```
 
@@ -181,26 +187,14 @@ kubectl exec -it -n n8n-local postgres-n8n-database-0 -- \
 ### Live Environment (Updated in values-live.yaml)
 
 - **⚠️ MUST USE VAULT/ESO — NEVER COMMIT PLAINTEXT PASSWORDS**
-- Use External Secrets Operator (ESO) with HashiCorp Vault
-- Example for live update:
-
-```bash
-# Generate secure passwords
-SUPERUSER_PASS=$(openssl rand -base64 32)
-APP_USER_PASS=$(openssl rand -base64 32)
-
-# Pass via --set (until ESO is configured)
-helm upgrade --install n8n-database helm/n8n-database \
-  --set postgres.auth.password="$SUPERUSER_PASS" \
-  --set postgres.auth.appPassword="$APP_USER_PASS" \
-  -n n8n-live
-```
+- Passwords are managed by HashiCorp Vault via External Secrets Operator (ESO)
+- Do not pass credentials via `--set` in live; use ExternalSecret resources that sync from Vault
 
 ---
 
 ## Verification Checklist
 
-- [ ] Pod is Running and Ready (2/2)
+- [ ] Pod is Running and Ready
 - [ ] postgres role exists (superuser)
 - [ ] n8n role exists (app user)
 - [ ] n8n database exists

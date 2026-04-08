@@ -8,7 +8,7 @@ The error "permission denied for schema public" occurs when the n8n user doesn't
 
 This typically happens when:
 
-1. The n8n user (`n8n_developer`) doesn't have proper permissions on the `public` schema
+1. The n8n user (`n8n_live` in live env) doesn't have proper permissions on the `public` schema
 2. The database initialization script doesn't grant all required permissions
 3. The database host configuration is incorrect
 4. The user exists but lacks specific schema permissions
@@ -99,10 +99,10 @@ kubectl logs <n8n-pod-name> -n n8n-local | grep -i "database"
 
 ```bash
 # Connect to PostgreSQL pod
-kubectl exec -it <postgres-pod-name> -n n8n-local -- psql -U n8n_dev -d n8n_dev
+kubectl exec -it <postgres-pod-name> -n n8n-local -- psql -U postgres -d n8n
 
 # Check user permissions
-\du n8n_developer
+\du n8n_live
 ```
 
 ## Troubleshooting
@@ -118,13 +118,13 @@ kubectl exec -it <postgres-pod-name> -n n8n-local -- psql -U n8n_dev -d n8n_dev
 2. **Manually grant permissions:**
 
    ```bash
-   kubectl exec -it <postgres-pod-name> -n n8n-local -- psql -U n8n_dev -d n8n_dev -c "
-   GRANT USAGE ON SCHEMA public TO n8n_developer;
-   GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO n8n_developer;
-   GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO n8n_developer;
-   GRANT CREATE ON SCHEMA public TO n8n_developer;
-   ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO n8n_developer;
-   ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO n8n_developer;
+   kubectl exec -it <postgres-pod-name> -n n8n-local -- psql -U postgres -d n8n -c "
+   GRANT USAGE ON SCHEMA public TO n8n_live;
+   GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO n8n_live;
+   GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO n8n_live;
+   GRANT CREATE ON SCHEMA public TO n8n_live;
+   ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO n8n_live;
+   ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO n8n_live;
    "
    ```
 
@@ -146,12 +146,12 @@ To prevent this issue in the future:
 
 ## Current Configuration
 
-- **Database**: n8n_dev
-- **User**: n8n_developer
+- **Database**: n8n
+- **User**: n8n_live (live env); n8n (local/dev env)
 - **Schema**: public
 - **Host**: postgres-service
 - **Port**: 5432
-- **Namespace**: n8n-local
+- **Namespace**: n8n-live / n8n-local
 
 ## Next Steps
 

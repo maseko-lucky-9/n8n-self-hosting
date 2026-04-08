@@ -19,7 +19,30 @@ on:
           - live
 
 jobs:
+  validate:
+    runs-on: self-hosted
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint helm chart (local values)
+        run: helm lint helm/n8n-application -f helm/n8n-application/values-local.yaml
+
+      - name: Lint helm chart (live values)
+        run: helm lint helm/n8n-application -f helm/n8n-application/values-live.yaml
+
+      - name: Template helm chart (local values)
+        run: helm template n8n-test helm/n8n-application -f helm/n8n-application/values-local.yaml
+
+      - name: Template helm chart (live values)
+        run: helm template n8n-test helm/n8n-application -f helm/n8n-application/values-live.yaml
+
   deploy:
+    needs: [validate]
     runs-on: self-hosted
     timeout-minutes: 10
     steps:
