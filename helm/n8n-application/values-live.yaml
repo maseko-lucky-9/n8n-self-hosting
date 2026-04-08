@@ -178,6 +178,29 @@ backup:
   schedule: "0 2 * * *"  # Daily at 2 AM
   retention: 30  # days
   storageSize: 10Gi
+  # GAP-007: Off-cluster backup via rclone to S3-compatible target.
+  # Prerequisites before enabling:
+  #   1. Populate Vault: vault kv put kv/secret/n8n/live/backup-offcluster \
+  #        RCLONE_S3_ACCESS_KEY_ID=<key> RCLONE_S3_SECRET_ACCESS_KEY=<secret>
+  #   2. Set endpoint, bucket, path below
+  #   3. Set enabled: true and helm upgrade
+  offCluster:
+    enabled: false
+    endpoint: ""      # e.g. "https://s3.us-west-002.backblazeb2.com" or "http://minio.homelab.local:9000"
+    bucket: ""        # e.g. "homelab-n8n-backups"
+    path: "n8n"       # path prefix within bucket
+    credentialsSecret: "n8n-backup-offcluster-secret"  # created by ESO (see external-secret.yaml)
+    rclone:
+      image:
+        repository: rclone/rclone
+        tag: "1.68"
+      resources:
+        limits:
+          cpu: 200m
+          memory: 128Mi
+        requests:
+          cpu: 50m
+          memory: 64Mi
 
 # LIVE: Monitoring & Alerting
 monitoring:

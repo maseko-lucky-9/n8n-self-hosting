@@ -185,14 +185,15 @@
 | Recommended Fix | Add `postgres-exporter` sidecar to postgres Deployment; expose port 9187; add ServiceMonitor endpoint; add 4 PrometheusRule alerts |
 | Effort | Medium |
 
-### GAP-007 — Reliability · HIGH · P2 · Deferred
+### GAP-007 — Reliability · HIGH · P2 · Implemented (2026-04-08)
 
 | Field | Value |
 |---|---|
 | Problem | Backup CronJob writes only to an in-cluster PVC |
 | Why It Matters | Node failure, storage class failure, or accidental PVC deletion destroys all backups alongside the primary data |
-| Recommended Fix | Add `rclone` or `restic` step to CronJob to copy dumps to an S3-compatible target (e.g., MinIO or Backblaze B2) |
+| Fix Applied | Added `rclone/rclone:1.68` off-cluster upload step to CronJob. When `backup.offCluster.enabled: true`: pg-backup runs as init container (pg_dump → PVC + writes `.latest-backup`), rclone-upload runs as main container (copies to S3-compatible target via env-var config). ExternalSecret pulls credentials from Vault at `kv/secret/n8n/live/backup-offcluster`. Feature-flagged off by default — enable once credentials are in Vault. |
 | Effort | Medium |
+| Activation | Set `backup.offCluster.enabled: true`, `endpoint`, `bucket` in values-live.yaml after populating Vault path. |
 
 ### GAP-008 — Config Management · HIGH · P1 · Implemented
 
