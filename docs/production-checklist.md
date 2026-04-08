@@ -26,8 +26,9 @@
 
 ## Memory & OOM Prevention (Pillar 2) — Completed
 
-- [x] n8n resources: 250m/512Mi requests, 1000m/1Gi limits
-- [x] PostgreSQL resources: 250m/256Mi requests, 500m/512Mi limits (was missing CPU limit)
+- [x] n8n resources: 50m/500m CPU, 256Mi/1Gi RAM (right-sized 2026-04-08; limit kept for NODE_OPTIONS heap)
+- [x] PostgreSQL resources: 50m/250m CPU, 128Mi/512Mi RAM (right-sized 2026-04-08)
+- [x] Worker resources: 50m/500m CPU, 256Mi/512Mi RAM
 - [x] `NODE_OPTIONS=--max-old-space-size=768` for Node.js heap cap
 - [x] `EXECUTIONS_DATA_PRUNE=true` with 7-day max age (168 hours)
 - [x] `EXECUTIONS_DATA_PRUNE_MAX_COUNT=50000` cap
@@ -69,12 +70,14 @@
 - [x] Backup retention: 30-day auto-prune
 - [x] Backup PVC: 10Gi dedicated storage
 - [x] `/tmp` emptyDir mounted when `readOnlyRootFilesystem: true` (prevents crash on temp file writes)
-- [x] Deployment strategy: `Recreate` for n8n (correct for single-replica with PVC)
+- [x] n8n deployment strategy: `RollingUpdate` (`maxSurge:1, maxUnavailable:0`) — safe with queue mode Redis leader election
+- [x] Queue mode active: `EXECUTIONS_MODE=queue`, Redis in-namespace, worker Deployment (concurrency 10)
+- [x] Postgres now a StatefulSet (`n8n-application-postgres-0`) with stable identity and ordered lifecycle
 
 ## Post-Deployment Verification
 
-- [ ] Verify n8n pod is `Running` and `Ready`: `kubectl get pods -n n8n-live`
-- [ ] Verify PostgreSQL pod is `Running` and `Ready`
+- [ ] Verify all pods are `Running` and `Ready`: `kubectl get pods -n n8n-live`
+  - `n8n-*` (main), `n8n-application-postgres-0`, `n8n-application-redis-*`, `n8n-application-worker-*`
 - [ ] Verify n8n health endpoint: `kubectl exec -n n8n-live deploy/n8n -- wget -qO- http://localhost:5678/healthz`
 - [ ] Verify Ingress and TLS: `curl -I https://<your-domain>`
 - [ ] Verify NetworkPolicy blocks unauthorized traffic
@@ -82,4 +85,5 @@
 - [ ] Verify ServiceMonitor is discovered: check Prometheus targets page
 - [ ] Verify Grafana dashboard loads under "n8n Self-Hosted"
 - [ ] Verify backup CronJob: `kubectl get cronjob -n n8n-live`
-- [ ] Run a test workflow in n8n to confirm end-to-end functionality
+- [ ] Verify worker is connected to queue: `kubectl logs -n n8n-live -l service=n8n-worker -c n8n-worker --tail=5` (expect "n8n worker is now ready")
+- [ ] Run a test workflow in n8n to confirm end-to-end execution via queue

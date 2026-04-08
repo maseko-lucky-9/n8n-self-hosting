@@ -6,7 +6,9 @@
 |---|---|
 | Check all pods | `sudo microk8s kubectl get pods -n n8n-live` |
 | Check n8n logs | `sudo microk8s kubectl logs -n n8n-live deploy/n8n -f` |
-| Check postgres logs | `sudo microk8s kubectl logs -n n8n-live -l app.kubernetes.io/component=postgres -f` |
+| Check postgres logs | `sudo microk8s kubectl logs -n n8n-live n8n-application-postgres-0 -c postgres -f` |
+| Check worker logs | `sudo microk8s kubectl logs -n n8n-live -l service=n8n-worker -c n8n-worker -f` |
+| Check Redis logs | `sudo microk8s kubectl logs -n n8n-live -l app.kubernetes.io/component=redis -f` |
 | Describe n8n pod | `sudo microk8s kubectl describe pod -n n8n-live -l service=n8n` |
 | Check events | `sudo microk8s kubectl get events -n n8n-live --sort-by='.lastTimestamp'` |
 | Check PVC usage | `sudo microk8s kubectl exec -n n8n-live deploy/n8n -- df -h /home/node/.n8n` |
@@ -41,32 +43,38 @@ sudo microk8s kubectl delete pod -n n8n-live -l service=n8n --force --grace-peri
 **When:** Database connectivity issues, after Vault secret rotation.
 
 ```bash
-# Restart postgres deployment
-sudo microk8s kubectl rollout restart deployment -n n8n-live -l app.kubernetes.io/component=postgres
+# Restart postgres StatefulSet (pod will be n8n-application-postgres-0)
+sudo microk8s kubectl rollout restart statefulset/n8n-application-postgres -n n8n-live
 
-# IMPORTANT: Restart n8n AFTER postgres is ready
+# IMPORTANT: Restart n8n main + workers AFTER postgres is ready
 sudo microk8s kubectl wait --for=condition=ready pod -n n8n-live -l app.kubernetes.io/component=postgres --timeout=120s
 sudo microk8s kubectl rollout restart deployment/n8n -n n8n-live
+sudo microk8s kubectl rollout restart deployment/n8n-application-worker -n n8n-live
 ```
 
 ---
 
 ## 3. Scale n8n
 
-**When:** Increasing capacity or shutting down for maintenance.
+**When:** Increasing capacity (workers) or shutting down for maintenance.
 
 ```bash
-# Scale up
-sudo microk8s kubectl scale deployment/n8n -n n8n-live --replicas=2
+# Scale workers up (safe — workers are stateless, pick jobs from Redis queue)
+sudo microk8s kubectl scale deployment/n8n-application-worker -n n8n-live --replicas=2
 
-# Scale down (maintenance)
+# Scale workers down (in-flight jobs complete within terminationGracePeriodSeconds=120s)
+sudo microk8s kubectl scale deployment/n8n-application-worker -n n8n-live --replicas=1
+
+# Maintenance shutdown (scale main + workers to 0, keep postgres running)
 sudo microk8s kubectl scale deployment/n8n -n n8n-live --replicas=0
+sudo microk8s kubectl scale deployment/n8n-application-worker -n n8n-live --replicas=0
 
 # Restore
 sudo microk8s kubectl scale deployment/n8n -n n8n-live --replicas=1
+sudo microk8s kubectl scale deployment/n8n-application-worker -n n8n-live --replicas=1
 ```
 
-> **Note:** Scaling beyond 1 replica requires n8n queue mode (separate main + worker processes). Single-replica is the supported mode for this deployment.
+> **Note:** Main (`deployment/n8n`) is the webhook/scheduler process — keep at 1 replica. Workers (`deployment/n8n-application-worker`) are safe to scale horizontally; queue mode is active.
 
 ---
 
@@ -198,26 +206,62 @@ sudo microk8s kubectl create job --from=cronjob/n8n-application-db-backup manual
 
 ### Restore from Backup
 ```bash
-# 1. Scale down n8n to prevent writes
-sudo microk8s kubectl scale deployment/n8n -n n8n-live --replicas=0
+# 1. Scale down n8n main + workers to prevent writes
+sudo microk8s kubectl scale deployment/n8n deployment/n8n-application-worker -n n8n-live --replicas=0
 
 # 2. List available backups
-sudo microk8s kubectl exec -n n8n-live deploy/n8n-application-postgres -- ls -lh /backups/
+sudo microk8s kubectl exec -n n8n-live n8n-application-postgres-0 -c postgres -- ls -lh /backups/
 
-# 3. Restore (from a temp pod that mounts both backup PVC and uses postgres secret)
+# 3. Restore (backup PVC must be mounted on postgres pod — it is by default via the CronJob SA)
 BACKUP_FILE="n8n_db_20260315_020000.sql.gz"  # Replace with actual filename
-sudo microk8s kubectl exec -it -n n8n-live deploy/n8n-application-postgres -- sh -c \
+sudo microk8s kubectl exec -it -n n8n-live n8n-application-postgres-0 -c postgres -- sh -c \
   "gunzip -c /backups/${BACKUP_FILE} | psql -U postgres -d n8n"
 
 # 4. Scale n8n back up
-sudo microk8s kubectl scale deployment/n8n -n n8n-live --replicas=1
+sudo microk8s kubectl scale deployment/n8n deployment/n8n-application-worker -n n8n-live --replicas=1
 ```
 
-> **Note:** The restore command above requires the backup PVC to be mounted on the postgres pod. For production restore, create a temporary Job with both PVCs mounted.
+> **Note:** Postgres is now a StatefulSet — the pod name is always `n8n-application-postgres-0`. For production restore, create a temporary Job with both the backup PVC and postgres credentials mounted.
 
 ---
 
-## 10. Vault Secret Rotation
+## 10. Queue Mode Operations
+
+### Check Queue Health
+```bash
+# Verify all queue components are running
+sudo microk8s kubectl get pods -n n8n-live
+
+# Check worker is connected to queue (should show "n8n worker is now ready")
+sudo microk8s kubectl logs -n n8n-live -l service=n8n-worker -c n8n-worker --tail=5
+
+# Check Redis is healthy
+sudo microk8s kubectl exec -n n8n-live -l app.kubernetes.io/component=redis -- redis-cli ping
+# Expected: PONG
+
+# Check pending jobs in queue
+sudo microk8s kubectl exec -n n8n-live -l app.kubernetes.io/component=redis -- \
+  redis-cli llen bull:jobs:wait
+```
+
+### Restart Worker (zero-downtime)
+```bash
+# RollingUpdate: new worker starts before old is terminated
+sudo microk8s kubectl rollout restart deployment/n8n-application-worker -n n8n-live
+sudo microk8s kubectl rollout status deployment/n8n-application-worker -n n8n-live --timeout=120s
+```
+
+### Redis Recovery (queue data is ephemeral)
+```bash
+# If Redis crashes, in-flight jobs are lost but will be retried on next trigger.
+# Redis will restart automatically via Deployment controller.
+# Monitor worker logs after Redis recovers:
+sudo microk8s kubectl logs -n n8n-live -l service=n8n-worker -c n8n-worker -f
+```
+
+---
+
+## 11. Vault Secret Rotation
 
 ```bash
 # 1. Update secret in Vault
@@ -241,7 +285,7 @@ sudo microk8s kubectl rollout restart deployment -n n8n-live
 
 ---
 
-## 11. Monitoring Verification
+## 12. Monitoring Verification
 
 ```bash
 # Check ServiceMonitor is picked up by Prometheus
@@ -261,7 +305,7 @@ sudo microk8s kubectl port-forward -n observability svc/grafana 3000:80 &
 
 ---
 
-## 12. Full Redeployment
+## 13. Full Redeployment
 
 **When:** Major version upgrade or complete infrastructure refresh.
 
