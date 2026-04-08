@@ -114,10 +114,10 @@ postgres:
       pullPolicy: IfNotPresent
     resources:
       limits:
-        cpu: 50m
+        cpu: 100m
         memory: 64Mi
       requests:
-        cpu: 20m
+        cpu: 50m  # LimitRange floor: min.cpu=50m
         memory: 32Mi
 
 # Database connection
