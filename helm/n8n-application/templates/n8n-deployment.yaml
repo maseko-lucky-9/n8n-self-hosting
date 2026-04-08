@@ -38,14 +38,47 @@ spec:
             requests:
               cpu: 50m
               memory: 32Mi
+        # GAP-001: Wait for PostgreSQL to accept connections before starting n8n.
+        # Replaces fragile "sleep 5" that caused 19 restarts/7d due to DNS resolution
+        # failures (EAI_AGAIN) when CoreDNS wasn't ready after node restart.
+        - name: wait-for-postgres
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for PostgreSQL at postgres-service:5432..."
+              retries=0
+              max_retries=60
+              until pg_isready -h postgres-service -p 5432 -U postgres -q; do
+                retries=$((retries + 1))
+                if [ $retries -ge $max_retries ]; then
+                  echo "ERROR: PostgreSQL not ready after $max_retries attempts (2min)"
+                  exit 1
+                fi
+                echo "Attempt $retries/$max_retries: waiting 2s..."
+                sleep 2
+              done
+              echo "PostgreSQL is ready!"
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 50m
+              memory: 32Mi
       containers:
         - name: n8n
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          command:
-            - /bin/sh
-          args:
-            - -c
-            - sleep 5; n8n start
+          command: ["n8n"]
+          args: ["start"]
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           env:
@@ -90,6 +123,29 @@ spec:
             # Diagnostics and telemetry
             - name: N8N_DIAGNOSTICS_ENABLED
               value: "false"
+            # GAP-002: Encryption key for workflow credential secrets at rest.
+            # Must match the key that encrypted existing credentials — never regenerate.
+            {{- if and .Values.externalSecrets.enabled .Values.externalSecrets.vault.appSecretPath }}
+            - name: N8N_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-app-secret
+                  key: N8N_ENCRYPTION_KEY
+            {{- else if .Values.n8n.encryptionKey }}
+            - name: N8N_ENCRYPTION_KEY
+              value: {{ .Values.n8n.encryptionKey | quote }}
+            {{- end }}
+            # GAP-004: Webhook callback URL for external triggers
+            {{- if and .Values.externalSecrets.enabled .Values.externalSecrets.vault.appSecretPath }}
+            - name: N8N_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-app-secret
+                  key: N8N_WEBHOOK_URL
+            {{- else if .Values.n8n.webhookUrl }}
+            - name: N8N_WEBHOOK_URL
+              value: {{ .Values.n8n.webhookUrl | quote }}
+            {{- end }}
             {{- if .Values.extraEnv }}
             {{- toYaml .Values.extraEnv | nindent 12 }}
             {{- end }}

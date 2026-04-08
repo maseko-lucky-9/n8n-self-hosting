@@ -43,27 +43,11 @@ service:
   type: ClusterIP
   port: 80
 
+# GAP-003: Ingress disabled — managed by homelab-infra/ingress/manifests/n8n-ingress.yaml
+# The homelab-infra ingress provides TLS (homelab-tls wildcard) + nginx basic auth.
+# Having two Ingress resources for the same host caused ambiguous routing.
 ingress:
-  enabled: true
-  className: "public"  # LIVE: MicroK8s ingress
-  annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "0"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
-    cert-manager.io/cluster-issuer: homelab-ca
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/limit-rps: "10"  # LIVE: Rate limiting (10 req/sec)
-  hosts:
-    - host: n8n.homelab.local
-      paths:
-        - path: /
-          pathType: Prefix
-  tls:
-    - secretName: homelab-tls
-      hosts:
-        - n8n.homelab.local
-
+  enabled: false
 
 # LIVE: Production-grade resources for homelab
 resources:
@@ -92,13 +76,16 @@ affinity: {}
 n8n:
   host: "0.0.0.0"
   port: 5678
-  protocol: "https"  # LIVE: HTTPS in production
+  # GAP-011: TLS terminates at nginx ingress (homelab-infra), n8n receives plain HTTP
+  protocol: "http"
   # Execution pruning — prevents unbounded data growth
   executionDataMaxAge: "168"       # 7 days (in hours)
   executionDataPruneMaxCount: "50000"
   # Structured JSON logging for observability
   logLevel: "info"
   logOutput: "console,file"
+  # GAP-004: External webhook callback URL (must match ingress hostname)
+  webhookUrl: "https://n8n.homelab.local"
 
 # PostgreSQL configuration
 postgres:
@@ -116,6 +103,20 @@ postgres:
   persistence:
     storageClass: "microk8s-hostpath"  # LIVE: MicroK8s storage
     size: 20Gi
+  # GAP-006: Postgres metrics exporter sidecar for Prometheus
+  metrics:
+    enabled: true
+    image:
+      repository: prometheuscommunity/postgres-exporter
+      tag: "v0.15.0"
+      pullPolicy: IfNotPresent
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
 
 # Database connection
 # LIVE: Passwords should be managed by Vault/ESO — do NOT put real passwords here
@@ -154,6 +155,9 @@ externalSecrets:
     # Full path within the KV engine where postgres creds are stored
     # Must include 'secret/' prefix to match Vault policy: kv/data/secret/n8n/+/*
     secretPath: "secret/n8n/live/postgres"
+    # GAP-002/005: App-level secrets (encryption key, webhook URL)
+    # Vault path: kv/<appSecretPath> → kv/secret/n8n/live/app
+    appSecretPath: "secret/n8n/live/app"
     # CA certificate for Vault TLS verification
     # Prereq: 'vault-tls-ca' Secret with key 'ca.crt' must exist in the namespace
     caProvider:
