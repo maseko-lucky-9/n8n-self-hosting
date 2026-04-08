@@ -175,20 +175,27 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
             failureThreshold: 12
-          {{- if .Values.securityContext.readOnlyRootFilesystem }}
           volumeMounts:
+            # n8n writes a config file on startup even in worker mode; emptyDir satisfies
+            # the write without persistent storage (workers are stateless)
+            - mountPath: /home/node/.n8n
+              name: n8n-config
+            {{- if .Values.securityContext.readOnlyRootFilesystem }}
             - mountPath: /tmp
               name: tmp-volume
             - mountPath: /home/node/.cache
               name: cache-volume
-          {{- end }}
-      {{- if .Values.securityContext.readOnlyRootFilesystem }}
+            {{- end }}
       volumes:
+        - name: n8n-config
+          emptyDir:
+            sizeLimit: 10Mi
+        {{- if .Values.securityContext.readOnlyRootFilesystem }}
         - name: tmp-volume
           emptyDir:
             sizeLimit: 100Mi
         - name: cache-volume
           emptyDir:
             sizeLimit: 100Mi
-      {{- end }}
+        {{- end }}
 {{- end }}
