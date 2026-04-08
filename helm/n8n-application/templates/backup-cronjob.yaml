@@ -43,12 +43,12 @@ spec:
                   valueFrom:
                     secretKeyRef:
                       name: postgres-secret
-                      key: POSTGRES_PASSWORD
+                      key: POSTGRES_NON_ROOT_PASSWORD
                 - name: POSTGRES_USER
                   valueFrom:
                     secretKeyRef:
                       name: postgres-secret
-                      key: POSTGRES_USER
+                      key: POSTGRES_NON_ROOT_USER
                 - name: POSTGRES_DB
                   valueFrom:
                     secretKeyRef:
@@ -58,6 +58,7 @@ spec:
                 - /bin/sh
                 - -c
                 - |
+                  set -o pipefail
                   TIMESTAMP=$(date +%Y%m%d_%H%M%S)
                   BACKUP_FILE="/backups/n8n_db_${TIMESTAMP}.sql.gz"
 
