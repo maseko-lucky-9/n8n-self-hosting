@@ -39,7 +39,7 @@ spec:
             runAsNonRoot: false
           command: ["sh", "-c", "chown 1000:1000 /data"]
           volumeMounts:
-            - name: n8n-claim0
+            - name: {{ include "n8n-application.n8nPvcName" . }}
               mountPath: /data
           resources:
             limits:
@@ -232,7 +232,7 @@ spec:
             failureThreshold: 12
           volumeMounts:
             - mountPath: /home/node/.n8n
-              name: n8n-claim0
+              name: {{ include "n8n-application.n8nPvcName" . }}
             {{- if .Values.securityContext.readOnlyRootFilesystem }}
             - mountPath: /tmp
               name: tmp-volume
@@ -241,9 +241,9 @@ spec:
             {{- end }}
       restartPolicy: Always
       volumes:
-        - name: n8n-claim0
+        - name: {{ include "n8n-application.n8nPvcName" . }}
           persistentVolumeClaim:
-            claimName: n8n-claim0
+            claimName: {{ include "n8n-application.n8nPvcName" . }}
         {{- if .Values.securityContext.readOnlyRootFilesystem }}
         - name: tmp-volume
           emptyDir:

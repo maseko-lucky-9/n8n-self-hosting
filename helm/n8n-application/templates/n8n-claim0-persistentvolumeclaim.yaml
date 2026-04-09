@@ -3,7 +3,7 @@ kind: PersistentVolumeClaim
 metadata:
   labels:
     service: n8n-claim0
-  name: n8n-claim0
+  name: {{ include "n8n-application.n8nPvcName" . }}
   namespace: {{ .Release.Namespace }}
 spec:
   accessModes:

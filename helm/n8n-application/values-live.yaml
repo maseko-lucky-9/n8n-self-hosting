@@ -128,7 +128,8 @@ database:
   port: 5432
   database: "n8n"
   username: "n8n_live"
-  password: "POSTGRES_PASSWORD"  # LIVE: Replace via ESO or --set override
+  password: "POSTGRES_NON_ROOT_PASSWORD"  # LIVE: n8n app user — replaced via ESO
+  superuserPassword: "POSTGRES_PASSWORD"  # LIVE: postgres superuser — replaced via ESO
   ssl: false  # In-cluster connection via ClusterIP — SSL not needed (postgres:16-alpine has no SSL by default)
 
 # N8N data persistence

@@ -104,7 +104,8 @@ database:
   port: 5432
   database: "n8n"
   username: "n8n"
-  password: "changeme"  # LOCAL: Acceptable for local dev only
+  password: "changeme"  # LOCAL: n8n app user — acceptable for local dev only
+  superuserPassword: "changeme"  # LOCAL: postgres superuser — acceptable for local dev only
 
 # N8N data persistence
 persistence:

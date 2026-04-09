@@ -84,6 +84,14 @@ n8n-app-secret
 {{- end }}
 
 {{/*
+Stable name for the n8n data PersistentVolumeClaim.
+Kept as a fixed string to prevent accidental PVC renames that would lose live data.
+*/}}
+{{- define "n8n-application.n8nPvcName" -}}
+n8n-claim0
+{{- end }}
+
+{{/*
 Validate: TLS must not be enabled without cert-manager annotation.
 Prevents broken ingress on restart when TLS secret doesn't exist.
 */}}

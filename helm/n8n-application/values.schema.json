@@ -84,6 +84,9 @@
         "password": {
           "type": "string"
         },
+        "superuserPassword": {
+          "type": "string"
+        },
         "ssl": {
           "type": "boolean"
         }
