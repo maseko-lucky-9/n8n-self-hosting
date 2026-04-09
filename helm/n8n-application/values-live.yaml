@@ -144,6 +144,7 @@ networkPolicy:
   allowedNamespaces:
     - ingress        # MicroK8s ingress controller namespace
     - observability  # Prometheus scraping
+  metricsNamespace: observability  # Namespace allowed to scrape postgres + worker metrics
 
 # External Secrets Configuration
 externalSecrets:

@@ -14,7 +14,7 @@ spec:
   type: ClusterIP
   clusterIP: None
   ports:
-    - name: "5432"
+    - name: postgres
       port: 5432
       targetPort: 5432
       protocol: TCP
@@ -34,12 +34,12 @@ metadata:
 spec:
   type: ClusterIP
   ports:
-    - name: "5432"
+    - name: postgres
       port: 5432
       targetPort: 5432
       protocol: TCP
     {{- if and .Values.postgres.metrics .Values.postgres.metrics.enabled }}
-    - name: "9187"
+    - name: pg-metrics
       port: 9187
       targetPort: 9187
       protocol: TCP

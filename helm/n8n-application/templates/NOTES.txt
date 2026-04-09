@@ -1,0 +1,78 @@
+n8n has been deployed successfully.
+
+  Release:   {{ .Release.Name }}
+  Namespace: {{ .Release.Namespace }}
+  Version:   {{ .Chart.AppVersion }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+VERIFY DEPLOYMENT
+
+  kubectl get pods -n {{ .Release.Namespace }}
+  kubectl get pvc  -n {{ .Release.Namespace }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{{- if .Values.ingress.enabled }}
+ACCESS n8n UI
+
+  {{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/
+  {{- end }}
+
+{{- else }}
+ACCESS n8n UI (ingress disabled — use port-forward)
+
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "n8n-application.fullname" . }} 5678:80
+  Then open: http://localhost:5678
+
+{{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{{- if .Values.externalSecrets.enabled }}
+SECRETS
+
+  Secrets are managed by External Secrets Operator from Vault.
+  Vault path (postgres): {{ .Values.externalSecrets.vault.secretPath }}
+  Vault path (app):      {{ .Values.externalSecrets.vault.appSecretPath }}
+
+  Verify ESO sync:
+  kubectl get externalsecret -n {{ .Release.Namespace }}
+  kubectl get secret {{ include "n8n-application.postgresSecretName" . }} -n {{ .Release.Namespace }}
+
+{{- else }}
+SECRETS
+
+  Using inline secret (local mode). Rotate before exposing to network.
+  kubectl get secret {{ include "n8n-application.postgresSecretName" . }} -n {{ .Release.Namespace }}
+
+{{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{{- if .Values.backup.enabled }}
+BACKUPS
+
+  On-cluster backup CronJob: {{ .Values.backup.schedule }}
+  kubectl get cronjob -n {{ .Release.Namespace }}
+  kubectl create job --from=cronjob/{{ include "n8n-application.fullname" . }}-db-backup backup-manual -n {{ .Release.Namespace }}
+
+{{- end }}
+
+{{- if .Values.queue.enabled }}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+QUEUE MODE
+
+  Main process:  deployment/{{ include "n8n-application.fullname" . }}   (1 replica — manages webhooks/scheduling)
+  Workers:       deployment/{{ include "n8n-application.fullname" . }}-worker  ({{ .Values.queue.worker.replicas | default 1 }} replica(s))
+  Redis:         {{ include "n8n-application.fullname" . }}-redis
+
+  Scale workers:
+  kubectl scale deployment/{{ include "n8n-application.fullname" . }}-worker -n {{ .Release.Namespace }} --replicas=2
+
+{{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Full runbook: docs/runbook.md

@@ -41,7 +41,7 @@ spec:
     matchLabels:
       service: postgres
   endpoints:
-    - port: "9187"
+    - port: pg-metrics
       path: /metrics
       interval: {{ .Values.monitoring.scrapeInterval | default "30s" }}
       scrapeTimeout: {{ .Values.monitoring.scrapeTimeout | default "10s" }}

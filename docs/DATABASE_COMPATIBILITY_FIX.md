@@ -95,7 +95,7 @@ To prevent this issue in the future:
 
 ## Current Configuration
 
-- PostgreSQL Version: 15.3
+- PostgreSQL Version: 16-alpine (postgres:16-alpine)
 - Database: n8n
 - Persistent Volume: postgresql-pv
 - Namespace: n8n-local

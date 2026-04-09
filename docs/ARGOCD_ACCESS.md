@@ -20,8 +20,8 @@ To access the web interface from your browser, you must port-forward the ArgoCD 
 
 Run this in a separate terminal window (keep it open):
 
-```powershell
-wsl kubectl port-forward -n argocd svc/argocd-server 8080:443
+```bash
+kubectl port-forward -n argocd svc/argocd-server 8080:443
 ```
 
 ### Browser URL
@@ -37,7 +37,7 @@ Open the following link:
 - **Password**:
   To retrieve the initial admin password, run:
   ```bash
-  wsl kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
   ```
 
 ## 4. Managing n8n Application

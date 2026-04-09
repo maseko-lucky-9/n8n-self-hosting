@@ -120,6 +120,7 @@ queue:
 # Network Policy
 networkPolicy:
   enabled: false  # LOCAL: Not needed for development
+  metricsNamespace: observability
 
 # External Secrets Configuration
 externalSecrets:
