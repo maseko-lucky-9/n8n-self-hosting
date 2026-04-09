@@ -160,6 +160,8 @@ externalSecrets:
     # GAP-002/005: App-level secrets (encryption key, webhook URL)
     # Vault path: kv/<appSecretPath> → kv/secret/n8n/live/app
     appSecretPath: "secret/n8n/live/app"
+    # GAP-007: Off-cluster backup credentials
+    backupSecretPath: "secret/n8n/live/backup-offcluster"
     # CA certificate for Vault TLS verification
     # Prereq: 'vault-tls-ca' Secret with key 'ca.crt' must exist in the namespace
     caProvider:
@@ -218,6 +220,7 @@ queue:
       memory: 64Mi
   worker:
     replicas: 1
+    healthPort: 5679
     resources:
       limits:
         cpu: 500m

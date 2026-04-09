@@ -141,7 +141,7 @@ kubectl exec -n vault vault-0 -- vault kv put kv/secret/n8n/live/postgres \
 
 Verify:
 ```bash
-kubectl exec -n vault vault-0 -- vault read secret/data/n8n/live/postgres
+kubectl exec -n vault vault-0 -- vault kv get kv/secret/n8n/live/postgres
 ```
 
 > Use `openssl rand -base64 32` to generate secure passwords.
@@ -204,7 +204,7 @@ To rotate Postgres passwords:
 
 1. **Update the secret in Vault:**
    ```bash
-   kubectl exec -n vault vault-0 -- vault kv patch secret/n8n/live/postgres \
+   kubectl exec -n vault vault-0 -- vault kv patch kv/secret/n8n/live/postgres \
      POSTGRES_PASSWORD="<NEW_PASS>" \
      POSTGRES_NON_ROOT_PASSWORD="<NEW_PASS_2>"
    ```
@@ -218,7 +218,7 @@ To rotate Postgres passwords:
 3. **Restart N8N and Postgres** to pick up the new K8s Secret values:
    ```bash
    kubectl rollout restart deployment n8n -n n8n-live
-   kubectl rollout restart deployment postgres -n n8n-live
+   kubectl rollout restart statefulset/n8n-application-postgres -n n8n-live
    ```
 
 > **Important:** N8N does not hot-reload environment variables. A pod restart is always required after secret rotation.
@@ -250,7 +250,7 @@ kubectl exec -n vault vault-0 -- vault token lookup
 ### Manually verify the secret path exists
 
 ```bash
-kubectl exec -n vault vault-0 -- vault read secret/data/n8n/live/postgres
+kubectl exec -n vault vault-0 -- vault kv get kv/secret/n8n/live/postgres
 ```
 
 ### Verify the K8s Secret was created
@@ -272,7 +272,7 @@ externalSecrets:
     address: "https://vault.vault.svc.cluster.local:8200"
     kvPath: "kv"
     kvVersion: "v2"
-    secretPath: "n8n/live/postgres"
+    secretPath: "secret/n8n/live/postgres"
     appSecretPath: "secret/n8n/live/app"
     auth:
       mountPath: "kubernetes"

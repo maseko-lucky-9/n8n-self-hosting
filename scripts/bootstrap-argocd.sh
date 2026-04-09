@@ -12,7 +12,8 @@ else
 fi
 
 echo "Applying ArgoCD manifest..."
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+ARGOCD_VERSION="v2.13.3"
+kubectl apply -n argocd -f "https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_VERSION}/manifests/install.yaml"
 
 # 2. Waiting for ArgoCD
 echo "Waiting for ArgoCD server to be ready (this may take a few minutes)..."

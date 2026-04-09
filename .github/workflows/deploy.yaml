@@ -1,5 +1,8 @@
 name: Deploy to ArgoCD
 
+permissions:
+  contents: read
+
 on:
   push:
     branches:
@@ -24,10 +27,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
 
       - name: Lint helm chart (local values)
         run: helm lint helm/n8n-application -f helm/n8n-application/values-local.yaml
@@ -43,15 +46,20 @@ jobs:
 
   deploy:
     needs: [validate]
+    environment: production
     runs-on: self-hosted
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Ensure ArgoCD Root Application exists
         run: |
           echo "Applying ArgoCD Root Application Manifest..."
-          kubectl apply -f argocd/applications/live-n8n.yaml
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.environment }}" == "local" ]]; then
+            kubectl apply -f argocd/applications/local-n8n.yaml
+          else
+            kubectl apply -f argocd/applications/live-n8n.yaml
+          fi
           echo "Root app applied. ArgoCD will sync child applications (local/live)."
           

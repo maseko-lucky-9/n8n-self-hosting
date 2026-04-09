@@ -92,13 +92,22 @@ spec:
             capabilities:
               drop:
                 - ALL
-          readinessProbe:
+          startupProbe:
             exec:
               command:
                 - /bin/sh
                 - -c
                 - pg_isready -U postgres
             initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 12
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U postgres
+            initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3

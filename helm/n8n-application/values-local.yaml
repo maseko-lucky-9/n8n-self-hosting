@@ -113,6 +113,10 @@ persistence:
   accessMode: ReadWriteOnce
   size: 1Gi
 
+# Queue mode — disabled for local dev (single-process mode)
+queue:
+  enabled: false
+
 # Network Policy
 networkPolicy:
   enabled: false  # LOCAL: Not needed for development

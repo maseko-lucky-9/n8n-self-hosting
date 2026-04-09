@@ -43,8 +43,18 @@ if [ ! -f "$VALUES_FILE" ]; then
     exit 1
 fi
 
-echo "Running helm upgrade --install..."
-microk8s helm3 upgrade --install "$RELEASE_NAME" "$CHART_PATH" -f "$VALUES_FILE" -n "$NAMESPACE" --create-namespace
+HELM_CMD="helm"
+if ! command -v helm &> /dev/null; then
+    if command -v microk8s &> /dev/null; then
+        HELM_CMD="microk8s helm3"
+    else
+        echo "Error: Neither 'helm' nor 'microk8s helm3' found in PATH."
+        exit 1
+    fi
+fi
+
+echo "Running helm upgrade --install (using: $HELM_CMD)..."
+$HELM_CMD upgrade --install "$RELEASE_NAME" "$CHART_PATH" -f "$VALUES_FILE" -n "$NAMESPACE" --create-namespace
 
 echo ""
 echo "Deployment command executed successfully."

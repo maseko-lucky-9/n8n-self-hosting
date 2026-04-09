@@ -64,10 +64,10 @@ spec:
             - /bin/sh
             - -c
             - |
-              echo "Waiting for PostgreSQL at postgres-service:5432..."
+              echo "Waiting for PostgreSQL at postgres-service:{{ .Values.database.port }}..."
               retries=0
               max_retries=60
-              until pg_isready -h postgres-service -p 5432 -U postgres -q; do
+              until pg_isready -h postgres-service -p {{ .Values.database.port }} -U postgres -q; do
                 retries=$((retries + 1))
                 if [ $retries -ge $max_retries ]; then
                   echo "ERROR: PostgreSQL not ready after $max_retries attempts (2min)"
@@ -127,7 +127,7 @@ spec:
             - name: DB_POSTGRESDB_HOST
               value: postgres-service
             - name: DB_POSTGRESDB_PORT
-              value: "5432"
+              value: {{ .Values.database.port | quote }}
             - name: DB_POSTGRESDB_DATABASE
               value: {{ .Values.database.database | default "n8n" }}
             - name: DB_POSTGRESDB_USER
