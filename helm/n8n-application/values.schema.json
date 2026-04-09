@@ -195,6 +195,88 @@
         },
         "storageSize": {
           "type": "string"
+        },
+        "offCluster": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "endpoint": { "type": "string" },
+            "bucket": { "type": "string" },
+            "path": { "type": "string" },
+            "credentialsSecret": { "type": "string" },
+            "rclone": {
+              "type": "object",
+              "properties": {
+                "image": {
+                  "type": "object",
+                  "properties": {
+                    "repository": { "type": "string" },
+                    "tag": { "type": "string" }
+                  }
+                },
+                "resources": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "queue": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "redis": {
+          "type": "object",
+          "properties": {
+            "image": { "type": "string" },
+            "port": { "type": "integer" }
+          }
+        },
+        "redisResources": { "type": "object" },
+        "worker": {
+          "type": "object",
+          "properties": {
+            "replicas": { "type": "integer", "minimum": 1 },
+            "healthPort": { "type": "integer" },
+            "resources": { "type": "object" }
+          }
+        }
+      }
+    },
+    "resourceQuota": {
+      "type": "object",
+      "required": ["requests", "limits", "pods", "pvcs"],
+      "properties": {
+        "requests": {
+          "type": "object",
+          "required": ["cpu", "memory"],
+          "properties": {
+            "cpu": { "type": "string" },
+            "memory": { "type": "string" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "required": ["cpu", "memory"],
+          "properties": {
+            "cpu": { "type": "string" },
+            "memory": { "type": "string" }
+          }
+        },
+        "pods": { "type": "string" },
+        "pvcs": { "type": "string" }
+      }
+    },
+    "initContainers": {
+      "type": "object",
+      "properties": {
+        "busybox": {
+          "type": "object",
+          "required": ["repository", "tag"],
+          "properties": {
+            "repository": { "type": "string" },
+            "tag": { "type": "string" }
+          }
         }
       }
     },
@@ -302,7 +384,16 @@
       "type": "object"
     },
     "extraEnv": {
-      "type": "array"
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "value": { "type": "string" },
+          "valueFrom": { "type": "object" }
+        }
+      }
     }
   }
 }

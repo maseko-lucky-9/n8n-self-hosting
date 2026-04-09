@@ -62,6 +62,28 @@ Create the name of the service account to use
 {{- end }}
 
 {{/*
+Stable name for the PostgreSQL ClusterIP service.
+Single source of truth — change here to rename the service everywhere.
+*/}}
+{{- define "n8n-application.postgresServiceName" -}}
+postgres-service
+{{- end }}
+
+{{/*
+Stable name for the PostgreSQL credentials Secret (inline or ESO-managed).
+*/}}
+{{- define "n8n-application.postgresSecretName" -}}
+postgres-secret
+{{- end }}
+
+{{/*
+Stable name for the n8n application Secret (encryption key, webhook URL).
+*/}}
+{{- define "n8n-application.appSecretName" -}}
+n8n-app-secret
+{{- end }}
+
+{{/*
 Validate: TLS must not be enabled without cert-manager annotation.
 Prevents broken ingress on restart when TLS secret doesn't exist.
 */}}

@@ -45,17 +45,17 @@ spec:
                 - name: PGPASSWORD
                   valueFrom:
                     secretKeyRef:
-                      name: postgres-secret
+                      name: {{ include "n8n-application.postgresSecretName" . }}
                       key: POSTGRES_NON_ROOT_PASSWORD
                 - name: POSTGRES_USER
                   valueFrom:
                     secretKeyRef:
-                      name: postgres-secret
+                      name: {{ include "n8n-application.postgresSecretName" . }}
                       key: POSTGRES_NON_ROOT_USER
                 - name: POSTGRES_DB
                   valueFrom:
                     secretKeyRef:
-                      name: postgres-secret
+                      name: {{ include "n8n-application.postgresSecretName" . }}
                       key: POSTGRES_DB
               command:
                 - /bin/sh
@@ -67,10 +67,15 @@ spec:
                   BACKUP_FILE="/backups/n8n_db_${TIMESTAMP}.sql.gz"
 
                   echo "[$(date)] Starting backup of database ${POSTGRES_DB}..."
-                  pg_dump -h postgres-service -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+                  pg_dump -h {{ include "n8n-application.postgresServiceName" . }} -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
                     --no-owner --no-acl --clean --if-exists | gzip > "${BACKUP_FILE}"
 
                   echo "[$(date)] Backup completed: ${BACKUP_FILE} ($(du -h ${BACKUP_FILE} | cut -f1))"
+
+                  # Verify archive integrity before declaring success
+                  echo "[$(date)] Verifying archive integrity..."
+                  gzip --test "${BACKUP_FILE}" || { echo "[$(date)] ERROR: Archive is corrupt — aborting"; exit 1; }
+                  echo "[$(date)] Archive OK."
 
                   # Write filename so rclone-upload container knows what to upload
                   echo "${BACKUP_FILE}" > /backups/.latest-backup
@@ -183,17 +188,17 @@ spec:
                 - name: PGPASSWORD
                   valueFrom:
                     secretKeyRef:
-                      name: postgres-secret
+                      name: {{ include "n8n-application.postgresSecretName" . }}
                       key: POSTGRES_NON_ROOT_PASSWORD
                 - name: POSTGRES_USER
                   valueFrom:
                     secretKeyRef:
-                      name: postgres-secret
+                      name: {{ include "n8n-application.postgresSecretName" . }}
                       key: POSTGRES_NON_ROOT_USER
                 - name: POSTGRES_DB
                   valueFrom:
                     secretKeyRef:
-                      name: postgres-secret
+                      name: {{ include "n8n-application.postgresSecretName" . }}
                       key: POSTGRES_DB
               command:
                 - /bin/sh
@@ -205,10 +210,15 @@ spec:
                   BACKUP_FILE="/backups/n8n_db_${TIMESTAMP}.sql.gz"
 
                   echo "[$(date)] Starting backup of database ${POSTGRES_DB}..."
-                  pg_dump -h postgres-service -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+                  pg_dump -h {{ include "n8n-application.postgresServiceName" . }} -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
                     --no-owner --no-acl --clean --if-exists | gzip > "${BACKUP_FILE}"
 
                   echo "[$(date)] Backup completed: ${BACKUP_FILE} ($(du -h ${BACKUP_FILE} | cut -f1))"
+
+                  # Verify archive integrity before declaring success
+                  echo "[$(date)] Verifying archive integrity..."
+                  gzip --test "${BACKUP_FILE}" || { echo "[$(date)] ERROR: Archive is corrupt — aborting"; exit 1; }
+                  echo "[$(date)] Archive OK."
 
                   # Prune backups older than retention period
                   echo "[$(date)] Pruning backups older than {{ .Values.backup.retention }} days..."

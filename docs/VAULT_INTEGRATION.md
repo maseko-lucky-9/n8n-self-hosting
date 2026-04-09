@@ -217,7 +217,7 @@ To rotate Postgres passwords:
 
 3. **Restart N8N and Postgres** to pick up the new K8s Secret values:
    ```bash
-   kubectl rollout restart deployment n8n -n n8n-live
+   kubectl rollout restart deployment/n8n -n n8n-live
    kubectl rollout restart statefulset/n8n-application-postgres -n n8n-live
    ```
 

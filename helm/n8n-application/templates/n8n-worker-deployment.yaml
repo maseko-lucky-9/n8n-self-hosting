@@ -49,7 +49,7 @@ spec:
             - -c
             - |
               retries=0; max_retries=60
-              until pg_isready -h postgres-service -p {{ .Values.database.port }} -U postgres -q; do
+              until pg_isready -h {{ include "n8n-application.postgresServiceName" . }} -p {{ .Values.database.port }} -U postgres -q; do
                 retries=$((retries+1))
                 [ $retries -ge $max_retries ] && echo "ERROR: PostgreSQL not ready" && exit 1
                 echo "Attempt $retries/$max_retries: waiting 2s..."; sleep 2
@@ -64,7 +64,7 @@ spec:
               memory: 32Mi
         # Wait for Redis before starting
         - name: wait-for-redis
-          image: busybox:1.36
+          image: "{{ .Values.initContainers.busybox.repository }}:{{ .Values.initContainers.busybox.tag }}"
           securityContext:
             runAsNonRoot: true
             runAsUser: 1000
@@ -101,7 +101,7 @@ spec:
             - name: DB_TYPE
               value: postgresdb
             - name: DB_POSTGRESDB_HOST
-              value: postgres-service
+              value: {{ include "n8n-application.postgresServiceName" . }}
             - name: DB_POSTGRESDB_PORT
               value: {{ .Values.database.port | quote }}
             - name: DB_POSTGRESDB_DATABASE
@@ -109,12 +109,12 @@ spec:
             - name: DB_POSTGRESDB_USER
               valueFrom:
                 secretKeyRef:
-                  name: postgres-secret
+                  name: {{ include "n8n-application.postgresSecretName" . }}
                   key: POSTGRES_NON_ROOT_USER
             - name: DB_POSTGRESDB_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: postgres-secret
+                  name: {{ include "n8n-application.postgresSecretName" . }}
                   key: POSTGRES_NON_ROOT_PASSWORD
             - name: EXECUTIONS_MODE
               value: queue
@@ -137,7 +137,7 @@ spec:
             - name: N8N_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
-                  name: n8n-app-secret
+                  name: {{ include "n8n-application.appSecretName" . }}
                   key: N8N_ENCRYPTION_KEY
             {{- else if .Values.n8n.encryptionKey }}
             - name: N8N_ENCRYPTION_KEY

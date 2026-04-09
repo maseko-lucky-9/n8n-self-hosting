@@ -61,27 +61,27 @@ spec:
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
-                  name: postgres-secret
+                  name: {{ include "n8n-application.postgresSecretName" . }}
                   key: POSTGRES_USER
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: postgres-secret
+                  name: {{ include "n8n-application.postgresSecretName" . }}
                   key: POSTGRES_PASSWORD
             - name: POSTGRES_DB
               valueFrom:
                 secretKeyRef:
-                  name: postgres-secret
+                  name: {{ include "n8n-application.postgresSecretName" . }}
                   key: POSTGRES_DB
             - name: POSTGRES_NON_ROOT_USER
               valueFrom:
                 secretKeyRef:
-                  name: postgres-secret
+                  name: {{ include "n8n-application.postgresSecretName" . }}
                   key: POSTGRES_NON_ROOT_USER
             - name: POSTGRES_NON_ROOT_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: postgres-secret
+                  name: {{ include "n8n-application.postgresSecretName" . }}
                   key: POSTGRES_NON_ROOT_PASSWORD
             - name: POSTGRES_HOST
               value: {{ include "n8n-application.fullname" . }}-postgres-service
@@ -134,12 +134,12 @@ spec:
             - name: DATA_SOURCE_USER
               valueFrom:
                 secretKeyRef:
-                  name: postgres-secret
+                  name: {{ include "n8n-application.postgresSecretName" . }}
                   key: POSTGRES_USER
             - name: DATA_SOURCE_PASS
               valueFrom:
                 secretKeyRef:
-                  name: postgres-secret
+                  name: {{ include "n8n-application.postgresSecretName" . }}
                   key: POSTGRES_PASSWORD
             - name: DATA_SOURCE_URI
               value: "localhost:5432/{{ .Values.database.database | default "n8n" }}?sslmode=disable"

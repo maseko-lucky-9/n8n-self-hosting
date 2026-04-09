@@ -7,10 +7,10 @@ metadata:
     {{- include "n8n-application.labels" . | nindent 4 }}
 spec:
   hard:
-    # Cap total namespace resource consumption
-    requests.cpu: "2"
-    requests.memory: 2Gi
-    limits.cpu: "4"
-    limits.memory: 4Gi
-    pods: "10"
-    persistentvolumeclaims: "5"
+    # Cap total namespace resource consumption — tunable per environment via values.resourceQuota
+    requests.cpu: {{ .Values.resourceQuota.requests.cpu | quote }}
+    requests.memory: {{ .Values.resourceQuota.requests.memory }}
+    limits.cpu: {{ .Values.resourceQuota.limits.cpu | quote }}
+    limits.memory: {{ .Values.resourceQuota.limits.memory }}
+    pods: {{ .Values.resourceQuota.pods | quote }}
+    persistentvolumeclaims: {{ .Values.resourceQuota.pvcs | quote }}

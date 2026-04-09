@@ -9,7 +9,7 @@ namespace: n8n-live
 image:
   repository: n8nio/n8n
   pullPolicy: IfNotPresent
-  tag: "1.19.4"
+  tag: "1.19.4@sha256:df2b8fd4a451294229ef6678d780b6c3fcf935c737c8f3f35bddef16cfa16b33"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -93,7 +93,7 @@ n8n:
 postgres:
   image:
     repository: postgres
-    tag: "16-alpine"
+    tag: "16-alpine@sha256:60b180625695e90b6e450405d5f0bcb74bc8c52c65d1cd11aeb3da46cac06dd8"
     pullPolicy: IfNotPresent
   resources:
     limits:
@@ -110,7 +110,7 @@ postgres:
     enabled: true
     image:
       repository: prometheuscommunity/postgres-exporter
-      tag: "v0.15.0"
+      tag: "v0.15.0@sha256:31bdf410910646a05c7edde8d95ab771c9d78fbfbc26b50a52548707496c284d"
       pullPolicy: IfNotPresent
     resources:
       limits:
@@ -195,7 +195,7 @@ backup:
     rclone:
       image:
         repository: rclone/rclone
-        tag: "1.68"
+        tag: "1.68@sha256:41388051445353047e007aa8978ebe224a1efdd6edc55fb746656d19ddf59de2"
       resources:
         limits:
           cpu: 200m
@@ -209,7 +209,7 @@ backup:
 queue:
   enabled: true
   redis:
-    image: redis:7-alpine
+    image: "redis:7-alpine@sha256:4bfd9eca23339865dc14fe75f6d9ae643f714924623978dd2798f1a673b08f43"
     port: 6379
   redisResources:
     limits:
@@ -228,6 +228,23 @@ queue:
       requests:
         cpu: 50m  # LimitRange floor
         memory: 256Mi
+
+# Init container images
+initContainers:
+  busybox:
+    repository: busybox
+    tag: "1.36@sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f"
+
+# Namespace ResourceQuota — right-sized for live single-node cluster
+resourceQuota:
+  requests:
+    cpu: "2"
+    memory: 4Gi
+  limits:
+    cpu: "4"
+    memory: 8Gi
+  pods: "20"
+  pvcs: "10"
 
 # LIVE: Monitoring & Alerting
 monitoring:

@@ -54,7 +54,7 @@ Run the provided script for an interactive fix:
 
 3. **Restart PostgreSQL deployment:**
    ```bash
-   kubectl rollout restart deployment postgres -n n8n-local
+   kubectl rollout restart statefulset/n8n-application-postgres -n n8n-local
    ```
 
 ## Changes Made

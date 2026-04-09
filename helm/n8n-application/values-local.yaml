@@ -8,7 +8,7 @@ namespace: n8n-local
 image:
   repository: n8nio/n8n
   pullPolicy: IfNotPresent
-  tag: "1.19.4"
+  tag: "1.19.4@sha256:df2b8fd4a451294229ef6678d780b6c3fcf935c737c8f3f35bddef16cfa16b33"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -84,7 +84,7 @@ n8n:
 postgres:
   image:
     repository: postgres
-    tag: "16-alpine"
+    tag: "16-alpine@sha256:60b180625695e90b6e450405d5f0bcb74bc8c52c65d1cd11aeb3da46cac06dd8"
     pullPolicy: IfNotPresent
   resources:
     limits:
@@ -134,6 +134,23 @@ externalSecrets:
       mountPath: "kubernetes"
       role: "n8n-local"
       serviceAccount: ""
+
+# Init container images
+initContainers:
+  busybox:
+    repository: busybox
+    tag: "1.36@sha256:b7f3d86d6e84fc17718c48bcde1450807faa2d56704205c697b4bd5df7b9e29f"
+
+# Namespace ResourceQuota — lightweight for Minikube dev
+resourceQuota:
+  requests:
+    cpu: "1"
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+  pods: "10"
+  pvcs: "5"
 
 # Backup
 backup:

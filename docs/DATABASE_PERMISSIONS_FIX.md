@@ -28,15 +28,15 @@ Run the provided script for an automated fix:
 1. **Restart PostgreSQL deployment to apply new permissions:**
 
    ```bash
-   kubectl rollout restart deployment postgres -n n8n-local
-   kubectl rollout status deployment postgres -n n8n-local
+   kubectl rollout restart statefulset/n8n-application-postgres -n n8n-local
+   kubectl rollout status statefulset/n8n-application-postgres -n n8n-local
    ```
 
 2. **Restart n8n deployment:**
 
    ```bash
-   kubectl rollout restart deployment n8n -n n8n-local
-   kubectl rollout status deployment n8n -n n8n-local
+   kubectl rollout restart deployment/n8n -n n8n-local
+   kubectl rollout status deployment/n8n -n n8n-local
    ```
 
 3. **Verify the fix:**

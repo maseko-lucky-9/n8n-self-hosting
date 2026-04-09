@@ -17,7 +17,7 @@ The PostgreSQL pod error "FATAL: role 'postgres' does not exist" has been resolv
 - ✅ Added `POSTGRES_NON_ROOT_USER` secret key (references `appUsername`)
 - ✅ Added `POSTGRES_NON_ROOT_PASSWORD` secret key (references `appPassword`)
 
-#### 3. **postgres-deployment.yaml** (PostgreSQL runs as a Deployment, not a StatefulSet)
+#### 3. **postgres-deployment.yaml** (PostgreSQL runs as a StatefulSet — `n8n-application-postgres`)
 
 - ✅ Updated `POSTGRES_NON_ROOT_USER` env var to use new secret key
 - ✅ Updated `POSTGRES_NON_ROOT_PASSWORD` env var to use new secret key
@@ -50,8 +50,8 @@ POSTGRES_NON_ROOT_USER = "n8n"          ← Different app user
 ### Step 1: Clean Up Existing Pod
 
 ```bash
-# Delete the existing Deployment to force re-initialization
-kubectl delete deployment postgres -n n8n-local --ignore-not-found
+# Delete the existing StatefulSet to force re-initialization
+kubectl delete statefulset n8n-application-postgres -n n8n-local --ignore-not-found
 
 # Wait for pod to be deleted
 kubectl get pods -n n8n-local -w
@@ -157,7 +157,7 @@ kubectl exec -it -n n8n-local "$PGPOD" -- ls -la /var/lib/postgresql/data/pgdata
 
 # If missing, delete PVC and restart
 kubectl delete pvc postgresql-pv -n n8n-local
-kubectl rollout restart deployment postgres -n n8n-local
+kubectl rollout restart statefulset/n8n-application-postgres -n n8n-local
 ```
 
 ### If Init Script Fails

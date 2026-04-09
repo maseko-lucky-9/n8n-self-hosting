@@ -29,7 +29,7 @@ metadata:
   labels:
     # GAP-014: Cleaned up from "postgres-n8n-svn" for consistency
     service: postgres
-  name: postgres-service
+  name: {{ include "n8n-application.postgresServiceName" . }}
   namespace: {{ .Release.Namespace }}
 spec:
   type: ClusterIP
