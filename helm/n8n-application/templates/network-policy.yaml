@@ -11,7 +11,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      service: n8n
+      app.kubernetes.io/component: n8n
   policyTypes:
     - Ingress
     - Egress
@@ -80,10 +80,10 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              service: n8n
+              app.kubernetes.io/component: n8n
         - podSelector:
             matchLabels:
-              service: n8n-worker
+              app.kubernetes.io/component: worker
       ports:
         - protocol: TCP
           port: 5432
@@ -173,10 +173,10 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              service: n8n
+              app.kubernetes.io/component: n8n
         - podSelector:
             matchLabels:
-              service: n8n-worker
+              app.kubernetes.io/component: worker
       ports:
         - protocol: TCP
           port: 6379
@@ -199,7 +199,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      service: n8n-worker
+      app.kubernetes.io/component: worker
   policyTypes:
     - Ingress
     - Egress

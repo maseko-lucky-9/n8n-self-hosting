@@ -14,7 +14,7 @@ spec:
   replicas: {{ .Values.queue.worker.replicas | default 1 }}
   selector:
     matchLabels:
-      service: n8n-worker
+      app.kubernetes.io/component: worker
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -23,7 +23,6 @@ spec:
   template:
     metadata:
       labels:
-        service: n8n-worker
         app.kubernetes.io/name: {{ include "n8n-application.name" . | quote }}
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: worker

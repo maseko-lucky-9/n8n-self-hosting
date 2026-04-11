@@ -2,7 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    service: n8n
     app.kubernetes.io/component: n8n
   name: n8n
   namespace: {{ .Release.Namespace }}
@@ -10,7 +9,7 @@ spec:
   replicas: {{ .Values.replicaCount | default 1 }}
   selector:
     matchLabels:
-      service: n8n
+      app.kubernetes.io/component: n8n
   strategy:
     {{- if .Values.queue.enabled }}
     # GAP-012: RollingUpdate safe with queue mode — Redis leader election ensures
@@ -25,7 +24,6 @@ spec:
   template:
     metadata:
       labels:
-        service: n8n  # retained: Deployment selector immutable until delete+recreate
         app.kubernetes.io/component: n8n
     spec:
       serviceAccountName: {{ include "n8n-application.serviceAccountName" . }}
