@@ -13,8 +13,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      # GAP-014: Cleaned up from "n8n-svn" to match deployment label convention
-      service: n8n
+      app.kubernetes.io/component: n8n
   endpoints:
     - port: "5678"
       path: /metrics

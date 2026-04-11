@@ -11,7 +11,7 @@ spec:
   minAvailable: 1
   selector:
     matchLabels:
-      service: n8n
+      app.kubernetes.io/component: n8n
 {{- end }}
 ---
 # PDB for PostgreSQL — always enabled since DB availability is critical

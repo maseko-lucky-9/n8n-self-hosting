@@ -113,6 +113,45 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+{{- if .Values.backup.enabled }}
+---
+# Backup CronJob NetworkPolicy — tightest egress possible:
+# DNS + postgres only; HTTPS added only when off-cluster upload is enabled.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "n8n-application.fullname" . }}-backup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "n8n-application.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: backup
+  policyTypes:
+    - Egress
+  egress:
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- if .Values.backup.offCluster.enabled }}
+    # Allow rclone S3 upload only when off-cluster backup is enabled
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+{{- end }}
 {{- if .Values.queue.enabled }}
 ---
 # GAP-012: Redis NetworkPolicy — only accepts connections from n8n main + workers

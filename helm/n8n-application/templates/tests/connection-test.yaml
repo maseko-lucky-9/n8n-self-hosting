@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "n8n-application.fullname" . }}-test
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "n8n-application.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: connection-test
+      image: "{{ .Values.initContainers.busybox.repository }}:{{ .Values.initContainers.busybox.tag }}"
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          PASS=0
+          FAIL=0
+
+          check() {
+            local label="$1"; shift
+            if "$@" 2>&1; then
+              echo "PASS: ${label}"
+              PASS=$((PASS + 1))
+            else
+              echo "FAIL: ${label}"
+              FAIL=$((FAIL + 1))
+            fi
+          }
+
+          echo "=== n8n health ==="
+          check "n8n /healthz returns 200" \
+            wget -qO- --timeout=10 \
+              "http://{{ include "n8n-application.fullname" . }}:{{ .Values.n8n.port | default 5678 }}/healthz"
+
+          echo ""
+          echo "=== PostgreSQL TCP ==="
+          check "postgres port 5432 reachable" \
+            nc -z -w5 "{{ include "n8n-application.postgresServiceName" . }}" 5432
+
+          echo ""
+          echo "=== Redis TCP ==="
+          check "redis port 6379 reachable" \
+            nc -z -w5 "{{ include "n8n-application.fullname" . }}-redis" 6379
+
+          echo ""
+          echo "Results: ${PASS} passed, ${FAIL} failed"
+          [ "${FAIL}" -eq 0 ] || exit 1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
