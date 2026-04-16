@@ -1,0 +1,169 @@
+{
+  "name": "Prudentia | W3 - Quote Dispatch",
+  "nodes": [
+    {
+      "id": "c3d4e5f6-0001-4a7b-0c1d-000000000001",
+      "name": "Quote Request Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "prudentia-quote",
+        "responseMode": "lastNode",
+        "responseData": "allEntries",
+        "options": {}
+      },
+      "webhookId": "prudentia-quote"
+    },
+    {
+      "id": "c3d4e5f6-0002-4a7b-0c1d-000000000002",
+      "name": "Build Quote Content",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [440, 300],
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "field-client-name",
+              "name": "client_name",
+              "value": "={{ $json.client_name }}",
+              "type": "string"
+            },
+            {
+              "id": "field-email",
+              "name": "email",
+              "value": "={{ $json.email }}",
+              "type": "string"
+            },
+            {
+              "id": "field-service",
+              "name": "service",
+              "value": "={{ $json.service }}",
+              "type": "string"
+            },
+            {
+              "id": "field-amount",
+              "name": "amount",
+              "value": "={{ $json.amount }}",
+              "type": "string"
+            },
+            {
+              "id": "field-quote-ref",
+              "name": "quote_ref",
+              "value": "=PD-Q-{{ $now.format('YYYYMMDD') }}-{{ Math.floor(Math.random() * 900) + 100 }}",
+              "type": "string"
+            },
+            {
+              "id": "field-quote-date",
+              "name": "quote_date",
+              "value": "={{ $now.format('DD MMMM YYYY') }}",
+              "type": "string"
+            },
+            {
+              "id": "field-valid-until",
+              "name": "valid_until",
+              "value": "={{ $now.plus(30, 'days').format('DD MMMM YYYY') }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3d4e5f6-0003-4a7b-0c1d-000000000003",
+      "name": "Send Quote to Client",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [680, 180],
+      "parameters": {
+        "fromEmail": "hello@prudentiadigital.co.za",
+        "toEmail": "={{ $json.email }}",
+        "subject": "Your Quotation from Prudentia Digital — Ref: {{ $json.quote_ref }}",
+        "emailFormat": "html",
+        "html": "<!DOCTYPE html>\n<html>\n<head>\n  <meta charset='utf-8'>\n  <style>\n    body { font-family: Arial, sans-serif; color: #333; margin: 0; padding: 0; }\n    .container { max-width: 640px; margin: 0 auto; padding: 32px; }\n    .header { background: #0D1B2A; padding: 24px 32px; border-radius: 8px 8px 0 0; display: flex; justify-content: space-between; align-items: center; }\n    .header h1 { color: #C9A96E; margin: 0; font-size: 22px; }\n    .header .ref { color: #8fa3b1; font-size: 13px; margin-top: 4px; }\n    .body { background: #ffffff; padding: 32px; border: 1px solid #e5e7eb; border-top: 0; }\n    .quote-table { width: 100%; border-collapse: collapse; margin: 24px 0; }\n    .quote-table th { background: #0D1B2A; color: #C9A96E; padding: 10px 14px; text-align: left; font-size: 13px; }\n    .quote-table td { padding: 12px 14px; border-bottom: 1px solid #e5e7eb; font-size: 14px; }\n    .quote-table tr:last-child td { border-bottom: 0; }\n    .total-row td { font-weight: bold; background: #fef9ef; color: #0D1B2A; font-size: 16px; }\n    .meta { font-size: 13px; color: #6b7280; margin-bottom: 16px; }\n    .cta { background: #0D1B2A; color: #C9A96E; padding: 14px 28px; text-decoration: none; border-radius: 4px; font-weight: bold; display: inline-block; margin-top: 8px; }\n    .footer { background: #f9fafb; padding: 16px 32px; font-size: 12px; color: #6b7280; border-radius: 0 0 8px 8px; border: 1px solid #e5e7eb; border-top: 0; }\n  </style>\n</head>\n<body>\n  <div class='container'>\n    <div class='header'>\n      <div>\n        <h1>Prudentia Digital</h1>\n        <div class='ref'>Quotation &middot; {{ $json.quote_ref }}</div>\n      </div>\n    </div>\n    <div class='body'>\n      <p>Hi {{ $json.client_name }},</p>\n      <p>Thank you for your interest. Please find your quotation below.</p>\n      <div class='meta'>\n        <strong>Date:</strong> {{ $json.quote_date }}<br>\n        <strong>Valid until:</strong> {{ $json.valid_until }}<br>\n        <strong>Prepared by:</strong> Prudentia Digital (Pty) Ltd\n      </div>\n      <table class='quote-table'>\n        <thead>\n          <tr>\n            <th>Service Description</th>\n            <th style='text-align:right'>Amount (ZAR)</th>\n          </tr>\n        </thead>\n        <tbody>\n          <tr>\n            <td>{{ $json.service }}</td>\n            <td style='text-align:right'>{{ $json.amount }}</td>\n          </tr>\n          <tr class='total-row'>\n            <td>Total (excl. VAT)</td>\n            <td style='text-align:right'>{{ $json.amount }}</td>\n          </tr>\n        </tbody>\n      </table>\n      <p style='font-size:13px;color:#6b7280;'>VAT (15%) will be added upon invoice. Payment terms: 50% upfront, 50% on completion.</p>\n      <p>To accept this quote or discuss scope, simply reply to this email or book a call:</p>\n      <a href='https://prudentiadigital.co.za/book' class='cta'>Accept &amp; Book a Call</a>\n      <p style='margin-top:24px;'>We look forward to working with you.</p>\n      <p>Warm regards,<br><strong>Thulani Maseko</strong><br>Founder, Prudentia Digital</p>\n    </div>\n    <div class='footer'>\n      Prudentia Digital (Pty) Ltd &middot; Enterprise No. 2025/910056/07 &middot; Gauteng, South Africa<br>\n      This quotation is valid for 30 days from the date of issue.\n      <a href='https://prudentiadigital.co.za/paia'>PAIA Manual</a>\n    </div>\n  </div>\n</body>\n</html>",
+        "options": {}
+      },
+      "credentials": {
+        "smtp": {
+          "id": "CONFIGURE_ME",
+          "name": "Prudentia SMTP"
+        }
+      }
+    },
+    {
+      "id": "c3d4e5f6-0004-4a7b-0c1d-000000000004",
+      "name": "Notify Consultant",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [680, 420],
+      "parameters": {
+        "fromEmail": "noreply@prudentiadigital.co.za",
+        "toEmail": "thulani@prudentiadigital.co.za",
+        "subject": "[ACTION] Quote sent to {{ $json.client_name }} — {{ $json.quote_ref }}",
+        "emailFormat": "html",
+        "html": "<p><strong>Quote dispatched automatically.</strong></p><ul><li><strong>Client:</strong> {{ $json.client_name }} ({{ $json.email }})</li><li><strong>Service:</strong> {{ $json.service }}</li><li><strong>Amount:</strong> {{ $json.amount }}</li><li><strong>Ref:</strong> {{ $json.quote_ref }}</li><li><strong>Valid until:</strong> {{ $json.valid_until }}</li></ul><p>Follow up in 48 hours if no response.</p>",
+        "options": {}
+      },
+      "credentials": {
+        "smtp": {
+          "id": "CONFIGURE_ME",
+          "name": "Prudentia SMTP"
+        }
+      }
+    },
+    {
+      "id": "c3d4e5f6-0005-4a7b-0c1d-000000000005",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [920, 300],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'sent', quote_ref: $('Build Quote Content').first().json.quote_ref, message: 'Quote dispatched to ' + $('Build Quote Content').first().json.email }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Quote Request Webhook": {
+      "main": [
+        [
+          { "node": "Build Quote Content", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build Quote Content": {
+      "main": [
+        [
+          { "node": "Send Quote to Client", "type": "main", "index": 0 },
+          { "node": "Notify Consultant", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Send Quote to Client": {
+      "main": [
+        [
+          { "node": "Respond OK", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": [
+    { "name": "prudentia-demo" },
+    { "name": "sme-professional-services" }
+  ],
+  "notes": "DEMO: SA SME Professional Services — Quote Dispatch in 60 seconds.\nWebhook URL: https://n8n.homelab.local/webhook/prudentia-quote\nCredentials required: Prudentia SMTP (x2 — client email + consultant alert).\nTest payload: {\"client_name\": \"Sipho Attorneys Inc\", \"email\": \"demo@test.com\", \"service\": \"Monthly Workflow Automation Retainer\", \"amount\": \"R12,500\"}"
+}
