@@ -222,7 +222,7 @@ queue:
       memory: 64Mi
   worker:
     replicas: 1
-    healthPort: 5679
+    healthPort: 5680  # n8n 2.x Task Broker occupies 5679; worker health server moved to 5680
     resources:
       limits:
         cpu: 500m

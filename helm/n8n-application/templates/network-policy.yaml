@@ -211,7 +211,7 @@ spec:
               kubernetes.io/metadata.name: {{ .Values.networkPolicy.metricsNamespace | default "observability" }}
       ports:
         - protocol: TCP
-          port: 5679
+          port: {{ .Values.queue.worker.healthPort | default 5680 }}
   egress:
     - to: []
       ports:
