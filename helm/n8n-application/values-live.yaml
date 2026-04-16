@@ -66,6 +66,11 @@ extraEnv:
     value: "--max-old-space-size=768"
   - name: N8N_METRICS
     value: "true"
+  # n8n 2.x: trust nginx ingress X-Forwarded-For header (1 proxy hop).
+  # Without this, express-rate-limit throws ERR_ERL_UNEXPECTED_X_FORWARDED_FOR
+  # on every request, blocking login with a 500 before auth runs.
+  - name: N8N_PROXY_HOPS
+    value: "1"
 
 autoscaling:
   enabled: false  # LIVE: Single-node, no autoscaling
