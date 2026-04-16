@@ -5,13 +5,12 @@
       "id": "a1b2c3d4-0001-4e5f-8a9b-000000000001",
       "name": "Client Intake Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 2,
+      "typeVersion": 1,
       "position": [200, 300],
       "parameters": {
         "httpMethod": "POST",
         "path": "prudentia-client-intake",
-        "responseMode": "lastNode",
-        "responseData": "allEntries",
+        "responseMode": "responseNode",
         "options": {}
       },
       "webhookId": "prudentia-client-intake"
@@ -51,7 +50,7 @@
       "id": "a1b2c3d4-0004-4e5f-8a9b-000000000004",
       "name": "Append to Client Register",
       "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "typeVersion": 4.2,
       "position": [680, 420],
       "parameters": {
         "operation": "append",
@@ -90,7 +89,7 @@
       "id": "a1b2c3d4-0005-4e5f-8a9b-000000000005",
       "name": "Respond OK",
       "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.1,
+      "typeVersion": 1,
       "position": [920, 300],
       "parameters": {
         "respondWith": "json",
