@@ -71,6 +71,10 @@ extraEnv:
   # on every request, blocking login with a 500 before auth runs.
   - name: N8N_PROXY_HOPS
     value: "1"
+  # n8n 2.x queue mode: manual executions must run on workers, not main.
+  # Without this, n8n logs a deprecation warning and manual runs bypass the queue.
+  - name: OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS
+    value: "true"
 
 autoscaling:
   enabled: false  # LIVE: Single-node, no autoscaling

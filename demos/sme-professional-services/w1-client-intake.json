@@ -1,139 +1,369 @@
 {
-  "name": "Prudentia | W1 - Client Intake & Onboarding",
+  "name": "W1 - Client Intake & Onboarding",
+  "description": null,
+  "active": true,
+  "isArchived": false,
   "nodes": [
     {
-      "id": "a1b2c3d4-0001-4e5f-8a9b-000000000001",
+      "id": "d8a153f7-ab88-4674-8e53-daf52147cfd2",
       "name": "Client Intake Webhook",
       "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1,
-      "position": [200, 300],
+      "position": [
+        -256,
+        16
+      ],
+      "webhookId": "prudentia-client-intake",
       "parameters": {
-        "httpMethod": "POST",
         "path": "prudentia-client-intake",
-        "responseMode": "responseNode",
-        "options": {}
+        "options": {},
+        "httpMethod": "POST",
+        "responseMode": "onReceived"
       },
-      "webhookId": "prudentia-client-intake"
+      "typeVersion": 1
     },
     {
-      "id": "a1b2c3d4-0002-4e5f-8a9b-000000000002",
+      "id": "6af1b3d7-08cc-4cf2-ab01-18ccd744d122",
       "name": "Validate & Prepare Data",
       "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [440, 300],
+      "position": [
+        -16,
+        16
+      ],
       "parameters": {
-        "jsCode": "const body = $input.first().json;\n\n// Required fields check\nconst required = ['client_name', 'email', 'service'];\nconst missing = required.filter(f => !body[f] || body[f].trim() === '');\nif (missing.length > 0) {\n  throw new Error(`Missing required fields: ${missing.join(', ')}`);\n}\n\n// Prepare enriched record\nconst intakeDate = new Date().toISOString().split('T')[0];\nconst followUpDate = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];\n\nreturn [{\n  json: {\n    client_name: body.client_name.trim(),\n    email: body.email.trim().toLowerCase(),\n    service: body.service.trim(),\n    phone: body.phone || '',\n    notes: body.notes || '',\n    intake_date: intakeDate,\n    follow_up_date: followUpDate,\n    docs_received: false,\n    last_reminder: ''\n  }\n}];"
-      }
+        "jsCode": "const rawInput = $input.first().json;\nconst body = (rawInput.body && typeof rawInput.body === 'object') ? rawInput.body : rawInput;\n\n// Required fields check\nconst required = ['client_name', 'email', 'service'];\nconst missing = required.filter(f => !body[f] || body[f].trim() === '');\nif (missing.length > 0) {\n  throw new Error(`Missing required fields: ${missing.join(', ')}`);\n}\n\n// Prepare enriched record\nconst intakeDate = new Date().toISOString().split('T')[0];\nconst followUpDate = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];\n\nreturn [{\n  json: {\n    client_name: body.client_name.trim(),\n    email: body.email.trim().toLowerCase(),\n    service: body.service.trim(),\n    phone: body.phone || '',\n    notes: body.notes || '',\n    intake_date: intakeDate,\n    follow_up_date: followUpDate,\n    docs_received: false,\n    last_reminder: ''\n  }\n}];"
+      },
+      "typeVersion": 2
     },
     {
-      "id": "a1b2c3d4-0003-4e5f-8a9b-000000000003",
+      "id": "4d778c84-0c7a-4b1e-879c-5943310abaf4",
       "name": "Send Welcome Email",
       "type": "n8n-nodes-base.emailSend",
-      "typeVersion": 2.1,
-      "position": [680, 180],
+      "position": [
+        224,
+        -112
+      ],
+      "webhookId": "01f50db2-6bcd-4347-9d44-cfe8d06b6a78",
       "parameters": {
-        "fromEmail": "hello@prudentiadigital.co.za",
-        "toEmail": "={{ $json.email }}",
-        "subject": "Welcome to Prudentia Digital — {{ $json.client_name }}",
-        "emailFormat": "html",
         "html": "<!DOCTYPE html>\n<html>\n<head>\n  <meta charset='utf-8'>\n  <style>\n    body { font-family: Arial, sans-serif; color: #333; margin: 0; padding: 0; }\n    .container { max-width: 600px; margin: 0 auto; padding: 32px; }\n    .header { background: #0D1B2A; padding: 24px 32px; border-radius: 8px 8px 0 0; }\n    .header h1 { color: #C9A96E; margin: 0; font-size: 22px; }\n    .body { background: #ffffff; padding: 32px; border: 1px solid #e5e7eb; border-top: 0; }\n    .footer { background: #f9fafb; padding: 16px 32px; font-size: 12px; color: #6b7280; border-radius: 0 0 8px 8px; border: 1px solid #e5e7eb; border-top: 0; }\n    .highlight { background: #fef9ef; border-left: 4px solid #C9A96E; padding: 12px 16px; margin: 16px 0; border-radius: 0 4px 4px 0; }\n    .btn { display: inline-block; background: #C9A96E; color: #0D1B2A; padding: 12px 24px; border-radius: 4px; text-decoration: none; font-weight: bold; margin-top: 16px; }\n  </style>\n</head>\n<body>\n  <div class='container'>\n    <div class='header'>\n      <h1>Prudentia Digital</h1>\n    </div>\n    <div class='body'>\n      <p>Hi {{ $json.client_name }},</p>\n      <p>Thank you for reaching out. We've received your enquiry and a consultant will be in touch within <strong>1 business day</strong>.</p>\n      <div class='highlight'>\n        <strong>Your enquiry summary:</strong><br>\n        Service requested: {{ $json.service }}<br>\n        Reference date: {{ $json.intake_date }}\n      </div>\n      <p>In the meantime, please have the following ready for our first call:</p>\n      <ul>\n        <li>Company registration documents (COR14.3 or similar)</li>\n        <li>Brief description of your current processes</li>\n        <li>Any existing tools or software you use (email, accounting, CRM)</li>\n      </ul>\n      <p>We look forward to helping you automate and grow.</p>\n      <p>Warm regards,<br><strong>The Prudentia Digital Team</strong></p>\n    </div>\n    <div class='footer'>\n      Prudentia Digital (Pty) Ltd &middot; Enterprise No. 2025/910056/07 &middot; Gauteng, South Africa<br>\n      This email was sent because you submitted an enquiry form. <a href='#'>Unsubscribe</a> &middot; <a href='https://prudentiadigital.co.za/paia'>PAIA Manual</a>\n    </div>\n  </div>\n</body>\n</html>",
-        "options": {}
+        "options": {},
+        "subject": "Welcome to Prudentia Digital \u2014 {{ $json.client_name }}",
+        "toEmail": "={{ $json.email }}",
+        "fromEmail": "hello@prudentiadigital.co.za"
       },
       "credentials": {
         "smtp": {
-          "id": "CONFIGURE_ME",
-          "name": "Prudentia SMTP"
+          "id": "0xN94eNMgcrhTo4O",
+          "name": "SMTP account"
         }
-      }
+      },
+      "typeVersion": 2.1
     },
     {
-      "id": "a1b2c3d4-0004-4e5f-8a9b-000000000004",
+      "id": "6c11ab01-0b14-4517-b96c-6fdb7b340e83",
       "name": "Append to Client Register",
       "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.2,
-      "position": [680, 420],
+      "position": [
+        224,
+        128
+      ],
       "parameters": {
-        "operation": "append",
-        "documentId": {
-          "__rl": true,
-          "value": "SHEET_ID_PLACEHOLDER",
-          "mode": "id"
-        },
-        "sheetName": {
-          "__rl": true,
-          "value": "gid=0",
-          "mode": "id"
-        },
         "columns": {
-          "mappingMode": "defineBelow",
           "value": {
-            "client_name": "={{ $json.client_name }}",
             "email": "={{ $json.email }}",
-            "service": "={{ $json.service }}",
             "phone": "={{ $json.phone }}",
+            "service": "={{ $json.service }}",
+            "client_name": "={{ $json.client_name }}",
             "intake_date": "={{ $json.intake_date }}",
             "docs_received": "=FALSE",
             "last_reminder": ""
-          }
+          },
+          "mappingMode": "defineBelow"
         },
-        "options": {}
+        "options": {},
+        "operation": "append",
+        "sheetName": {
+          "__rl": true,
+          "mode": "id",
+          "value": "gid=0"
+        },
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "SHEET_ID_PLACEHOLDER"
+        },
+        "authentication": "serviceAccount"
       },
       "credentials": {
-        "googleSheetsOAuth2Api": {
-          "id": "CONFIGURE_ME",
-          "name": "Prudentia Google Sheets"
+        "googleApi": {
+          "id": "wJeXXFRWx4gwJ7Xe",
+          "name": "Google Sheets account"
         }
-      }
+      },
+      "typeVersion": 4.2
     },
     {
-      "id": "a1b2c3d4-0005-4e5f-8a9b-000000000005",
+      "id": "f953d444-abfd-419d-b672-19085fb87765",
       "name": "Respond OK",
       "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1,
-      "position": [920, 300],
+      "position": [
+        464,
+        16
+      ],
       "parameters": {
-        "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ status: 'received', message: 'Thank you, ' + $('Validate & Prepare Data').first().json.client_name + '. We will be in touch shortly.' }) }}",
         "options": {
           "responseCode": 200
-        }
-      }
+        },
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'received', message: 'Thank you, ' + $('Validate & Prepare Data').first().json.client_name + '. We will be in touch shortly.' }) }}"
+      },
+      "typeVersion": 1
     }
   ],
   "connections": {
     "Client Intake Webhook": {
       "main": [
         [
-          { "node": "Validate & Prepare Data", "type": "main", "index": 0 }
+          {
+            "node": "Validate & Prepare Data",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
     "Validate & Prepare Data": {
       "main": [
         [
-          { "node": "Send Welcome Email", "type": "main", "index": 0 },
-          { "node": "Append to Client Register", "type": "main", "index": 0 }
+          {
+            "node": "Send Welcome Email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Append to Client Register",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
     "Send Welcome Email": {
       "main": [
-        [
-          { "node": "Respond OK", "type": "main", "index": 0 }
-        ]
+        []
       ]
     }
   },
-  "active": false,
   "settings": {
     "executionOrder": "v1",
-    "saveManualExecutions": true,
+    "binaryMode": "separate",
     "callerPolicy": "workflowsFromSameOwner",
-    "errorWorkflow": ""
+    "availableInMCP": false
   },
-  "tags": [
-    { "name": "prudentia-demo" },
-    { "name": "sme-professional-services" }
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "versionId": "4f330f05-78df-4fdb-a98d-fe2cd27f7804",
+  "activeVersionId": "4f330f05-78df-4fdb-a98d-fe2cd27f7804",
+  "versionCounter": 48,
+  "triggerCount": 1,
+  "shared": [
+    {
+      "updatedAt": "2026-04-16T16:41:24.308Z",
+      "createdAt": "2026-04-16T16:41:24.308Z",
+      "role": "workflow:owner",
+      "workflowId": "mn4MLit0346zr2O7",
+      "projectId": "ys0LhSUUjREE83YH",
+      "project": {
+        "updatedAt": "2026-04-16T15:49:06.381Z",
+        "createdAt": "2026-04-16T15:49:06.381Z",
+        "id": "ys0LhSUUjREE83YH",
+        "name": "Thulani Maseko <masekotlg@gmail.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "db0065b1-229b-4d2d-ae28-e847f5b1275b"
+      }
+    }
   ],
-  "notes": "DEMO: SA SME Professional Services — Client Intake & Onboarding.\nWebhook URL: https://n8n.homelab.local/webhook/prudentia-client-intake\nCredentials required: Prudentia SMTP (required), Prudentia Google Sheets (optional — disable Sheets node if OAuth not configured).\nTest payload: {\"client_name\": \"Nomvula Dlamini\", \"email\": \"demo@test.com\", \"service\": \"Monthly Bookkeeping\"}"
+  "tags": [],
+  "activeVersion": {
+    "updatedAt": "2026-04-17T16:19:03.466Z",
+    "createdAt": "2026-04-17T16:19:03.466Z",
+    "versionId": "4f330f05-78df-4fdb-a98d-fe2cd27f7804",
+    "workflowId": "mn4MLit0346zr2O7",
+    "nodes": [
+      {
+        "id": "d8a153f7-ab88-4674-8e53-daf52147cfd2",
+        "name": "Client Intake Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "position": [
+          -256,
+          16
+        ],
+        "webhookId": "prudentia-client-intake",
+        "parameters": {
+          "path": "prudentia-client-intake",
+          "options": {},
+          "httpMethod": "POST",
+          "responseMode": "onReceived"
+        },
+        "typeVersion": 1
+      },
+      {
+        "id": "6af1b3d7-08cc-4cf2-ab01-18ccd744d122",
+        "name": "Validate & Prepare Data",
+        "type": "n8n-nodes-base.code",
+        "position": [
+          -16,
+          16
+        ],
+        "parameters": {
+          "jsCode": "const rawInput = $input.first().json;\nconst body = (rawInput.body && typeof rawInput.body === 'object') ? rawInput.body : rawInput;\n\n// Required fields check\nconst required = ['client_name', 'email', 'service'];\nconst missing = required.filter(f => !body[f] || body[f].trim() === '');\nif (missing.length > 0) {\n  throw new Error(`Missing required fields: ${missing.join(', ')}`);\n}\n\n// Prepare enriched record\nconst intakeDate = new Date().toISOString().split('T')[0];\nconst followUpDate = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];\n\nreturn [{\n  json: {\n    client_name: body.client_name.trim(),\n    email: body.email.trim().toLowerCase(),\n    service: body.service.trim(),\n    phone: body.phone || '',\n    notes: body.notes || '',\n    intake_date: intakeDate,\n    follow_up_date: followUpDate,\n    docs_received: false,\n    last_reminder: ''\n  }\n}];"
+        },
+        "typeVersion": 2
+      },
+      {
+        "id": "4d778c84-0c7a-4b1e-879c-5943310abaf4",
+        "name": "Send Welcome Email",
+        "type": "n8n-nodes-base.emailSend",
+        "position": [
+          224,
+          -112
+        ],
+        "webhookId": "01f50db2-6bcd-4347-9d44-cfe8d06b6a78",
+        "parameters": {
+          "html": "<!DOCTYPE html>\n<html>\n<head>\n  <meta charset='utf-8'>\n  <style>\n    body { font-family: Arial, sans-serif; color: #333; margin: 0; padding: 0; }\n    .container { max-width: 600px; margin: 0 auto; padding: 32px; }\n    .header { background: #0D1B2A; padding: 24px 32px; border-radius: 8px 8px 0 0; }\n    .header h1 { color: #C9A96E; margin: 0; font-size: 22px; }\n    .body { background: #ffffff; padding: 32px; border: 1px solid #e5e7eb; border-top: 0; }\n    .footer { background: #f9fafb; padding: 16px 32px; font-size: 12px; color: #6b7280; border-radius: 0 0 8px 8px; border: 1px solid #e5e7eb; border-top: 0; }\n    .highlight { background: #fef9ef; border-left: 4px solid #C9A96E; padding: 12px 16px; margin: 16px 0; border-radius: 0 4px 4px 0; }\n    .btn { display: inline-block; background: #C9A96E; color: #0D1B2A; padding: 12px 24px; border-radius: 4px; text-decoration: none; font-weight: bold; margin-top: 16px; }\n  </style>\n</head>\n<body>\n  <div class='container'>\n    <div class='header'>\n      <h1>Prudentia Digital</h1>\n    </div>\n    <div class='body'>\n      <p>Hi {{ $json.client_name }},</p>\n      <p>Thank you for reaching out. We've received your enquiry and a consultant will be in touch within <strong>1 business day</strong>.</p>\n      <div class='highlight'>\n        <strong>Your enquiry summary:</strong><br>\n        Service requested: {{ $json.service }}<br>\n        Reference date: {{ $json.intake_date }}\n      </div>\n      <p>In the meantime, please have the following ready for our first call:</p>\n      <ul>\n        <li>Company registration documents (COR14.3 or similar)</li>\n        <li>Brief description of your current processes</li>\n        <li>Any existing tools or software you use (email, accounting, CRM)</li>\n      </ul>\n      <p>We look forward to helping you automate and grow.</p>\n      <p>Warm regards,<br><strong>The Prudentia Digital Team</strong></p>\n    </div>\n    <div class='footer'>\n      Prudentia Digital (Pty) Ltd &middot; Enterprise No. 2025/910056/07 &middot; Gauteng, South Africa<br>\n      This email was sent because you submitted an enquiry form. <a href='#'>Unsubscribe</a> &middot; <a href='https://prudentiadigital.co.za/paia'>PAIA Manual</a>\n    </div>\n  </div>\n</body>\n</html>",
+          "options": {},
+          "subject": "Welcome to Prudentia Digital \u2014 {{ $json.client_name }}",
+          "toEmail": "={{ $json.email }}",
+          "fromEmail": "hello@prudentiadigital.co.za"
+        },
+        "credentials": {
+          "smtp": {
+            "id": "0xN94eNMgcrhTo4O",
+            "name": "SMTP account"
+          }
+        },
+        "typeVersion": 2.1
+      },
+      {
+        "id": "6c11ab01-0b14-4517-b96c-6fdb7b340e83",
+        "name": "Append to Client Register",
+        "type": "n8n-nodes-base.googleSheets",
+        "position": [
+          224,
+          128
+        ],
+        "parameters": {
+          "columns": {
+            "value": {
+              "email": "={{ $json.email }}",
+              "phone": "={{ $json.phone }}",
+              "service": "={{ $json.service }}",
+              "client_name": "={{ $json.client_name }}",
+              "intake_date": "={{ $json.intake_date }}",
+              "docs_received": "=FALSE",
+              "last_reminder": ""
+            },
+            "mappingMode": "defineBelow"
+          },
+          "options": {},
+          "operation": "append",
+          "sheetName": {
+            "__rl": true,
+            "mode": "id",
+            "value": "gid=0"
+          },
+          "documentId": {
+            "__rl": true,
+            "mode": "id",
+            "value": "SHEET_ID_PLACEHOLDER"
+          },
+          "authentication": "serviceAccount"
+        },
+        "credentials": {
+          "googleApi": {
+            "id": "wJeXXFRWx4gwJ7Xe",
+            "name": "Google Sheets account"
+          }
+        },
+        "typeVersion": 4.2
+      },
+      {
+        "id": "f953d444-abfd-419d-b672-19085fb87765",
+        "name": "Respond OK",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "position": [
+          464,
+          16
+        ],
+        "parameters": {
+          "options": {
+            "responseCode": 200
+          },
+          "respondWith": "json",
+          "responseBody": "={{ JSON.stringify({ status: 'received', message: 'Thank you, ' + $('Validate & Prepare Data').first().json.client_name + '. We will be in touch shortly.' }) }}"
+        },
+        "typeVersion": 1
+      }
+    ],
+    "connections": {
+      "Client Intake Webhook": {
+        "main": [
+          [
+            {
+              "node": "Validate & Prepare Data",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Validate & Prepare Data": {
+        "main": [
+          [
+            {
+              "node": "Send Welcome Email",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Append to Client Register",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Send Welcome Email": {
+        "main": [
+          []
+        ]
+      }
+    },
+    "authors": "Thulani Maseko",
+    "name": null,
+    "description": null,
+    "autosaved": false,
+    "workflowPublishHistory": [
+      {
+        "createdAt": "2026-04-17T16:19:03.529Z",
+        "id": 15,
+        "workflowId": "mn4MLit0346zr2O7",
+        "versionId": "4f330f05-78df-4fdb-a98d-fe2cd27f7804",
+        "event": "deactivated",
+        "userId": "db0065b1-229b-4d2d-ae28-e847f5b1275b"
+      },
+      {
+        "createdAt": "2026-04-17T16:19:03.576Z",
+        "id": 16,
+        "workflowId": "mn4MLit0346zr2O7",
+        "versionId": "4f330f05-78df-4fdb-a98d-fe2cd27f7804",
+        "event": "activated",
+        "userId": "db0065b1-229b-4d2d-ae28-e847f5b1275b"
+      }
+    ]
+  }
 }

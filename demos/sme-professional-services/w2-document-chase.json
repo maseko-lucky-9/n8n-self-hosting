@@ -1,12 +1,10 @@
 {
-  "name": "Prudentia | W2 - Document Chase (POPIA-Aware)",
+  "name": "W2 - Document Chase (POPIA-Aware)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
   "nodes": [
     {
-      "id": "b2c3d4e5-0001-4f6a-9b0c-000000000001",
-      "name": "Daily 09:00 SAST",
-      "type": "n8n-nodes-base.scheduleTrigger",
-      "typeVersion": 1.1,
-      "position": [200, 300],
       "parameters": {
         "rule": {
           "interval": [
@@ -16,97 +14,131 @@
             }
           ]
         }
-      }
+      },
+      "id": "c60cad1a-3ff4-421a-925c-20c618f07a0b",
+      "name": "Daily 09:00 SAST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
     },
     {
-      "id": "b2c3d4e5-0002-4f6a-9b0c-000000000002",
+      "parameters": {
+        "jsCode": "// DEMO MODE: Returns hardcoded dataset so workflow runs without Google Sheets OAuth.\n// In production: replace this node with a Google Sheets 'Read All Rows' node\n// pointing to the 'Prudentia Demo - SME Client Register' sheet.\n\nconst today = new Date();\n\nconst demoClients = [\n  {\n    client_name: 'Nomvula Dlamini Attorneys Inc.',\n    email: 'demo+nomvula@prudentiadigital.co.za',\n    service: 'Monthly Retainer',\n    intake_date: new Date(today - 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],\n    docs_received: false,\n    last_reminder: ''\n  },\n  {\n    client_name: 'Sipho & Partners Accounting',\n    email: 'demo+sipho@prudentiadigital.co.za',\n    service: 'Bookkeeping Automation',\n    intake_date: new Date(today - 8 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],\n    docs_received: false,\n    last_reminder: new Date(today - 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]\n  },\n  {\n    client_name: 'Lungelo HR Consultancy',\n    email: 'demo+lungelo@prudentiadigital.co.za',\n    service: 'Employee Onboarding Automation',\n    intake_date: new Date(today - 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],\n    docs_received: true,\n    last_reminder: ''\n  }\n];\n\nreturn demoClients.map(c => ({ json: c }));"
+      },
+      "id": "08fda03c-e0fd-45be-a467-b468266a89cb",
       "name": "Load Client Register",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [440, 300],
-      "parameters": {
-        "jsCode": "// DEMO MODE: Returns hardcoded dataset so workflow runs without Google Sheets OAuth.\n// In production: replace this node with a Google Sheets 'Read All Rows' node\n// pointing to the 'Prudentia Demo - SME Client Register' sheet.\n\nconst today = new Date();\n\nconst demoClients = [\n  {\n    client_name: 'Nomvula Dlamini Attorneys Inc.',\n    email: 'demo+nomvula@prudentiadigital.co.za',\n    service: 'Monthly Retainer',\n    intake_date: new Date(today - 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],\n    docs_received: false,\n    last_reminder: ''\n  },\n  {\n    client_name: 'Sipho & Partners Accounting',\n    email: 'demo+sipho@prudentiadigital.co.za',\n    service: 'Bookkeeping Automation',\n    intake_date: new Date(today - 8 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],\n    docs_received: false,\n    last_reminder: new Date(today - 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]\n  },\n  {\n    client_name: 'Lungelo HR Consultancy',\n    email: 'demo+lungelo@prudentiadigital.co.za',\n    service: 'Employee Onboarding Automation',\n    intake_date: new Date(today - 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],\n    docs_received: true,\n    last_reminder: ''\n  }\n];\n\nreturn demoClients.map(c => ({ json: c }));"
-      }
+      "position": [
+        240,
+        0
+      ]
     },
     {
-      "id": "b2c3d4e5-0003-4f6a-9b0c-000000000003",
+      "parameters": {
+        "jsCode": "const today = new Date();\n\nconst toChase = $input.all().filter(item => {\n  const client = item.json;\n  if (client.docs_received === true || client.docs_received === 'TRUE') return false;\n\n  const intakeDate = new Date(client.intake_date);\n  const daysSinceIntake = Math.floor((today - intakeDate) / (24 * 60 * 60 * 1000));\n  if (daysSinceIntake < 3) return false;\n\n  // Avoid double-chasing same day\n  if (client.last_reminder) {\n    const lastReminder = new Date(client.last_reminder);\n    const daysSinceReminder = Math.floor((today - lastReminder) / (24 * 60 * 60 * 1000));\n    if (daysSinceReminder < 1) return false;\n  }\n\n  return true;\n});\n\nif (toChase.length === 0) {\n  return [{ json: { skipped: true, message: 'No clients require chasing today.' } }];\n}\n\nreturn toChase.map(item => ({\n  json: {\n    ...item.json,\n    reminder_date: today.toISOString().split('T')[0]\n  }\n}));"
+      },
+      "id": "2cd95320-6752-4a6f-884a-5a5abe72a848",
       "name": "Filter: Chase Needed",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [680, 300],
-      "parameters": {
-        "jsCode": "const today = new Date();\n\nconst toChase = $input.all().filter(item => {\n  const client = item.json;\n  if (client.docs_received === true || client.docs_received === 'TRUE') return false;\n\n  const intakeDate = new Date(client.intake_date);\n  const daysSinceIntake = Math.floor((today - intakeDate) / (24 * 60 * 60 * 1000));\n  if (daysSinceIntake < 3) return false;\n\n  // Avoid double-chasing same day\n  if (client.last_reminder) {\n    const lastReminder = new Date(client.last_reminder);\n    const daysSinceReminder = Math.floor((today - lastReminder) / (24 * 60 * 60 * 1000));\n    if (daysSinceReminder < 1) return false;\n  }\n\n  return true;\n});\n\nif (toChase.length === 0) {\n  return [{ json: { skipped: true, message: 'No clients require chasing today.' } }];\n}\n\nreturn toChase.map(item => ({\n  json: {\n    ...item.json,\n    reminder_date: today.toISOString().split('T')[0]\n  }\n}));"
-      }
+      "position": [
+        480,
+        0
+      ]
     },
     {
-      "id": "b2c3d4e5-0004-4f6a-9b0c-000000000004",
-      "name": "Skip if None",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 1,
-      "position": [920, 300],
       "parameters": {
         "conditions": {
           "string": [
             {
               "value1": "={{ $json.skipped ? 'skip' : 'chase' }}",
-              "value2": "skip",
-              "operation": "equal"
+              "value2": "skip"
             }
           ]
         }
-      }
+      },
+      "id": "1c9a3ebf-700e-4042-8a07-450bf15f2969",
+      "name": "Skip if None",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        720,
+        0
+      ]
     },
     {
-      "id": "b2c3d4e5-0005-4f6a-9b0c-000000000005",
-      "name": "Send Chase Email",
-      "type": "n8n-nodes-base.emailSend",
-      "typeVersion": 2.1,
-      "position": [1160, 420],
       "parameters": {
-        "fromEmail": "hello@prudentiadigital.co.za",
+        "fromEmail": "masekolt@prudentiadigital.co.za",
         "toEmail": "={{ $json.email }}",
-        "subject": "Friendly Reminder — Documents Outstanding | {{ $json.client_name }}",
-        "emailFormat": "html",
+        "subject": "Friendly Reminder \u2014 Documents Outstanding | {{ $json.client_name }}",
         "html": "<!DOCTYPE html>\n<html>\n<head>\n  <meta charset='utf-8'>\n  <style>\n    body { font-family: Arial, sans-serif; color: #333; margin: 0; padding: 0; }\n    .container { max-width: 600px; margin: 0 auto; padding: 32px; }\n    .header { background: #0D1B2A; padding: 24px 32px; border-radius: 8px 8px 0 0; }\n    .header h1 { color: #C9A96E; margin: 0; font-size: 22px; }\n    .body { background: #ffffff; padding: 32px; border: 1px solid #e5e7eb; border-top: 0; }\n    .footer { background: #f9fafb; padding: 16px 32px; font-size: 12px; color: #6b7280; border-radius: 0 0 8px 8px; border: 1px solid #e5e7eb; border-top: 0; }\n    .highlight { background: #fef9ef; border-left: 4px solid #C9A96E; padding: 12px 16px; margin: 16px 0; border-radius: 0 4px 4px 0; }\n  </style>\n</head>\n<body>\n  <div class='container'>\n    <div class='header'>\n      <h1>Prudentia Digital</h1>\n    </div>\n    <div class='body'>\n      <p>Hi {{ $json.client_name }},</p>\n      <p>We hope this finds you well. We noticed that we're still waiting on your documents to get started on your <strong>{{ $json.service }}</strong> engagement.</p>\n      <div class='highlight'>\n        <strong>Awaiting since:</strong> {{ $json.intake_date }}<br>\n        <strong>Documents needed:</strong> Company registration docs, current process overview, and list of existing tools.\n      </div>\n      <p>Please reply to this email with your documents attached, or let us know if you need help preparing them.</p>\n      <p>Warm regards,<br><strong>The Prudentia Digital Team</strong></p>\n    </div>\n    <div class='footer'>\n      Prudentia Digital (Pty) Ltd &middot; Gauteng, South Africa<br>\n      This is an automated reminder related to your active engagement.<br>\n      To opt out of these reminders, reply with STOP or <a href='#'>click here</a>.\n      Processing of your information is in accordance with POPIA. <a href='https://prudentiadigital.co.za/paia'>View our PAIA Manual</a>.\n    </div>\n  </div>\n</body>\n</html>",
         "options": {}
       },
+      "id": "f4c18e27-a705-423f-a7db-d19c6c2bcac7",
+      "name": "Send Chase Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        960,
+        128
+      ],
+      "webhookId": "992b7ee7-5ba3-4ed4-babb-5631f05fd473",
       "credentials": {
         "smtp": {
-          "id": "CONFIGURE_ME",
-          "name": "Prudentia SMTP"
+          "id": "0xN94eNMgcrhTo4O",
+          "name": "SMTP account"
         }
       }
     },
     {
-      "id": "b2c3d4e5-0006-4f6a-9b0c-000000000006",
+      "parameters": {
+        "jsCode": "// In production: update the Google Sheets 'last_reminder' column for this client.\n// Replace with a Google Sheets 'Update Row' node matching on email.\n// Demo: just log the action.\nconst client = $input.first().json;\nconsole.log(`[${new Date().toISOString()}] Reminder sent to: ${client.client_name} <${client.email}>`);\nreturn [{ json: { ...client, reminder_logged: true } }];"
+      },
+      "id": "ac43321e-812a-4919-8ee3-8a45a93d1a26",
       "name": "Log Reminder Sent",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1400, 420],
-      "parameters": {
-        "jsCode": "// In production: update the Google Sheets 'last_reminder' column for this client.\n// Replace with a Google Sheets 'Update Row' node matching on email.\n// Demo: just log the action.\nconst client = $input.first().json;\nconsole.log(`[${new Date().toISOString()}] Reminder sent to: ${client.client_name} <${client.email}>`);\nreturn [{ json: { ...client, reminder_logged: true } }];"
-      }
+      "position": [
+        1200,
+        128
+      ]
     }
   ],
   "connections": {
     "Daily 09:00 SAST": {
       "main": [
         [
-          { "node": "Load Client Register", "type": "main", "index": 0 }
+          {
+            "node": "Load Client Register",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
     "Load Client Register": {
       "main": [
         [
-          { "node": "Filter: Chase Needed", "type": "main", "index": 0 }
+          {
+            "node": "Filter: Chase Needed",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
     "Filter: Chase Needed": {
       "main": [
         [
-          { "node": "Skip if None", "type": "main", "index": 0 }
+          {
+            "node": "Skip if None",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -114,27 +146,235 @@
       "main": [
         [],
         [
-          { "node": "Send Chase Email", "type": "main", "index": 0 }
+          {
+            "node": "Send Chase Email",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
     "Send Chase Email": {
       "main": [
         [
-          { "node": "Log Reminder Sent", "type": "main", "index": 0 }
+          {
+            "node": "Log Reminder Sent",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     }
   },
-  "active": true,
   "settings": {
     "executionOrder": "v1",
-    "saveManualExecutions": true,
-    "callerPolicy": "workflowsFromSameOwner"
+    "binaryMode": "separate"
   },
-  "tags": [
-    { "name": "prudentia-demo" },
-    { "name": "sme-professional-services" }
+  "staticData": {
+    "node:Daily 09:00 SAST": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "versionId": "d961e726-9260-46cf-8562-0146ce393518",
+  "activeVersionId": "d961e726-9260-46cf-8562-0146ce393518",
+  "versionCounter": 9,
+  "triggerCount": 1,
+  "shared": [
+    {
+      "updatedAt": "2026-04-16T19:30:23.863Z",
+      "createdAt": "2026-04-16T19:30:23.863Z",
+      "role": "workflow:owner",
+      "workflowId": "8j55eN9V0jXpE54x",
+      "projectId": "ys0LhSUUjREE83YH",
+      "project": {
+        "updatedAt": "2026-04-16T15:49:06.381Z",
+        "createdAt": "2026-04-16T15:49:06.381Z",
+        "id": "ys0LhSUUjREE83YH",
+        "name": "Thulani Maseko <masekotlg@gmail.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "db0065b1-229b-4d2d-ae28-e847f5b1275b"
+      }
+    }
   ],
-  "notes": "DEMO: SA SME Professional Services — POPIA-aware document chase.\nSchedule: 0 7 * * * (07:00 UTC = 09:00 SAST)\nCredentials required: Prudentia SMTP.\nFallback: 'Load Client Register' Code node uses hardcoded demo data — no Google Sheets OAuth needed.\nFor production: replace Load and Log nodes with Google Sheets Read/Update nodes."
+  "tags": [],
+  "activeVersion": {
+    "updatedAt": "2026-04-16T19:30:55.833Z",
+    "createdAt": "2026-04-16T19:30:55.833Z",
+    "versionId": "d961e726-9260-46cf-8562-0146ce393518",
+    "workflowId": "8j55eN9V0jXpE54x",
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 7 * * *"
+              }
+            ]
+          }
+        },
+        "id": "c60cad1a-3ff4-421a-925c-20c618f07a0b",
+        "name": "Daily 09:00 SAST",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.1,
+        "position": [
+          0,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// DEMO MODE: Returns hardcoded dataset so workflow runs without Google Sheets OAuth.\n// In production: replace this node with a Google Sheets 'Read All Rows' node\n// pointing to the 'Prudentia Demo - SME Client Register' sheet.\n\nconst today = new Date();\n\nconst demoClients = [\n  {\n    client_name: 'Nomvula Dlamini Attorneys Inc.',\n    email: 'demo+nomvula@prudentiadigital.co.za',\n    service: 'Monthly Retainer',\n    intake_date: new Date(today - 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],\n    docs_received: false,\n    last_reminder: ''\n  },\n  {\n    client_name: 'Sipho & Partners Accounting',\n    email: 'demo+sipho@prudentiadigital.co.za',\n    service: 'Bookkeeping Automation',\n    intake_date: new Date(today - 8 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],\n    docs_received: false,\n    last_reminder: new Date(today - 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]\n  },\n  {\n    client_name: 'Lungelo HR Consultancy',\n    email: 'demo+lungelo@prudentiadigital.co.za',\n    service: 'Employee Onboarding Automation',\n    intake_date: new Date(today - 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],\n    docs_received: true,\n    last_reminder: ''\n  }\n];\n\nreturn demoClients.map(c => ({ json: c }));"
+        },
+        "id": "08fda03c-e0fd-45be-a467-b468266a89cb",
+        "name": "Load Client Register",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          240,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const today = new Date();\n\nconst toChase = $input.all().filter(item => {\n  const client = item.json;\n  if (client.docs_received === true || client.docs_received === 'TRUE') return false;\n\n  const intakeDate = new Date(client.intake_date);\n  const daysSinceIntake = Math.floor((today - intakeDate) / (24 * 60 * 60 * 1000));\n  if (daysSinceIntake < 3) return false;\n\n  // Avoid double-chasing same day\n  if (client.last_reminder) {\n    const lastReminder = new Date(client.last_reminder);\n    const daysSinceReminder = Math.floor((today - lastReminder) / (24 * 60 * 60 * 1000));\n    if (daysSinceReminder < 1) return false;\n  }\n\n  return true;\n});\n\nif (toChase.length === 0) {\n  return [{ json: { skipped: true, message: 'No clients require chasing today.' } }];\n}\n\nreturn toChase.map(item => ({\n  json: {\n    ...item.json,\n    reminder_date: today.toISOString().split('T')[0]\n  }\n}));"
+        },
+        "id": "2cd95320-6752-4a6f-884a-5a5abe72a848",
+        "name": "Filter: Chase Needed",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          480,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "string": [
+              {
+                "value1": "={{ $json.skipped ? 'skip' : 'chase' }}",
+                "value2": "skip"
+              }
+            ]
+          }
+        },
+        "id": "1c9a3ebf-700e-4042-8a07-450bf15f2969",
+        "name": "Skip if None",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          720,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "fromEmail": "masekolt@prudentiadigital.co.za",
+          "toEmail": "={{ $json.email }}",
+          "subject": "Friendly Reminder \u2014 Documents Outstanding | {{ $json.client_name }}",
+          "html": "<!DOCTYPE html>\n<html>\n<head>\n  <meta charset='utf-8'>\n  <style>\n    body { font-family: Arial, sans-serif; color: #333; margin: 0; padding: 0; }\n    .container { max-width: 600px; margin: 0 auto; padding: 32px; }\n    .header { background: #0D1B2A; padding: 24px 32px; border-radius: 8px 8px 0 0; }\n    .header h1 { color: #C9A96E; margin: 0; font-size: 22px; }\n    .body { background: #ffffff; padding: 32px; border: 1px solid #e5e7eb; border-top: 0; }\n    .footer { background: #f9fafb; padding: 16px 32px; font-size: 12px; color: #6b7280; border-radius: 0 0 8px 8px; border: 1px solid #e5e7eb; border-top: 0; }\n    .highlight { background: #fef9ef; border-left: 4px solid #C9A96E; padding: 12px 16px; margin: 16px 0; border-radius: 0 4px 4px 0; }\n  </style>\n</head>\n<body>\n  <div class='container'>\n    <div class='header'>\n      <h1>Prudentia Digital</h1>\n    </div>\n    <div class='body'>\n      <p>Hi {{ $json.client_name }},</p>\n      <p>We hope this finds you well. We noticed that we're still waiting on your documents to get started on your <strong>{{ $json.service }}</strong> engagement.</p>\n      <div class='highlight'>\n        <strong>Awaiting since:</strong> {{ $json.intake_date }}<br>\n        <strong>Documents needed:</strong> Company registration docs, current process overview, and list of existing tools.\n      </div>\n      <p>Please reply to this email with your documents attached, or let us know if you need help preparing them.</p>\n      <p>Warm regards,<br><strong>The Prudentia Digital Team</strong></p>\n    </div>\n    <div class='footer'>\n      Prudentia Digital (Pty) Ltd &middot; Gauteng, South Africa<br>\n      This is an automated reminder related to your active engagement.<br>\n      To opt out of these reminders, reply with STOP or <a href='#'>click here</a>.\n      Processing of your information is in accordance with POPIA. <a href='https://prudentiadigital.co.za/paia'>View our PAIA Manual</a>.\n    </div>\n  </div>\n</body>\n</html>",
+          "options": {}
+        },
+        "id": "f4c18e27-a705-423f-a7db-d19c6c2bcac7",
+        "name": "Send Chase Email",
+        "type": "n8n-nodes-base.emailSend",
+        "typeVersion": 2.1,
+        "position": [
+          960,
+          128
+        ],
+        "webhookId": "992b7ee7-5ba3-4ed4-babb-5631f05fd473",
+        "credentials": {
+          "smtp": {
+            "id": "0xN94eNMgcrhTo4O",
+            "name": "SMTP account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "// In production: update the Google Sheets 'last_reminder' column for this client.\n// Replace with a Google Sheets 'Update Row' node matching on email.\n// Demo: just log the action.\nconst client = $input.first().json;\nconsole.log(`[${new Date().toISOString()}] Reminder sent to: ${client.client_name} <${client.email}>`);\nreturn [{ json: { ...client, reminder_logged: true } }];"
+        },
+        "id": "ac43321e-812a-4919-8ee3-8a45a93d1a26",
+        "name": "Log Reminder Sent",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1200,
+          128
+        ]
+      }
+    ],
+    "connections": {
+      "Daily 09:00 SAST": {
+        "main": [
+          [
+            {
+              "node": "Load Client Register",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Load Client Register": {
+        "main": [
+          [
+            {
+              "node": "Filter: Chase Needed",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Filter: Chase Needed": {
+        "main": [
+          [
+            {
+              "node": "Skip if None",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Skip if None": {
+        "main": [
+          [],
+          [
+            {
+              "node": "Send Chase Email",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Send Chase Email": {
+        "main": [
+          [
+            {
+              "node": "Log Reminder Sent",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "authors": "Thulani Maseko",
+    "name": null,
+    "description": null,
+    "autosaved": true,
+    "workflowPublishHistory": []
+  }
 }
