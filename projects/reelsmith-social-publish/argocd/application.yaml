@@ -10,7 +10,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: git@github.com:maseko-lucky-9/n8n-self-hosting.git
+    repoURL: https://github.com/maseko-lucky-9/n8n-self-hosting.git
     targetRevision: HEAD
     path: projects/reelsmith-social-publish/manifests
   destination:
