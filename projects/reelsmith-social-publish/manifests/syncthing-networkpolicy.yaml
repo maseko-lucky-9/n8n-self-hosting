@@ -1,0 +1,46 @@
+---
+# NetworkPolicy: Syncthing — ingress for sync on port 22000 (NodePort 32200 on host),
+# egress for DNS, global discovery/relay (HTTPS), and direct device sync (22000).
+# All other ingress (web UI 8384) is deny-all — access via kubectl port-forward only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: syncthing
+  namespace: n8n-live
+  labels:
+    app.kubernetes.io/name: syncthing
+    app.kubernetes.io/part-of: reelsmith-social-publish
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: syncthing
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Mac Syncthing sync — traffic reaches container port 22000 via NodePort 32200
+    - ports:
+        - protocol: TCP
+          port: 22000
+        - protocol: UDP
+          port: 22000
+  egress:
+    # DNS resolution
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Global discovery and relay servers (discovery.syncthing.net, relaysrv.syncthing.net)
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 443
+    # Direct device sync back to Mac
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 22000
+        - protocol: UDP
+          port: 22000

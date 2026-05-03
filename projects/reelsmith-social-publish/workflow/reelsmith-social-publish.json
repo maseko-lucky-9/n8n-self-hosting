@@ -220,6 +220,29 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [2250, 300]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "*/5 * * * *" }]
+        }
+      },
+      "id": "f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0",
+      "name": "Scanner Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 500]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst inbox = '/data/reelsmith-inbox';\nconst found = [];\n\nfunction walk(dir) {\n  let entries;\n  try { entries = fs.readdirSync(dir, { withFileTypes: true }); }\n  catch (e) { return; }\n  for (const e of entries) {\n    const full = path.join(dir, e.name);\n    if (e.isDirectory()) {\n      if (e.name !== 'processed') walk(full);\n    } else if (e.name === 'manifest.csv') {\n      found.push(full);\n    }\n  }\n}\n\nwalk(inbox);\n\n// Return empty array to stop execution gracefully when nothing to process\nif (found.length === 0) return [];\nreturn found.map(p => ({ json: { path: p } }));"
+      },
+      "id": "e1e1e1e1-e1e1-4e1e-8e1e-e1e1e1e1e1e1",
+      "name": "Scan Manifests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 500]
     }
   ],
   "connections": {
@@ -264,6 +287,12 @@
     },
     "Log Results": {
       "main": [[{ "node": "Archive Manifest", "type": "main", "index": 0 }]]
+    },
+    "Scanner Trigger": {
+      "main": [[{ "node": "Scan Manifests", "type": "main", "index": 0 }]]
+    },
+    "Scan Manifests": {
+      "main": [[{ "node": "Index Clips", "type": "main", "index": 0 }]]
     }
   },
   "pinData": {},
