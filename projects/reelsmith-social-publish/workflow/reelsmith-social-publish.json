@@ -1,0 +1,271 @@
+{
+  "name": "Reelsmith Social Publish",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "maxConcurrency": 1,
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "path": "/data/reelsmith-inbox",
+        "events": ["add"],
+        "options": {
+          "depth": -1,
+          "followSymlinks": false
+        },
+        "filePatterns": "**/manifest.csv"
+      },
+      "id": "11111111-1111-4111-8111-111111111111",
+      "name": "Local File Trigger",
+      "type": "n8n-nodes-base.localFileTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst manifestPath = $json.path;\nconst raw = fs.readFileSync(manifestPath, 'utf8');\nconst lines = raw.split(/\\r?\\n/).filter(l => l.trim().length > 0);\n\nif (lines.length < 2) {\n  throw new Error('Manifest has no clip rows: ' + manifestPath);\n}\n\nfunction parseCsvLine(line) {\n  const cols = [];\n  let cur = '';\n  let inQuote = false;\n  for (let i = 0; i < line.length; i++) {\n    const ch = line[i];\n    if (ch === '\"') {\n      if (inQuote && line[i + 1] === '\"') { cur += '\"'; i++; }\n      else { inQuote = !inQuote; }\n    } else if (ch === ',' && !inQuote) {\n      cols.push(cur); cur = '';\n    } else {\n      cur += ch;\n    }\n  }\n  cols.push(cur);\n  return cols.map(s => s.trim());\n}\n\nconst header = parseCsvLine(lines[0]);\nconst jobDir = path.dirname(manifestPath);\n\nconst items = [];\nfor (let i = 1; i < lines.length; i++) {\n  const vals = parseCsvLine(lines[i]);\n  const row = {};\n  header.forEach((h, idx) => { row[h] = vals[idx] !== undefined ? vals[idx] : ''; });\n  row.clipIndex = i - 1;\n  row.jobDir = jobDir;\n  row.manifestPath = manifestPath;\n  // Resolve relative export_path against jobDir\n  if (row.export_path && !path.isAbsolute(row.export_path)) {\n    row.export_path = path.join(jobDir, row.export_path);\n  }\n  items.push({ json: row });\n}\n\nreturn items;"
+      },
+      "id": "22222222-2222-4222-8222-222222222222",
+      "name": "Index Clips",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const { DateTime } = require('luxon');\n\nconst REGIONS = [\n  { tz: 'Africa/Johannesburg', hours: [12, 18, 20] },\n  { tz: 'America/New_York',    hours: [12, 18, 20] },\n  { tz: 'America/Los_Angeles', hours: [12, 18, 20] },\n  { tz: 'Europe/London',       hours: [12, 19, 21] }\n];\nconst MIN_LEAD_MIN = 10;\nconst DEDUP_MIN = 30;\n\nconst now = DateTime.utc();\nconst raw = [];\n\nfor (let day = 0; day < 7; day++) {\n  for (const r of REGIONS) {\n    for (const h of r.hours) {\n      const utc = DateTime.now().setZone(r.tz)\n        .startOf('day').plus({ days: day, hours: h }).toUTC();\n      if (utc.diff(now, 'minutes').minutes >= MIN_LEAD_MIN) {\n        raw.push(utc);\n      }\n    }\n  }\n}\n\nraw.sort((a, b) => a.toMillis() - b.toMillis());\n\nconst windows = [];\nfor (const w of raw) {\n  const last = windows[windows.length - 1];\n  if (!last || w.diff(last, 'minutes').minutes >= DEDUP_MIN) {\n    windows.push(w);\n  }\n}\n\nif (windows.length === 0) {\n  throw new Error('No peak windows available in 7-day lookahead');\n}\n\nreturn $input.all().map(item => ({\n  json: {\n    ...item.json,\n    scheduledAt: windows[item.json.clipIndex % windows.length].toISO()\n  }\n}));"
+      },
+      "id": "33333333-3333-4333-8333-333333333333",
+      "name": "Assign Peak Window",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "resume": "specificTime",
+        "dateTime": "={{ $json.scheduledAt }}"
+      },
+      "id": "44444444-4444-4444-8444-444444444444",
+      "name": "Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [850, 300],
+      "webhookId": "reelsmith-social-publish-wait"
+    },
+    {
+      "parameters": {
+        "filePath": "={{ $json.export_path }}",
+        "dataPropertyName": "clipBinary"
+      },
+      "id": "55555555-5555-4555-8555-555555555555",
+      "name": "Read Clip File",
+      "type": "n8n-nodes-base.readBinaryFile",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json; charset=UTF-8" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ post_info: { title: ($json.title || '').substring(0, 150), privacy_level: 'SELF_ONLY' }, source_info: { source: 'FILE_UPLOAD', video_size: $binary.clipBinary.fileSize, chunk_size: 10485760, total_chunk_count: Math.ceil($binary.clipBinary.fileSize / 10485760) } }) }}",
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "id": "66666666-6666-4666-8666-666666666666",
+      "name": "TikTok Init",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1250, 180],
+      "credentials": { "oAuth2Api": { "id": "reelsmith-tiktok", "name": "reelsmith-tiktok" } },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const fs = require('fs');\nconst filePath = $('Read Clip File').item.json.export_path;\nconst out = { ...$('Read Clip File').item.json };\n\ntry {\n  const init = $json;\n  if (!init || !init.data || !init.data.upload_url || !init.data.publish_id) {\n    throw new Error('TikTok init failed: ' + JSON.stringify(init).substring(0, 300));\n  }\n  const uploadUrl = init.data.upload_url;\n  out.tiktok_publish_id = init.data.publish_id;\n\n  const CHUNK = 10 * 1024 * 1024;\n  const stat = fs.statSync(filePath);\n  const total = stat.size;\n  const fd = fs.openSync(filePath, 'r');\n  let offset = 0;\n\n  while (offset < total) {\n    const len = Math.min(CHUNK, total - offset);\n    const buf = Buffer.alloc(len);\n    fs.readSync(fd, buf, 0, len, offset);\n    const resp = await this.helpers.httpRequest({\n      method: 'PUT',\n      url: uploadUrl,\n      body: buf,\n      headers: {\n        'Content-Type': 'video/mp4',\n        'Content-Length': String(len),\n        'Content-Range': `bytes ${offset}-${offset + len - 1}/${total}`\n      },\n      returnFullResponse: true,\n      encoding: null\n    });\n    if (resp.statusCode >= 400) {\n      throw new Error(`Chunk ${offset} upload failed: HTTP ${resp.statusCode}`);\n    }\n    offset += len;\n  }\n  fs.closeSync(fd);\n  out.tiktok_upload_status = 'uploaded';\n} catch (err) {\n  out.tiktok_error = String(err.message || err);\n  out.tiktok_upload_status = 'failed';\n}\n\nreturn [{ json: out, binary: $binary }];"
+      },
+      "id": "77777777-7777-4777-8777-777777777777",
+      "name": "TikTok Upload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 180]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [{ "name": "publish_id", "value": "={{ $json.tiktok_publish_id }}" }]
+        },
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "id": "88888888-8888-4888-8888-888888888888",
+      "name": "TikTok Poll Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1650, 180],
+      "credentials": { "oAuth2Api": { "id": "reelsmith-tiktok", "name": "reelsmith-tiktok" } },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json; charset=UTF-8" },
+            { "name": "X-Upload-Content-Type", "value": "video/mp4" },
+            { "name": "X-Upload-Content-Length", "value": "={{ $binary.clipBinary.fileSize }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ snippet: { title: ($json.title || '').substring(0, 100), description: ($json.description || '') + '\\n\\n#Shorts', tags: (() => { try { return JSON.parse($json.hashtags || '[]').map(h => String(h).replace('#', '')); } catch(e) { return []; } })() }, status: { privacyStatus: 'private' } }) }}",
+        "options": { "response": { "response": { "fullResponse": true, "neverError": true } } }
+      },
+      "id": "99999999-9999-4999-8999-999999999999",
+      "name": "YouTube Init",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1250, 420],
+      "credentials": { "oAuth2Api": { "id": "reelsmith-youtube", "name": "reelsmith-youtube" } },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Extract Location header from full-response YouTube Init output\nconst resp = $json;\nconst out = { ...$('Read Clip File').item.json };\ntry {\n  const headers = (resp && resp.headers) || {};\n  const sessionUrl = headers.location || headers.Location;\n  if (!sessionUrl) {\n    throw new Error('YouTube init missing Location header: ' + JSON.stringify(resp).substring(0, 300));\n  }\n  out.youtube_session_url = sessionUrl;\n} catch (err) {\n  out.youtube_error = String(err.message || err);\n}\nreturn [{ json: out, binary: $binary }];"
+      },
+      "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "name": "YouTube Capture Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 420]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $json.youtube_session_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "video/mp4" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "clipBinary",
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "name": "YouTube Upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1650, 420],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "name": "Merge Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [1850, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst HEADER = 'timestamp,filename,title,tiktok_publish_id,tiktok_status,youtube_video_id,youtube_status,error\\n';\n\nfunction csvEscape(v) {\n  const s = String(v == null ? '' : v);\n  return (s.includes(',') || s.includes('\"') || s.includes('\\n'))\n    ? '\"' + s.replace(/\"/g, '\"\"') + '\"'\n    : s;\n}\n\nconst out = [];\nfor (const item of $input.all()) {\n  const j = item.json;\n  const logPath = path.join(j.jobDir, 'results.log.csv');\n\n  const tiktokStatus = j.tiktok_upload_status || (j.data && j.data.status) || '';\n  const youtubeId    = (j.id) || (j.body && j.body.id) || '';\n  const youtubeStatus = j.youtube_error ? 'failed' : (youtubeId ? 'uploaded' : 'unknown');\n  const errors = [j.tiktok_error, j.youtube_error].filter(Boolean).join(' | ');\n\n  const row = [\n    new Date().toISOString(),\n    j.filename || path.basename(j.export_path || ''),\n    j.title || '',\n    j.tiktok_publish_id || '',\n    tiktokStatus,\n    youtubeId,\n    youtubeStatus,\n    errors\n  ].map(csvEscape).join(',') + '\\n';\n\n  if (!fs.existsSync(logPath)) fs.writeFileSync(logPath, HEADER);\n  fs.appendFileSync(logPath, row);\n\n  if (errors) {\n    try {\n      const token = process.env.TELEGRAM_BOT_TOKEN;\n      const chatId = process.env.TELEGRAM_CHAT_ID;\n      if (token && chatId) {\n        await this.helpers.httpRequest({\n          method: 'POST',\n          url: `https://api.telegram.org/bot${token}/sendMessage`,\n          json: true,\n          body: {\n            chat_id: chatId,\n            text: `Reelsmith publish FAILED\\nfile: ${j.filename || j.export_path}\\nerror: ${errors}`\n          }\n        });\n      }\n    } catch (_) { /* swallow alert errors */ }\n  }\n\n  out.push({ json: { ...j, logged: true } });\n}\nreturn out;"
+      },
+      "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "name": "Log Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2050, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst items = $input.all();\nconst out = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const j = items[i].json;\n  // Archive on last item only — one manifest per execution\n  if (i === items.length - 1) {\n    const src = j.manifestPath;\n    if (src && fs.existsSync(src)) {\n      const processedDir = path.join(j.jobDir, 'processed');\n      fs.mkdirSync(processedDir, { recursive: true });\n      const stamp = new Date().toISOString().replace(/[:.]/g, '-');\n      const dest = path.join(processedDir, `manifest-${stamp}.csv`);\n      fs.renameSync(src, dest);\n      out.push({ json: { ...j, archived_to: dest } });\n      continue;\n    }\n  }\n  out.push({ json: j });\n}\nreturn out;"
+      },
+      "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      "name": "Archive Manifest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2250, 300]
+    }
+  ],
+  "connections": {
+    "Local File Trigger": {
+      "main": [[{ "node": "Index Clips", "type": "main", "index": 0 }]]
+    },
+    "Index Clips": {
+      "main": [[{ "node": "Assign Peak Window", "type": "main", "index": 0 }]]
+    },
+    "Assign Peak Window": {
+      "main": [[{ "node": "Wait", "type": "main", "index": 0 }]]
+    },
+    "Wait": {
+      "main": [[{ "node": "Read Clip File", "type": "main", "index": 0 }]]
+    },
+    "Read Clip File": {
+      "main": [[
+        { "node": "TikTok Init",   "type": "main", "index": 0 },
+        { "node": "YouTube Init",  "type": "main", "index": 0 }
+      ]]
+    },
+    "TikTok Init": {
+      "main": [[{ "node": "TikTok Upload", "type": "main", "index": 0 }]]
+    },
+    "TikTok Upload": {
+      "main": [[{ "node": "TikTok Poll Status", "type": "main", "index": 0 }]]
+    },
+    "TikTok Poll Status": {
+      "main": [[{ "node": "Merge Results", "type": "main", "index": 0 }]]
+    },
+    "YouTube Init": {
+      "main": [[{ "node": "YouTube Capture Session", "type": "main", "index": 0 }]]
+    },
+    "YouTube Capture Session": {
+      "main": [[{ "node": "YouTube Upload", "type": "main", "index": 0 }]]
+    },
+    "YouTube Upload": {
+      "main": [[{ "node": "Merge Results", "type": "main", "index": 1 }]]
+    },
+    "Merge Results": {
+      "main": [[{ "node": "Log Results", "type": "main", "index": 0 }]]
+    },
+    "Log Results": {
+      "main": [[{ "node": "Archive Manifest", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "tags": [{ "name": "reelsmith" }, { "name": "social-publish" }]
+}

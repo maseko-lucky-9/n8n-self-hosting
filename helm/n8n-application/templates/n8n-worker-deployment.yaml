@@ -185,6 +185,9 @@ spec:
             - mountPath: /home/node/.cache
               name: cache-volume
             {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{ toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: n8n-config
           emptyDir:
@@ -196,5 +199,8 @@ spec:
         - name: cache-volume
           emptyDir:
             sizeLimit: 100Mi
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{ toYaml . | nindent 8 }}
         {{- end }}
 {{- end }}

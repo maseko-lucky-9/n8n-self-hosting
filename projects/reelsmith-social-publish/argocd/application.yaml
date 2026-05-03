@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: reelsmith-social-publish
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: reelsmith-social-publish
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:maseko-lucky-9/n8n-self-hosting.git
+    targetRevision: HEAD
+    path: projects/reelsmith-social-publish/manifests
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: n8n-live
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

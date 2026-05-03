@@ -75,6 +75,20 @@ extraEnv:
   # Without this, n8n logs a deprecation warning and manual runs bypass the queue.
   - name: OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS
     value: "true"
+  # Reelsmith social-publish: Telegram alert credentials for failure notifications.
+  # Secret created by ESO from kv/secret/n8n/live/reelsmith-telegram.
+  - name: TELEGRAM_BOT_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: reelsmith-telegram
+        key: bot_token
+        optional: true
+  - name: TELEGRAM_CHAT_ID
+    valueFrom:
+      secretKeyRef:
+        name: reelsmith-telegram
+        key: chat_id
+        optional: true
 
 autoscaling:
   enabled: false  # LIVE: Single-node, no autoscaling
@@ -256,6 +270,16 @@ resourceQuota:
     memory: 8Gi
   pods: "20"
   pvcs: "10"
+
+# LIVE: Reelsmith social-publish — shared inbox volume
+extraVolumes:
+  - name: reelsmith-inbox
+    persistentVolumeClaim:
+      claimName: syncthing-reelsmith-pvc
+extraVolumeMounts:
+  - name: reelsmith-inbox
+    mountPath: /data/reelsmith-inbox
+    readOnly: false
 
 # LIVE: Monitoring & Alerting
 monitoring:

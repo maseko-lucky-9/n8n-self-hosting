@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: syncthing-reelsmith-pvc
+  namespace: n8n-live
+  labels:
+    app.kubernetes.io/name: syncthing
+    app.kubernetes.io/part-of: reelsmith-social-publish
+spec:
+  # Retain + Immediate binding avoids pod scheduling race on single-node MicroK8s.
+  # microk8s-hostpath (default) is Delete + WaitForFirstConsumer — do not use.
+  storageClassName: microk8s-hostpath-immediate
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
