@@ -1,0 +1,148 @@
+{
+  "name": "gtm-reply-tracker",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "errorWorkflow": "gtm-error-handler"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "r1r1r1r1-1111-4111-8111-111111111111",
+      "name": "Every 30 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "getAll",
+        "returnAll": false,
+        "limit": 25,
+        "filters": {
+          "q": "in:inbox is:unread newer_than:1d",
+          "readStatus": "unread"
+        }
+      },
+      "id": "r2r2r2r2-2222-4222-8222-222222222222",
+      "name": "Gmail Get Unread",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [460, 300],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_AT_IMPORT",
+          "name": "gmail-gtm-mailbox"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Extract In-Reply-To header — that matches a Resend message-id we've stored in Notion.\nconst out = [];\nfor (const item of $input.all()) {\n  const headers = (item.json.payload && item.json.payload.headers) || item.json.headers || [];\n  let inReplyTo = '';\n  let subject = '';\n  let from = '';\n  for (const h of headers) {\n    if (!h.name) continue;\n    const lower = h.name.toLowerCase();\n    if (lower === 'in-reply-to') inReplyTo = (h.value || '').replace(/[<>]/g, '');\n    if (lower === 'subject') subject = h.value || '';\n    if (lower === 'from') from = h.value || '';\n  }\n  if (!inReplyTo) continue;\n  const snippet = (item.json.snippet || '').slice(0, 500);\n  out.push({ json: { inReplyTo, subject, from, snippet, gmailId: item.json.id } });\n}\nreturn out;"
+      },
+      "id": "r3r3r3r3-3333-4333-8333-333333333333",
+      "name": "Extract In-Reply-To",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "getAll",
+        "databaseId": "={{ $env.NOTION_GTM_DB_ID }}",
+        "returnAll": false,
+        "limit": 1,
+        "filters": {
+          "conditions": [
+            {
+              "key": "resend_message_id|rich_text",
+              "condition": "equals",
+              "richTextValue": "={{ $json.inReplyTo }}"
+            }
+          ]
+        }
+      },
+      "id": "r4r4r4r4-4444-4444-8444-444444444444",
+      "name": "Find Notion Page",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [900, 300],
+      "credentials": {
+        "notionApi": {
+          "id": "REPLACE_AT_IMPORT",
+          "name": "notion-gtm"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "update",
+        "pageId": "={{ $json.id }}",
+        "propertiesUi": {
+          "propertyValues": [
+            {"key": "status|select", "selectValue": "replied"},
+            {"key": "replied_at|date", "date": "={{ $now.toISO() }}"},
+            {"key": "notes|rich_text", "richText": true, "textContent": "={{ 'Reply: ' + $('Extract In-Reply-To').item.json.snippet }}"}
+          ]
+        }
+      },
+      "id": "r5r5r5r5-5555-4555-8555-555555555555",
+      "name": "Notion Update Replied",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [1120, 300],
+      "credentials": {
+        "notionApi": {
+          "id": "REPLACE_AT_IMPORT",
+          "name": "notion-gtm"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.sh/prudentia-alerts",
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "=Reply received: {{ $('Extract In-Reply-To').item.json.subject }} (from {{ $('Extract In-Reply-To').item.json.from }})",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Title", "value": "GTM REPLY"},
+            {"name": "Priority", "value": "high"},
+            {"name": "Tags", "value": "tada,star"}
+          ]
+        }
+      },
+      "id": "r6r6r6r6-6666-4666-8666-666666666666",
+      "name": "ntfy Reply Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 300]
+    }
+  ],
+  "connections": {
+    "Every 30 minutes": {"main": [[{"node": "Gmail Get Unread", "type": "main", "index": 0}]]},
+    "Gmail Get Unread": {"main": [[{"node": "Extract In-Reply-To", "type": "main", "index": 0}]]},
+    "Extract In-Reply-To": {"main": [[{"node": "Find Notion Page", "type": "main", "index": 0}]]},
+    "Find Notion Page": {"main": [[{"node": "Notion Update Replied", "type": "main", "index": 0}]]},
+    "Notion Update Replied": {"main": [[{"node": "ntfy Reply Alert", "type": "main", "index": 0}]]}
+  },
+  "tags": [{"name": "gtm"}, {"name": "prudentia-digital"}],
+  "pinData": {}
+}
