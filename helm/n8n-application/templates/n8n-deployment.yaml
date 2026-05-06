@@ -194,9 +194,6 @@ spec:
               value: {{ include "n8n-application.fullname" . }}-redis
             - name: QUEUE_BULL_REDIS_PORT
               value: {{ .Values.queue.redis.port | default 6379 | quote }}
-            # Ensure graceful shutdown doesn't drop in-flight webhook registrations
-            - name: N8N_SKIP_WEBHOOK_DEREGISTRATION_SHUTDOWN
-              value: "true"
             {{- end }}
             {{- if .Values.extraEnv }}
             {{- toYaml .Values.extraEnv | nindent 12 }}
