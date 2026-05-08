@@ -1,0 +1,102 @@
+{
+  "name": "gtm-unsubscribe",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "errorWorkflow": "gtm-error-handler"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "gtm-unsubscribe",
+        "responseMode": "lastNode",
+        "options": {
+          "responseData": "<!doctype html><html><head><title>Unsubscribed</title><style>body{font-family:system-ui;max-width:480px;margin:6rem auto;padding:2rem;text-align:center;color:#1a1a1a}</style></head><body><h1>You're unsubscribed</h1><p>You won't hear from us again.</p></body></html>",
+          "responseCode": 200,
+          "responseContentType": "text/html"
+        }
+      },
+      "id": "u1u1u1u1-1111-4111-8111-111111111111",
+      "name": "Unsubscribe Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "gtm-unsubscribe"
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.UNSUBSCRIBE_HMAC_SECRET;\nif (!secret) throw new Error('UNSUBSCRIBE_HMAC_SECRET not set');\n\nconst query = $input.first().json.query || {};\nconst slug = query.slug || '';\nconst token = query.token || '';\nif (!slug || !token) throw new Error('missing slug or token');\n\nconst expected = crypto.createHmac('sha256', secret).update(slug).digest('hex');\nif (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(token))) {\n  throw new Error('invalid token');\n}\nreturn [{ json: { slug } }];"
+      },
+      "id": "u2u2u2u2-2222-4222-8222-222222222222",
+      "name": "Verify HMAC",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "getAll",
+        "databaseId": "={{ $env.NOTION_GTM_DB_ID }}",
+        "returnAll": false,
+        "limit": 1,
+        "filters": {
+          "conditions": [
+            {
+              "key": "slug|rich_text",
+              "condition": "equals",
+              "richTextValue": "={{ $json.slug }}"
+            }
+          ]
+        }
+      },
+      "id": "u3u3u3u3-3333-4333-8333-333333333333",
+      "name": "Find Notion Page",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [680, 300],
+      "credentials": {
+        "notionApi": {
+          "id": "REPLACE_AT_IMPORT",
+          "name": "notion-gtm"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "update",
+        "pageId": "={{ $json.id }}",
+        "propertiesUi": {
+          "propertyValues": [
+            {"key": "status|select", "selectValue": "unsubscribed"},
+            {"key": "unsubscribed_at|date", "date": "={{ $now.toISO() }}"},
+            {"key": "notes|rich_text", "richText": true, "textContent": "Unsubscribed via link"}
+          ]
+        }
+      },
+      "id": "u4u4u4u4-4444-4444-8444-444444444444",
+      "name": "Notion Mark Unsubscribed",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [900, 300],
+      "credentials": {
+        "notionApi": {
+          "id": "REPLACE_AT_IMPORT",
+          "name": "notion-gtm"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Unsubscribe Webhook": {"main": [[{"node": "Verify HMAC", "type": "main", "index": 0}]]},
+    "Verify HMAC": {"main": [[{"node": "Find Notion Page", "type": "main", "index": 0}]]},
+    "Find Notion Page": {"main": [[{"node": "Notion Mark Unsubscribed", "type": "main", "index": 0}]]}
+  },
+  "tags": [{"name": "gtm"}, {"name": "prudentia-digital"}],
+  "pinData": {}
+}
