@@ -89,6 +89,13 @@ extraEnv:
         name: reelsmith-telegram
         key: chat_id
         optional: true
+  # n8n 2.x task-runner sandbox blocks node built-ins by default.
+  # Reelsmith Code nodes (Index Clips / Scan Manifests / Log Results / Archive
+  # Manifest) require fs + path to read manifest CSVs, walk the inbox, append
+  # log rows, and rename to processed/. Without these, every execution errors
+  # with "Module 'fs' is disallowed".
+  - name: NODE_FUNCTION_ALLOW_BUILTIN
+    value: "fs,path"
 
 autoscaling:
   enabled: false  # LIVE: Single-node, no autoscaling
