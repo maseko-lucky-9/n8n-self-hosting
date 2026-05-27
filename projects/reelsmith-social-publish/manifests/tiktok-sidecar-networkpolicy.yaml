@@ -1,0 +1,62 @@
+---
+# Allows n8n pods (and the n8n worker) to egress to the tiktok-sidecar
+# Service on port 8000. The n8n-application Helm chart's egress policy
+# is restrictive (default-deny except DNS/postgres/redis/443/80); this
+# additive policy opens the sidecar port.
+#
+# Also provides explicit ingress allow on the sidecar side — required if
+# the cluster's CNI later adds default-deny for the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: n8n-to-tiktok-sidecar
+  namespace: n8n-live
+  labels:
+    app.kubernetes.io/name: tiktok-sidecar
+    app.kubernetes.io/part-of: reelsmith-social-publish
+spec:
+  # Apply to sidecar pods — let n8n + n8n worker pods reach us on port 8000.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tiktok-sidecar
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: n8n
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: worker
+      ports:
+        - port: 8000
+          protocol: TCP
+---
+# Egress addition for n8n pods so they can talk to the sidecar.
+# NetworkPolicies are additive — this is OR'd with the chart-managed
+# n8n-application-n8n policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: n8n-egress-to-tiktok-sidecar
+  namespace: n8n-live
+  labels:
+    app.kubernetes.io/name: tiktok-sidecar
+    app.kubernetes.io/part-of: reelsmith-social-publish
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [n8n, worker]
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tiktok-sidecar
+      ports:
+        - port: 8000
+          protocol: TCP
