@@ -1,0 +1,288 @@
+{
+  "name": "gtm-email-sender",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "errorWorkflow": "gtm-error-handler",
+    "timezone": "Africa/Johannesburg"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "1a1a1a1a-1111-4111-8111-111111111111",
+      "name": "Schedule 08:00 SAST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "getAll",
+        "databaseId": "={{ $env.NOTION_GTM_DB_ID }}",
+        "returnAll": false,
+        "limit": "={{ parseInt($env.GTM_DAILY_CAP || '10') }}",
+        "filters": {
+          "conditions": [
+            {
+              "key": "status|select",
+              "condition": "equals",
+              "selectValue": "approved"
+            },
+            {
+              "key": "sent_at|date",
+              "condition": "is_empty"
+            },
+            {
+              "key": "email_address|email",
+              "condition": "is_not_empty"
+            }
+          ]
+        }
+      },
+      "id": "2b2b2b2b-2222-4222-8222-222222222222",
+      "name": "Notion Query Approved",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [460, 300],
+      "credentials": {
+        "notionApi": {
+          "id": "REPLACE_AT_IMPORT",
+          "name": "notion-gtm"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-empty",
+              "leftValue": "={{ $items().length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "3c3c3c3c-3333-4333-8333-333333333333",
+      "name": "IF has rows",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// POPIA pre-send guard — verify unsubscribe URL is present and HMAC matches.\nconst crypto = require('crypto');\nconst secret = $env.UNSUBSCRIBE_HMAC_SECRET;\nif (!secret) throw new Error('UNSUBSCRIBE_HMAC_SECRET not set in n8n env');\n\nfunction hmac(slug) {\n  return crypto.createHmac('sha256', secret).update(slug).digest('hex');\n}\n\nconst out = [];\nfor (const item of $input.all()) {\n  const props = item.json.properties || item.json;\n  const slug = (props.slug?.rich_text?.[0]?.plain_text) || props.slug || '';\n  const body = (props.email_body?.rich_text?.map(t => t.plain_text).join('') || props.email_body || '');\n  const expectedToken = hmac(slug);\n  const hasUrl = body.includes('unsubscribe') && body.includes(`token=${expectedToken}`);\n  if (!hasUrl) {\n    out.push({ json: { ...item.json, _compliance_skip: true, _compliance_reason: 'unsubscribe URL missing or HMAC mismatch' } });\n  } else {\n    out.push({ json: { ...item.json, _compliance_skip: false } });\n  }\n}\nreturn out;"
+      },
+      "id": "4d4d4d4d-4444-4444-8444-444444444444",
+      "name": "POPIA Pre-Send Guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "5e5e5e5e-5555-4555-8555-555555555555",
+      "name": "Loop Over Items",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {
+        "amount": "={{ 30 + Math.floor(Math.random() * 60) }}",
+        "unit": "seconds"
+      },
+      "id": "6f6f6f6f-6666-4666-8666-666666666666",
+      "name": "Wait Jitter 30-90s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1340, 200],
+      "webhookId": "gtm-email-sender-wait"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"from\": \"{{ $env.GTM_FROM_NAME || 'Thulani Maseko · Prudentia Digital' }} <{{ $env.GTM_FROM_EMAIL || 'gtm@prudentiadigital.co.za' }}>\",\n  \"to\": [\"{{ $env.DEV_OVERRIDE_TO || $json.properties.email_address.email }}\"],\n  \"reply_to\": \"{{ $env.GTM_FROM_EMAIL || 'gtm@prudentiadigital.co.za' }}\",\n  \"subject\": \"{{ $json.properties.email_subject.rich_text[0].plain_text }}\",\n  \"text\": \"{{ $json.properties.email_body.rich_text.map(t => t.plain_text).join('').replace(/\"/g, '\\\\\"').replace(/\\n/g, '\\\\n') }}\",\n  \"tags\": [\n    {\"name\": \"campaign\", \"value\": \"gtm-week1\"},\n    {\"name\": \"domain\", \"value\": \"{{ $json.properties.domain.rich_text[0].plain_text }}\"}\n  ]\n}",
+        "options": {
+          "retry": {
+            "tryCount": 3,
+            "waitBetweenTries": 5000
+          }
+        }
+      },
+      "id": "7a7a7a7a-7777-4777-8777-777777777777",
+      "name": "Resend Send Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_AT_IMPORT",
+          "name": "resend-api-key"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "update",
+        "pageId": "={{ $('Loop Over Items').item.json.id }}",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "status|select",
+              "selectValue": "={{ $json.error ? 'failed' : 'sent' }}"
+            },
+            {
+              "key": "sent_at|date",
+              "date": "={{ $now.toISO() }}"
+            },
+            {
+              "key": "resend_message_id|rich_text",
+              "richText": true,
+              "textContent": "={{ $json.id || 'failed' }}"
+            },
+            {
+              "key": "notes|rich_text",
+              "richText": true,
+              "textContent": "={{ $json.error ? ('Send error: ' + JSON.stringify($json.error)) : '' }}"
+            }
+          ]
+        }
+      },
+      "id": "8b8b8b8b-8888-4888-8888-888888888888",
+      "name": "Notion Update Sent",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [1780, 200],
+      "credentials": {
+        "notionApi": {
+          "id": "REPLACE_AT_IMPORT",
+          "name": "notion-gtm"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.sh/prudentia-alerts",
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "=n8n-gtm: send loop complete. Check Notion for status updates.",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Title", "value": "n8n-gtm send loop done"},
+            {"name": "Priority", "value": "default"}
+          ]
+        }
+      },
+      "id": "9c9c9c9c-9999-4999-8999-999999999999",
+      "name": "ntfy Done",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.sh/prudentia-alerts",
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "=n8n-gtm: nothing to send (no approved rows in Notion).",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Title", "value": "n8n-gtm idle"},
+            {"name": "Priority", "value": "low"}
+          ]
+        }
+      },
+      "id": "0d0d0d0d-0000-4000-8000-000000000000",
+      "name": "ntfy Idle",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 400]
+    }
+  ],
+  "connections": {
+    "Schedule 08:00 SAST": {
+      "main": [[{"node": "Notion Query Approved", "type": "main", "index": 0}]]
+    },
+    "Notion Query Approved": {
+      "main": [[{"node": "IF has rows", "type": "main", "index": 0}]]
+    },
+    "IF has rows": {
+      "main": [
+        [{"node": "POPIA Pre-Send Guard", "type": "main", "index": 0}],
+        [{"node": "ntfy Idle", "type": "main", "index": 0}]
+      ]
+    },
+    "POPIA Pre-Send Guard": {
+      "main": [[{"node": "Loop Over Items", "type": "main", "index": 0}]]
+    },
+    "Loop Over Items": {
+      "main": [
+        [{"node": "ntfy Done", "type": "main", "index": 0}],
+        [{"node": "Wait Jitter 30-90s", "type": "main", "index": 0}]
+      ]
+    },
+    "Wait Jitter 30-90s": {
+      "main": [[{"node": "Resend Send Email", "type": "main", "index": 0}]]
+    },
+    "Resend Send Email": {
+      "main": [[{"node": "Notion Update Sent", "type": "main", "index": 0}]]
+    },
+    "Notion Update Sent": {
+      "main": [[{"node": "Loop Over Items", "type": "main", "index": 0}]]
+    }
+  },
+  "tags": [
+    {"name": "gtm"},
+    {"name": "prudentia-digital"}
+  ],
+  "pinData": {}
+}

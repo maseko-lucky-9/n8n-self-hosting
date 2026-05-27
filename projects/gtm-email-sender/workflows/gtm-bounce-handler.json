@@ -1,0 +1,134 @@
+{
+  "name": "gtm-bounce-handler",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "errorWorkflow": "gtm-error-handler"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "gtm-bounce",
+        "responseMode": "lastNode",
+        "options": {
+          "responseData": "{\"ok\":true}",
+          "responseCode": 200
+        }
+      },
+      "id": "b1b1b1b1-1111-4111-8111-111111111111",
+      "name": "Resend Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "gtm-bounce"
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Verify Resend webhook signature (svix-style HMAC-SHA256)\nconst crypto = require('crypto');\nconst secret = $env.RESEND_WEBHOOK_SECRET;\nif (!secret) throw new Error('RESEND_WEBHOOK_SECRET not set');\n\nconst headers = $input.first().json.headers || {};\nconst sigHeader = headers['svix-signature'] || headers['Svix-Signature'] || '';\nconst msgId = headers['svix-id'] || headers['Svix-Id'] || '';\nconst timestamp = headers['svix-timestamp'] || headers['Svix-Timestamp'] || '';\nconst body = $input.first().json.body || $input.first().json;\n\nconst signedPayload = `${msgId}.${timestamp}.${typeof body === 'string' ? body : JSON.stringify(body)}`;\nconst expected = crypto.createHmac('sha256', Buffer.from(secret.replace(/^whsec_/, ''), 'base64'))\n  .update(signedPayload)\n  .digest('base64');\n\nconst signatures = sigHeader.split(' ').map(s => s.split(',')[1]).filter(Boolean);\nconst valid = signatures.includes(expected);\n\nif (!valid) {\n  // In production, throw to reject 401. For initial setup, log+continue while validating.\n  console.warn('Invalid Resend webhook signature — got=', sigHeader, 'expected=', expected);\n}\n\nconst event = body.type || body.event || '';\nconst data = body.data || {};\nreturn [{ json: { event, message_id: data.email_id || data.id, reason: (data.bounce && data.bounce.reason) || (data.complaint && data.complaint.type) || '', raw: body } }];"
+      },
+      "id": "b2b2b2b2-2222-4222-8222-222222222222",
+      "name": "Verify + Parse",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "getAll",
+        "databaseId": "={{ $env.NOTION_GTM_DB_ID }}",
+        "returnAll": false,
+        "limit": 1,
+        "filters": {
+          "conditions": [
+            {
+              "key": "resend_message_id|rich_text",
+              "condition": "equals",
+              "richTextValue": "={{ $json.message_id }}"
+            }
+          ]
+        }
+      },
+      "id": "b3b3b3b3-3333-4333-8333-333333333333",
+      "name": "Find Notion Page",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [680, 300],
+      "credentials": {
+        "notionApi": {
+          "id": "REPLACE_AT_IMPORT",
+          "name": "notion-gtm"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "update",
+        "pageId": "={{ $json.id }}",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "status|select",
+              "selectValue": "={{ $('Verify + Parse').item.json.event === 'email.complained' ? 'unsubscribed' : 'bounced' }}"
+            },
+            {
+              "key": "bounced_at|date",
+              "date": "={{ $now.toISO() }}"
+            },
+            {
+              "key": "notes|rich_text",
+              "richText": true,
+              "textContent": "={{ 'Bounce/complaint: ' + $('Verify + Parse').item.json.reason }}"
+            }
+          ]
+        }
+      },
+      "id": "b4b4b4b4-4444-4444-8444-444444444444",
+      "name": "Notion Update Bounced",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [900, 300],
+      "credentials": {
+        "notionApi": {
+          "id": "REPLACE_AT_IMPORT",
+          "name": "notion-gtm"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.sh/prudentia-alerts",
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "=Bounce/complaint: {{ $('Verify + Parse').item.json.reason }} (msg {{ $('Verify + Parse').item.json.message_id }})",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Title", "value": "n8n-gtm bounce/complaint"},
+            {"name": "Priority", "value": "high"},
+            {"name": "Tags", "value": "warning"}
+          ]
+        }
+      },
+      "id": "b5b5b5b5-5555-4555-8555-555555555555",
+      "name": "ntfy Bounce Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 300]
+    }
+  ],
+  "connections": {
+    "Resend Webhook": {"main": [[{"node": "Verify + Parse", "type": "main", "index": 0}]]},
+    "Verify + Parse": {"main": [[{"node": "Find Notion Page", "type": "main", "index": 0}]]},
+    "Find Notion Page": {"main": [[{"node": "Notion Update Bounced", "type": "main", "index": 0}]]},
+    "Notion Update Bounced": {"main": [[{"node": "ntfy Bounce Alert", "type": "main", "index": 0}]]}
+  },
+  "tags": [{"name": "gtm"}, {"name": "prudentia-digital"}],
+  "pinData": {}
+}

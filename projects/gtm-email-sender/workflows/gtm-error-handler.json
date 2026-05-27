@@ -1,0 +1,47 @@
+{
+  "name": "gtm-error-handler",
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none"
+  },
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "e1e1e1e1-1111-4111-8111-111111111111",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.sh/prudentia-alerts",
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "=n8n-gtm WORKFLOW FAILURE: {{ $json.workflow.name }} | last node: {{ $json.execution.lastNodeExecuted }} | error: {{ $json.execution.error.message }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "Title", "value": "n8n-gtm workflow error"},
+            {"name": "Priority", "value": "urgent"},
+            {"name": "Tags", "value": "rotating_light"}
+          ]
+        }
+      },
+      "id": "e2e2e2e2-2222-4222-8222-222222222222",
+      "name": "ntfy High Priority",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 300]
+    }
+  ],
+  "connections": {
+    "Error Trigger": {"main": [[{"node": "ntfy High Priority", "type": "main", "index": 0}]]}
+  },
+  "tags": [{"name": "gtm"}, {"name": "prudentia-digital"}],
+  "pinData": {}
+}
