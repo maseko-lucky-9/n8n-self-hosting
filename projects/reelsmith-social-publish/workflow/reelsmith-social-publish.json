@@ -12,27 +12,6 @@
   "nodes": [
     {
       "parameters": {
-        "path": "/data/reelsmith-inbox",
-        "events": [
-          "add"
-        ],
-        "options": {
-          "depth": -1,
-          "followSymlinks": false
-        },
-        "filePatterns": "**/manifest.csv"
-      },
-      "id": "11111111-1111-4111-8111-111111111111",
-      "name": "Local File Trigger",
-      "type": "n8n-nodes-base.localFileTrigger",
-      "typeVersion": 1,
-      "position": [
-        250,
-        300
-      ]
-    },
-    {
-      "parameters": {
         "language": "javaScript",
         "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst manifestPath = $json.path;\nconst raw = fs.readFileSync(manifestPath, 'utf8');\nconst lines = raw.split(/\\r?\\n/).filter(l => l.trim().length > 0);\n\nif (lines.length < 2) {\n  throw new Error('Manifest has no clip rows: ' + manifestPath);\n}\n\nfunction parseCsvLine(line) {\n  const cols = [];\n  let cur = '';\n  let inQuote = false;\n  for (let i = 0; i < line.length; i++) {\n    const ch = line[i];\n    if (ch === '\"') {\n      if (inQuote && line[i + 1] === '\"') { cur += '\"'; i++; }\n      else { inQuote = !inQuote; }\n    } else if (ch === ',' && !inQuote) {\n      cols.push(cur); cur = '';\n    } else {\n      cur += ch;\n    }\n  }\n  cols.push(cur);\n  return cols.map(s => s.trim());\n}\n\nconst header = parseCsvLine(lines[0]);\nconst jobDir = path.dirname(manifestPath);\n\nconst items = [];\nfor (let i = 1; i < lines.length; i++) {\n  const vals = parseCsvLine(lines[i]);\n  const row = {};\n  header.forEach((h, idx) => { row[h] = vals[idx] !== undefined ? vals[idx] : ''; });\n  row.clipIndex = i - 1;\n  row.jobDir = jobDir;\n  row.manifestPath = manifestPath;\n  // Resolve relative export_path against jobDir\n  if (row.export_path && !path.isAbsolute(row.export_path)) {\n    row.export_path = path.join(jobDir, row.export_path);\n  }\n  items.push({ json: row });\n}\n\nreturn items;"
       },
@@ -334,17 +313,6 @@
     }
   ],
   "connections": {
-    "Local File Trigger": {
-      "main": [
-        [
-          {
-            "node": "Index Clips",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Index Clips": {
       "main": [
         [
