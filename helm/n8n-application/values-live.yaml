@@ -210,8 +210,14 @@ externalSecrets:
 backup:
   enabled: true
   schedule: "0 2 * * *"  # Daily at 2 AM
-  retention: 30  # days
+  retention: 30  # days  (dump-file retention via `find -mtime`; UNAFFECTED by the GC knobs below)
   storageSize: 10Gi
+  # Job/pod GC (objects + logs only — NOT the dump files, which the script prunes
+  # at `retention` days + the off-cluster rclone copy). ttl is well above the
+  # N8nBackupFailed alert window (for: 0m) so failed Jobs are still observed.
+  ttlSecondsAfterFinished: 86400  # delete finished backup Job pods after 24h
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
   # GAP-007: Off-cluster backup via rclone to S3-compatible target.
   # Prerequisites before enabling:
   #   1. Populate Vault: vault kv put kv/secret/n8n/live/backup-offcluster \

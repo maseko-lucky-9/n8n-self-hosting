@@ -9,10 +9,15 @@ metadata:
 spec:
   schedule: {{ .Values.backup.schedule | quote }}
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: {{ .Values.backup.successfulJobsHistoryLimit | default 2 }}
+  failedJobsHistoryLimit: {{ .Values.backup.failedJobsHistoryLimit | default 2 }}
   jobTemplate:
     spec:
+      # GC finished backup Job pods so they don't linger (history limits alone
+      # keep up to N stale pods until the Nth-next run). 24h is well ABOVE the
+      # N8nBackupFailed alert window (for: 0m), so a FAILED backup Job persists
+      # long enough for kube-state-metrics + Prometheus to observe it before GC.
+      ttlSecondsAfterFinished: {{ .Values.backup.ttlSecondsAfterFinished | default 86400 }}
       backoffLimit: 2
       activeDeadlineSeconds: 600
       template:
