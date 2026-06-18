@@ -20,11 +20,14 @@ spec:
         app.kubernetes.io/name: tiktok-sidecar
         app.kubernetes.io/part-of: reelsmith-social-publish
     spec:
-      # initContainer seeds CookiesDir from the out-of-band Secret on first
-      # pod start (and on every rollout restart). Cookies must be refreshed
-      # via `kubectl rollout restart deploy/tiktok-sidecar` after a Secret
-      # update — NEVER `kubectl delete pod` (ArgoCD selfHeal recreates it
-      # before the initContainer re-runs).
+      # initContainer (re)seeds CookiesDir from the out-of-band Secret on EVERY
+      # pod start, overwriting any existing PVC copy whenever the Secret has
+      # cookies. This makes the documented refresh flow actually work: update
+      # the Secret, then `kubectl rollout restart deploy/tiktok-sidecar`, and
+      # the new cookie takes effect. (Previously it skipped when the PVC was
+      # non-empty, so a refreshed Secret never reached a populated PVC — a
+      # stale-cookie trap that silently kept failed auth.) If the Secret is
+      # empty it leaves the PVC untouched, so it never wipes a working cookie.
       initContainers:
         - name: seed-cookies
           image: busybox:1.36
@@ -33,13 +36,12 @@ spec:
             - -c
             - |
               set -e
-              if [ -z "$(ls -A /app/CookiesDir 2>/dev/null)" ]; then
-                echo "seed-cookies: copying cookies from /secrets to /app/CookiesDir"
-                cp -v /secrets/*.cookie /app/CookiesDir/ 2>/dev/null || \
-                  echo "seed-cookies: no .cookie files in /secrets (Secret may be empty until operator bootstraps)"
+              if ls /secrets/*.cookie >/dev/null 2>&1; then
+                echo "seed-cookies: (re)seeding cookies from /secrets to /app/CookiesDir"
+                cp -vf /secrets/*.cookie /app/CookiesDir/
               else
-                echo "seed-cookies: /app/CookiesDir already populated, skipping"
-                ls -la /app/CookiesDir
+                echo "seed-cookies: no .cookie files in /secrets — leaving existing PVC contents untouched"
+                ls -la /app/CookiesDir || true
               fi
           volumeMounts:
             - name: cookies-pvc
@@ -84,10 +86,14 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 256Mi
+              memory: 384Mi
             limits:
-              cpu: 500m
-              memory: 512Mi
+              # Bumped 512Mi -> 1Gi: the uploader launches headless Chromium
+              # (Playwright) + Node + Python + the video buffer, which can
+              # exceed 512Mi and OOMKill mid-upload (no upload ever reached
+              # this far before the luxon fix, so OOM was latent).
+              cpu: 750m
+              memory: 1Gi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

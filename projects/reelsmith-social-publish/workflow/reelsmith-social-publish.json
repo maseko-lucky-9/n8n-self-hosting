@@ -27,7 +27,7 @@
     {
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const { DateTime } = require('luxon');\n\nconst REGIONS = [\n  { tz: 'Africa/Johannesburg', hours: [12, 18, 20] },\n  { tz: 'America/New_York',    hours: [12, 18, 20] },\n  { tz: 'America/Los_Angeles', hours: [12, 18, 20] },\n  { tz: 'Europe/London',       hours: [12, 19, 21] }\n];\nconst MIN_LEAD_MIN = 10;\nconst DEDUP_MIN = 30;\n\nconst now = DateTime.utc();\nconst raw = [];\n\nfor (let day = 0; day < 7; day++) {\n  for (const r of REGIONS) {\n    for (const h of r.hours) {\n      const utc = DateTime.now().setZone(r.tz)\n        .startOf('day').plus({ days: day, hours: h }).toUTC();\n      if (utc.diff(now, 'minutes').minutes >= MIN_LEAD_MIN) {\n        raw.push(utc);\n      }\n    }\n  }\n}\n\nraw.sort((a, b) => a.toMillis() - b.toMillis());\n\nconst windows = [];\nfor (const w of raw) {\n  const last = windows[windows.length - 1];\n  if (!last || w.diff(last, 'minutes').minutes >= DEDUP_MIN) {\n    windows.push(w);\n  }\n}\n\nif (windows.length === 0) {\n  throw new Error('No peak windows available in 7-day lookahead');\n}\n\nreturn $input.all().map(item => ({\n  json: {\n    ...item.json,\n    scheduledAt: windows[item.json.clipIndex % windows.length].toISO()\n  }\n}));"
+        "jsCode": "\nconst REGIONS = [\n  { tz: 'Africa/Johannesburg', hours: [12, 18, 20] },\n  { tz: 'America/New_York',    hours: [12, 18, 20] },\n  { tz: 'America/Los_Angeles', hours: [12, 18, 20] },\n  { tz: 'Europe/London',       hours: [12, 19, 21] }\n];\nconst MIN_LEAD_MIN = 10;\nconst DEDUP_MIN = 30;\n\nconst now = DateTime.utc();\nconst raw = [];\n\nfor (let day = 0; day < 7; day++) {\n  for (const r of REGIONS) {\n    for (const h of r.hours) {\n      const utc = DateTime.now().setZone(r.tz)\n        .startOf('day').plus({ days: day, hours: h }).toUTC();\n      if (utc.diff(now, 'minutes').minutes >= MIN_LEAD_MIN) {\n        raw.push(utc);\n      }\n    }\n  }\n}\n\nraw.sort((a, b) => a.toMillis() - b.toMillis());\n\nconst windows = [];\nfor (const w of raw) {\n  const last = windows[windows.length - 1];\n  if (!last || w.diff(last, 'minutes').minutes >= DEDUP_MIN) {\n    windows.push(w);\n  }\n}\n\nif (windows.length === 0) {\n  throw new Error('No peak windows available in 7-day lookahead');\n}\n\nreturn $input.all().map(item => ({\n  json: {\n    ...item.json,\n    scheduledAt: windows[item.json.clipIndex % windows.length].toISO()\n  }\n}));"
       },
       "id": "33333333-3333-4333-8333-333333333333",
       "name": "Assign Peak Window",
@@ -169,8 +169,16 @@
     {
       "parameters": {
         "mode": "combine",
-        "combinationMode": "mergeByPosition",
-        "options": {}
+        "combinationMode": "mergeByFields",
+        "options": {},
+        "mergeByFields": {
+          "values": [
+            {
+              "field1": "filename",
+              "field2": "filename"
+            }
+          ]
+        }
       },
       "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
       "name": "Merge Results",
@@ -198,7 +206,7 @@
     {
       "parameters": {
         "language": "javaScript",
-        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst items = $input.all();\nconst out = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const j = items[i].json;\n  // Archive on last item only \u2014 one manifest per execution\n  if (i === items.length - 1) {\n    const src = j.manifestPath;\n    if (src && fs.existsSync(src)) {\n      const processedDir = path.join(j.jobDir, 'processed');\n      fs.mkdirSync(processedDir, { recursive: true });\n      const stamp = new Date().toISOString().replace(/[:.]/g, '-');\n      const dest = path.join(processedDir, `manifest-${stamp}.csv`);\n      fs.renameSync(src, dest);\n      out.push({ json: { ...j, archived_to: dest } });\n      continue;\n    }\n  }\n  out.push({ json: j });\n}\nreturn out;"
+        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst items = $input.all();\nconst out = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const j = items[i].json;\n  // Archive on last item only — one manifest per execution\n  if (i === items.length - 1) {\n    const src = j.manifestPath;\n    if (src && fs.existsSync(src)) {\n      const processedDir = path.join(j.jobDir, 'processed');\n      fs.mkdirSync(processedDir, { recursive: true });\n      const stamp = new Date().toISOString().replace(/[:.]/g, '-');\n      const dest = path.join(processedDir, `manifest-${stamp}.csv`);\n      fs.renameSync(src, dest);\n      out.push({ json: { ...j, archived_to: dest } });\n      continue;\n    }\n  }\n  out.push({ json: j });\n}\nreturn out;"
       },
       "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
       "name": "Archive Manifest",
@@ -248,7 +256,7 @@
     {
       "parameters": {
         "language": "javaScript",
-        "jsCode": "// Layer-2 ToS-mitigation rate cap. The Scanner Trigger cron (Layer-1) is\n// every 8h; this code enforces the actual <=3 posts/day cap by counting\n// successful TikTok dispatches in workflow static data, keyed by UTC date.\nconst today = new Date().toISOString().slice(0, 10);\nconst sd = $getWorkflowStaticData('global');\nif (sd.postsDate !== today) {\n  sd.postsDate = today;\n  sd.postsToday = 0;\n}\nif ((sd.postsToday || 0) >= 3) {\n  // Skip this branch \u2014 daily cap hit. Return empty array so downstream stops.\n  return [];\n}\nsd.postsToday = (sd.postsToday || 0) + 1;\n// Pass-through; the increment is best-effort optimistic (decremented on failure\n// would require a follow-up node \u2014 deferred).\nreturn $input.all();"
+        "jsCode": "// Layer-2 ToS-mitigation rate cap. The Scanner Trigger cron (Layer-1) is\n// every 8h; this code enforces the actual <=3 posts/day cap by counting\n// successful TikTok dispatches in workflow static data, keyed by UTC date.\nconst today = new Date().toISOString().slice(0, 10);\nconst sd = $getWorkflowStaticData('global');\nif (sd.postsDate !== today) {\n  sd.postsDate = today;\n  sd.postsToday = 0;\n}\nif ((sd.postsToday || 0) >= 3) {\n  // Skip this branch — daily cap hit. Return empty array so downstream stops.\n  return [];\n}\nsd.postsToday = (sd.postsToday || 0) + 1;\n// Pass-through; the increment is best-effort optimistic (decremented on failure\n// would require a follow-up node — deferred).\nreturn $input.all();"
       },
       "id": "99aabbcc-1111-4111-8111-111111111111",
       "name": "TikTok Rate Limit",
@@ -309,7 +317,11 @@
         180
       ],
       "notesInFlow": true,
-      "notes": "POSTs the clip + caption + hashtags to the in-cluster FastAPI sidecar (wraps makiisthenes/TiktokAutoUploader, cookie-auth). Replaces the 3 deleted TikTok Open API nodes (Init/Upload/Poll). Service URL: tiktok-sidecar.n8n-live.svc.cluster.local:8000"
+      "notes": "POSTs the clip + caption + hashtags to the in-cluster FastAPI sidecar (wraps makiisthenes/TiktokAutoUploader, cookie-auth). Replaces the 3 deleted TikTok Open API nodes (Init/Upload/Poll). Service URL: tiktok-sidecar.n8n-live.svc.cluster.local:8000",
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
     }
   ],
   "connections": {
