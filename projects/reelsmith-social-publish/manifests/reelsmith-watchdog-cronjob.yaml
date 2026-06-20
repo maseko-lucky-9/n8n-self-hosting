@@ -1,0 +1,93 @@
+# Success-based watchdog for the Reelsmith Social Publish workflow.
+#
+# WHY: the original outage was 18/18 silent failures — "an execution ran" stayed
+# green the whole time. This watchdog reads execution_entity directly (independent
+# of n8n's own health) and alerts only on the signal that matters: finished runs
+# in the window with ZERO success and >=1 hard failure.
+#
+# Self-silencing by design:
+#  - host powered off (this cluster reboots often) or workflow deactivated => no
+#    new executions => the 25h window is empty => failed=0,ok=0 => no alert.
+#  - a healthy run sitting in a multi-day Wait has status 'waiting' (not error,
+#    not success) => failed=0 => no alert.
+#  - It does NOT catch a single dropped clip inside an otherwise-OK run — that's
+#    what scripts/unpublished-inventory.js is for. This catches systemic stalls.
+#
+# Secrets (NEVER in git):
+#  - reelsmith-watchdog-db / password  -> read-only role n8n_watchdog (SELECT on
+#    execution_entity only). Created out-of-band, re-create with:
+#      PW=$(openssl rand -hex 24)
+#      kubectl exec -i -n n8n-live <pg-pod> -c postgres -- psql -U postgres -d n8n \
+#        -c "DO \$do\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='n8n_watchdog') THEN CREATE ROLE n8n_watchdog LOGIN; END IF; END \$do\$;" \
+#        -c "ALTER ROLE n8n_watchdog LOGIN PASSWORD '$PW';" \
+#        -c "GRANT CONNECT ON DATABASE n8n TO n8n_watchdog; GRANT USAGE ON SCHEMA public TO n8n_watchdog; GRANT SELECT ON execution_entity TO n8n_watchdog;"
+#      kubectl create secret generic reelsmith-watchdog-db -n n8n-live --from-literal=password="$PW"
+#    ponytail: a direct k8s Secret, not ESO/Vault-managed like the others here.
+#      Trivially re-creatable read-only cred; promote to an ExternalSecret if it
+#      ever needs to survive a namespace rebuild unattended.
+#  - reelsmith-telegram / bot_token, chat_id  -> existing ESO-synced alert creds.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: reelsmith-publish-watchdog
+  namespace: n8n-live
+  labels:
+    app.kubernetes.io/part-of: reelsmith-social-publish
+    app.kubernetes.io/component: reelsmith-watchdog
+spec:
+  # 30 min after each publish tick (publish cron is `0 */8 * * *`) => at most one
+  # alert per failed publish cycle, no extra dedup state needed.
+  schedule: "30 0,8,16 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 200   # don't fire a stale missed run after a host-off
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels:
+            # UNIQUE label: matches no egress policy => open egress (Telegram),
+            # and is the source the reelsmith-watchdog-to-postgres policy allows.
+            app.kubernetes.io/component: reelsmith-watchdog
+            app.kubernetes.io/part-of: reelsmith-social-publish
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: watchdog
+              image: postgres:16-alpine   # ships psql; curl added at start (open egress)
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef: { name: reelsmith-watchdog-db, key: password }
+                - name: TG_TOKEN
+                  valueFrom:
+                    secretKeyRef: { name: reelsmith-telegram, key: bot_token }
+                - name: TG_CHAT
+                  valueFrom:
+                    secretKeyRef: { name: reelsmith-telegram, key: chat_id }
+                - name: WF_ID
+                  value: "SKLkX5qUDYLlWTxo"
+              command: ["/bin/sh", "-eu", "-c"]
+              args:
+                - |
+                  apk add --no-cache curl >/dev/null 2>&1 || { echo "FATAL: apk add curl failed (egress to alpine CDN?)"; exit 1; }
+                  RES=$(psql -h postgres-service -U n8n_watchdog -d n8n -tA -c \
+                    "SELECT count(*) FILTER (WHERE status IN ('error','crashed'))||'|'||count(*) FILTER (WHERE status='success') \
+                     FROM execution_entity WHERE \"workflowId\"='$WF_ID' AND \"startedAt\" > now() - interval '25 hours';")
+                  FAILED=${RES%%|*}; OK=${RES##*|}
+                  echo "window=25h failed=$FAILED ok=$OK"
+                  if [ "${FAILED:-0}" -ge 1 ] && [ "${OK:-0}" -eq 0 ]; then
+                    MSG="⚠️ Reelsmith publisher stalled: ${FAILED} failed execution(s) and 0 success in the last 25h (n8n workflow $WF_ID). Check the n8n executions list."
+                    # token stays out of argv: curl reads url+data from a -K config on stdin
+                    printf 'url = "https://api.telegram.org/bot%s/sendMessage"\ndata-urlencode = "chat_id=%s"\ndata-urlencode = "text=%s"\n' \
+                      "$TG_TOKEN" "$TG_CHAT" "$MSG" \
+                      | curl -sS -K - >/dev/null && echo "ALERT sent" || { echo "FATAL: telegram send failed"; exit 1; }
+                  else
+                    echo "ok: no alert"
+                  fi
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }   # namespace LimitRange min cpu = 50m
+                limits: { cpu: 200m, memory: 128Mi }
