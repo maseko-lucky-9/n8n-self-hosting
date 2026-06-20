@@ -1,0 +1,29 @@
+# Additive ingress: let the publish-watchdog CronJob reach Postgres on 5432.
+# The helm-managed `n8n-application-postgres` policy only admits component
+# n8n/worker/backup. We do NOT edit that (helm would revert it) — NetworkPolicies
+# are additive, so this extra policy unions in the watchdog -> postgres path.
+# The watchdog pod carries a UNIQUE component label so it is NOT selected by the
+# worker/n8n EGRESS policies and therefore keeps unrestricted egress (needs to
+# reach api.telegram.org). Verified 2026-06-20: a pod with non-allowed labels
+# times out to postgres-service:5432 — this policy is what closes that gap.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: reelsmith-watchdog-to-postgres
+  namespace: n8n-live
+  labels:
+    app.kubernetes.io/part-of: reelsmith-social-publish
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: reelsmith-watchdog
+      ports:
+        - port: 5432
+          protocol: TCP
