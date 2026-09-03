@@ -1,0 +1,431 @@
+{
+  "name": "Lead Pipeline \u2014 B \u2014 Follow-up",
+  "nodes": [
+    {
+      "name": "Daily 08:00 SAST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -760,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Note [-760, -20]",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -760,
+        -20
+      ],
+      "parameters": {
+        "content": "## WF-B \u2014 Follow-up sequence\n\n`0 6 * * *` is **UTC** = 08:00 SAST. n8n schedules in the instance timezone; UTC is stated explicitly so a timezone change cannot silently move sends into the night.\n\nEvery mail carries a working opt-out. The W1 demo shipped `href='#'` \u2014 a dead unsubscribe link is a POPIA defect, not a placeholder.",
+        "width": 520,
+        "height": 280
+      }
+    },
+    {
+      "name": "Select Due Leads",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -520,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Leads due a nurture touch. stopped_at IS NULL is the whole opt-out contract:\n-- unsubscribe, a reply, and a booking all write it, so all three stop the sequence.\nSELECT l.id AS lead_id, l.name, l.email_norm, l.touch_number, l.urgency\nFROM leads l\nWHERE l.stopped_at IS NULL\n  AND l.email_norm IS NOT NULL\n  AND l.commercial_stage IN ('lead_in','contacted')\n  AND l.touch_number < jsonb_array_length(($1::jsonb)->'followup_days')\n  AND COALESCE(l.next_touch_at, l.created_at\n      + make_interval(days => (((($1::jsonb)->'followup_days')->>0)::int))) <= now()\nORDER BY (l.urgency = 'urgent') DESC, l.created_at\nLIMIT (($1::jsonb)->>'cap')::int;",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify({ followup_days: JSON.parse($vars.followup_days ?? '[3,7,14]'), cap: Number($vars.daily_send_cap ?? 25) }) }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_LEADS_PG_CRED",
+          "name": "Postgres leads"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "name": "Any Due?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -300,
+        300
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "has",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.lead_id }}",
+              "rightValue": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Batch",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -80,
+        380
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "name": "Compose Touch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        460
+      ],
+      "parameters": {
+        "jsCode": "// Pick the touch copy and mint an opt-out token.\n// One node instead of a Switch plus three near-identical email nodes.\nconst cfg = $vars ?? {};\nconst j = $input.first().json;\nconst nth = Number(j.touch_number ?? 0);          // 0-based: 0 = first touch\nconst brand = cfg.brand ?? 'we';\nconst booking = cfg.booking_url ?? '';\n\nconst TOUCHES = [\n  { subject: `Following up on your ${brand} enquiry`,\n    body: `<p>Hi ${j.name},</p><p>Just checking you got our reply. If it is easier to talk it through, grab a slot here:</p><p><a href=\"${booking}\">Book a consultation</a></p>` },\n  { subject: `Still happy to help \u2014 ${brand}`,\n    body: `<p>Hi ${j.name},</p><p>No rush at all. When you are ready, the calendar is open:</p><p><a href=\"${booking}\">Book a consultation</a></p>` },\n  { subject: `Closing the loop`,\n    body: `<p>Hi ${j.name},</p><p>I will stop following up here so I am not cluttering your inbox. If the timing changes, the door is open.</p><p><a href=\"${booking}\">Book a consultation</a></p>` },\n];\nconst t = TOUCHES[Math.min(nth, TOUCHES.length - 1)];\n\n// Opaque, unguessable, and stored server-side -- an HMAC in a URL is replayable\n// forever and leaks through browser history and edge logs.\nconst token = [...crypto.getRandomValues(new Uint8Array(24))]\n  .map(b => b.toString(16).padStart(2, '0')).join('');\n\nreturn [{ json: {\n  lead_id: j.lead_id, name: j.name, email_norm: j.email_norm,\n  touch_number: nth, subject: t.subject, body: t.body, token,\n  unsubscribe_url: `${cfg.webhook_base}/webhook/lead-stage?t=${token}`,\n  followup_days: JSON.parse(cfg.followup_days ?? '[3,7,14]'),\n} }];\n"
+      }
+    },
+    {
+      "name": "Store Optout Token",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        380,
+        460
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- One opt-out token per send. 400 days so an old mail's link still works.\nINSERT INTO stage_tokens (token, lead_id, facet, to_stage, expires_at)\nSELECT ($1::jsonb)->>'token', (($1::jsonb)->>'lead_id')::uuid, 'system', 'unsubscribed',\n       now() + interval '400 days'\nON CONFLICT (token) DO NOTHING\nRETURNING token;",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify({ token: $json.token, lead_id: $json.lead_id }) }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_LEADS_PG_CRED",
+          "name": "Postgres leads"
+        }
+      }
+    },
+    {
+      "name": "Send Follow-up",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        600,
+        460
+      ],
+      "parameters": {
+        "fromEmail": "={{ $vars.from_email }}",
+        "toEmail": "={{ $('Compose Touch').item.json.email_norm }}",
+        "subject": "={{ $('Compose Touch').item.json.subject }}",
+        "html": "={{ $('Compose Touch').item.json.body }}<hr><p style=\"font-size:12px;color:#666\">You are receiving this because you enquired at {{ $vars.site_url }}. <a href=\"{{ $('Compose Touch').item.json.unsubscribe_url }}\">Unsubscribe</a></p>",
+        "options": {}
+      },
+      "credentials": {
+        "smtp": {
+          "id": "0xN94eNMgcrhTo4O",
+          "name": "SMTP account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "name": "Mark Touched",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        820,
+        460
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Record the touch and schedule the next one. Also the first-touch stamp the\n-- SLA branch reads. Written AFTER the send so a send failure is retried, not skipped.\nWITH p AS (SELECT $1::jsonb AS d),\nupd AS (\n  UPDATE leads l SET\n    touch_number     = l.touch_number + 1,\n    first_touch_at   = COALESCE(l.first_touch_at, now()),\n    commercial_stage = CASE WHEN l.commercial_stage = 'lead_in' THEN 'contacted' ELSE l.commercial_stage END,\n    next_touch_at    = now() + make_interval(days =>\n                        COALESCE(((d->'followup_days')->>(l.touch_number + 1))::int, 9999)),\n    updated_at = now()\n  FROM p WHERE l.id = (d->>'lead_id')::uuid\n  RETURNING l.id, l.touch_number\n)\nINSERT INTO lead_events (lead_id, facet, from_stage, to_stage, actor, payload)\nSELECT id, 'system', 'contacted', 'touch_' || touch_number, 'system', jsonb_build_object('channel','email')\nFROM upd RETURNING lead_id;",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify({ lead_id: $('Compose Touch').item.json.lead_id, followup_days: $('Compose Touch').item.json.followup_days }) }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_LEADS_PG_CRED",
+          "name": "Postgres leads"
+        }
+      }
+    },
+    {
+      "name": "Jitter",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1040,
+        460
+      ],
+      "parameters": {
+        "amount": "={{ 30 + Math.floor(Math.random() * 60) }}",
+        "unit": "seconds"
+      }
+    },
+    {
+      "name": "Hourly SLA Check",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -760,
+        760
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 * * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Find Breaches",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -520,
+        760
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Urgent and still untouched past the SLA. The video has no such check: a lead\n-- that falls through simply sits there.\nSELECT id AS lead_id, name, email_norm, phone_norm,\n       round(EXTRACT(epoch FROM (now() - created_at)) / 60) AS age_minutes\nFROM leads\nWHERE urgency = 'urgent' AND first_touch_at IS NULL AND stopped_at IS NULL\n  AND created_at < now() - make_interval(hours => (($1::jsonb)->>'sla_hours')::int);",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify({ sla_hours: Number($vars.sla_hours_urgent ?? 1) }) }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_LEADS_PG_CRED",
+          "name": "Postgres leads"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "name": "Any Breach?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -300,
+        760
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "b",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.lead_id }}",
+              "rightValue": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Escalate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -80,
+        760
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://ntfy.sh/{{ $vars.ntfy_topic }}",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "body": "=SLA BREACH: urgent lead {{ $json.name }} ({{ $json.email_norm }}) untouched for {{ $json.age_minutes }} minutes.",
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Daily 08:00 SAST": {
+      "main": [
+        [
+          {
+            "node": "Select Due Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Due Leads": {
+      "main": [
+        [
+          {
+            "node": "Any Due?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Due?": {
+      "main": [
+        [
+          {
+            "node": "Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Batch": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Compose Touch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose Touch": {
+      "main": [
+        [
+          {
+            "node": "Store Optout Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Optout Token": {
+      "main": [
+        [
+          {
+            "node": "Send Follow-up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Follow-up": {
+      "main": [
+        [
+          {
+            "node": "Mark Touched",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Touched": {
+      "main": [
+        [
+          {
+            "node": "Jitter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jitter": {
+      "main": [
+        [
+          {
+            "node": "Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hourly SLA Check": {
+      "main": [
+        [
+          {
+            "node": "Find Breaches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Breaches": {
+      "main": [
+        [
+          {
+            "node": "Any Breach?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Breach?": {
+      "main": [
+        [
+          {
+            "node": "Escalate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}

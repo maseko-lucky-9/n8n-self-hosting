@@ -1,0 +1,421 @@
+{
+  "name": "Lead Pipeline \u2014 C \u2014 Stage Machine",
+  "nodes": [
+    {
+      "name": "Stage Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -720,
+        300
+      ],
+      "parameters": {
+        "path": "lead-stage",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "lead-stage"
+    },
+    {
+      "name": "Stage Link (GET)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -720,
+        520
+      ],
+      "parameters": {
+        "path": "lead-stage",
+        "httpMethod": "GET",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "lead-stage-get"
+    },
+    {
+      "name": "Parse Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        400
+      ],
+      "parameters": {
+        "jsCode": "// Accept BOTH shapes:\n//   GET  /webhook/lead-stage?t=<token>            -- a link clicked by a client\n//   POST /webhook/lead-stage {lead_id,facet,to_stage,signature}\n// A link click is a GET, so it cannot carry a JSON body or an HMAC header. Tokens\n// are single-use and expiring instead -- an HMAC in a URL is replayable forever\n// and leaks into browser history and edge logs.\nconst raw = $input.first().json;\nconst q = raw.query ?? {};\nconst b = (raw.body && typeof raw.body === 'object') ? raw.body : {};\nconst token = q.t ?? q.token ?? null;\nif (token) return [{ json: { token: String(token), lead_id: null, facet: null, to_stage: null } }];\nconst lead_id = b.lead_id ?? b.leadId ?? null;\nif (!lead_id) return [{ json: { token: null, lead_id: null, facet: null, to_stage: null } }];\nreturn [{ json: {\n  token: null, lead_id: String(lead_id),\n  facet: String(b.facet ?? 'commercial'), to_stage: String(b.to_stage ?? ''),\n  sigBase: `${lead_id}.${b.facet ?? 'commercial'}.${b.to_stage ?? ''}`,\n  providedSig: String(b.signature ?? ''),\n} }];\n"
+      }
+    },
+    {
+      "name": "Resolve Lead / Burn Token",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -240,
+        400
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Resolve the request to a lead, and for GET links atomically burn the token.\n-- The UPDATE ... WHERE used_at IS NULL is the single-use guarantee: a second click\n-- matches no row, so a leaked or replayed URL cannot re-fire the transition.\nWITH p AS (SELECT $1::jsonb AS d),\ntok AS (\n  UPDATE stage_tokens s SET used_at = now()\n  FROM p\n  WHERE s.token = (p.d->>'token')\n    AND (p.d->>'token') IS NOT NULL\n    AND (s.used_at IS NULL OR s.to_stage = 'unsubscribed')  -- opt-out links stay clickable\n    AND s.expires_at > now()\n  RETURNING s.lead_id, s.facet, s.to_stage\n),\nresolved AS (\n  SELECT lead_id, facet, to_stage, 'human'::text AS actor FROM tok\n  UNION ALL\n  SELECT (p.d->>'lead_id')::uuid, p.d->>'facet', p.d->>'to_stage', 'webhook'\n  FROM p WHERE (p.d->>'token') IS NULL AND (p.d->>'lead_id') IS NOT NULL\n)\nSELECT l.id AS lead_id, r.facet, r.to_stage, r.actor,\n       l.commercial_stage, l.calendar_stage, l.name, l.email_norm, l.phone_norm\nFROM resolved r JOIN leads l ON l.id = r.lead_id;",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify($json) }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_LEADS_PG_CRED",
+          "name": "Postgres leads"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "name": "Transition Guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        400
+      ],
+      "parameters": {
+        "jsCode": "// Transition guard. THESE MAPS ARE THE DIAGRAM'S ARROWS.\n// Two orthogonal facets: a lead can be payment_pending (commercial) AND\n// consult_booked (calendar) at once. One `stage` enum could not hold that, and the\n// guard would 4xx a legitimate booking that a poller would never retry.\nconst COMMERCIAL = {\n  lead_in:            ['contacted', 'lost'],\n  contacted:          ['proposal_sent', 'lost'],\n  proposal_sent:      ['proposal_accepted', 'payment_pending', 'lost'],\n  payment_pending:    ['proposal_sent', 'proposal_accepted', 'lost'],  // <- the video's retry loop\n  proposal_accepted:  ['client_signed', 'lost'],\n  client_signed:      ['engagement_opened'],\n  engagement_opened:  [],\n  lost:               ['contacted'],\n};\nconst CALENDAR = {\n  none:              ['consult_booked'],\n  consult_booked:    ['consultation_done', 'none'],   // 'none' = cancelled\n  consultation_done: ['consult_booked'],              // follow-up consult\n};\nconst MAPS = { commercial: COMMERCIAL, calendar: CALENDAR };\n\n// Unsubscribing is NOT 'lost'. It is legal from any state, changes no stage column\n// (APPLY_SQL only writes a column when facet is commercial|calendar) and only sets\n// stopped_at. Marking a signed client 'lost' because they opted out of nurture mail\n// would be wrong.\nconst SYSTEM_STAGES = ['unsubscribed', 'replied', 'bounced'];\n\nconst i = $input.first().json;\nconst row = i.lead_id ? i : null;\nif (!row) return [{ json: { ok: false, code: 404, reason: 'lead not found or token invalid/expired/used' } }];\n\nconst facet = String(row.facet || '');\nconst to    = String(row.to_stage || '');\nif (facet === 'system') {\n  if (!SYSTEM_STAGES.includes(to)) {\n    return [{ json: { ok: false, code: 400, reason: `unknown system stage '${to}'` } }];\n  }\n  return [{ json: { ok: true, noop: false, code: 200, lead_id: row.lead_id, facet,\n                    from_stage: row.commercial_stage, to_stage: to, actor: row.actor || 'webhook',\n                    name: row.name, email_norm: row.email_norm } }];\n}\nconst map   = MAPS[facet];\nif (!map) return [{ json: { ok: false, code: 400, reason: `unknown facet '${facet}'` } }];\n\nconst from = facet === 'commercial' ? row.commercial_stage : row.calendar_stage;\nif (from === to) {\n  // Idempotent replay: already there. Success, but write no duplicate event.\n  return [{ json: { ok: true, noop: true, code: 200, lead_id: row.lead_id, facet, from_stage: from, to_stage: to } }];\n}\nif (!(map[from] || []).includes(to)) {\n  return [{ json: { ok: false, code: 409, reason: `illegal transition ${facet}: ${from} -> ${to}`,\n                    lead_id: row.lead_id, allowed: map[from] || [] } }];\n}\nreturn [{ json: { ok: true, noop: false, code: 200, lead_id: row.lead_id, facet,\n                  from_stage: from, to_stage: to, actor: row.actor || 'webhook',\n                  name: row.name, email_norm: row.email_norm } }];\n"
+      }
+    },
+    {
+      "name": "Allowed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        240,
+        400
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "ok",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "No-op?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        460,
+        300
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "np",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.noop }}",
+              "rightValue": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Apply Transition",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        700,
+        380
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Apply the transition and append the audit event, atomically.\n-- Booking or losing a lead also stops the nurture sequence -- one of the three\n-- real producers of stopped_at (the others: unsubscribe and reply detection).\nWITH p AS (SELECT $1::jsonb AS d),\nupd AS (\n  UPDATE leads l SET\n    commercial_stage = CASE WHEN d->>'facet' = 'commercial' THEN d->>'to_stage' ELSE l.commercial_stage END,\n    calendar_stage   = CASE WHEN d->>'facet' = 'calendar'   THEN d->>'to_stage' ELSE l.calendar_stage   END,\n    stopped_at  = CASE WHEN d->>'to_stage' IN ('consult_booked','lost','unsubscribed')\n                       THEN COALESCE(l.stopped_at, now()) ELSE l.stopped_at END,\n    stop_reason = CASE WHEN l.stopped_at IS NOT NULL THEN l.stop_reason\n                       WHEN d->>'to_stage' = 'consult_booked' THEN 'booked'\n                       WHEN d->>'to_stage' = 'lost'           THEN 'lost'\n                       ELSE l.stop_reason END,\n    updated_at = now()\n  FROM p WHERE l.id = (d->>'lead_id')::uuid\n  RETURNING l.id, l.commercial_stage, l.calendar_stage, l.name, l.email_norm\n)\nINSERT INTO lead_events (lead_id, facet, from_stage, to_stage, actor, payload)\nSELECT upd.id, d->>'facet', d->>'from_stage', d->>'to_stage', d->>'actor',\n       jsonb_build_object('source','wf-c')\nFROM p, upd\nRETURNING lead_id, from_stage, to_stage;",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify($json) }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_LEADS_PG_CRED",
+          "name": "Postgres leads"
+        }
+      }
+    },
+    {
+      "name": "Route Side Effect",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        940,
+        380
+      ],
+      "parameters": {
+        "options": {
+          "fallbackOutput": "none"
+        },
+        "rules": {
+          "values": [
+            {
+              "outputKey": "proposal_sent",
+              "conditions": {
+                "options": {
+                  "version": 2,
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "ps",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.to_stage }}",
+                    "rightValue": "proposal_sent"
+                  }
+                ]
+              },
+              "renameOutput": true
+            },
+            {
+              "outputKey": "client_signed",
+              "conditions": {
+                "options": {
+                  "version": 2,
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "cs",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.to_stage }}",
+                    "rightValue": "client_signed"
+                  }
+                ]
+              },
+              "renameOutput": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Notify Stage Change",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1180,
+        380
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://ntfy.sh/{{ $vars.ntfy_topic }}",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "body": "=Lead {{ $json.lead_id }}: {{ $json.from_stage }} -> {{ $json.to_stage }}",
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "name": "Respond Stage",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1420,
+        400
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: $json.ok === false ? 'rejected' : 'ok', reason: $json.reason ?? null, to_stage: $json.to_stage ?? null }) }}",
+        "options": {
+          "responseCode": "={{ $json.code ?? 200 }}"
+        }
+      }
+    },
+    {
+      "name": "Note [-720, 20]",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -720,
+        20
+      ],
+      "parameters": {
+        "content": "## WF-C \u2014 Stage machine\n\nCollapses **CONSULT BOOKED \u00b7 CONSULTATION CALL \u00b7 RETAINER SENT \u00b7 SIGNED? \u00b7 PAYMENT PENDING \u00b7 CLIENT SIGNED \u00b7 MATTER OPENED** into one workflow.\n\nThose are not seven automations \u2014 they are values of two columns. The maps in *Transition Guard* are the diagram's arrows; `payment_pending \u2192 proposal_sent` is its retry loop.\n\nGET = single-use token (link click). POST = HMAC.",
+        "width": 520,
+        "height": 300
+      }
+    }
+  ],
+  "connections": {
+    "Stage Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage Link (GET)": {
+      "main": [
+        [
+          {
+            "node": "Parse Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Request": {
+      "main": [
+        [
+          {
+            "node": "Resolve Lead / Burn Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Lead / Burn Token": {
+      "main": [
+        [
+          {
+            "node": "Transition Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transition Guard": {
+      "main": [
+        [
+          {
+            "node": "Allowed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Allowed?": {
+      "main": [
+        [
+          {
+            "node": "No-op?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Stage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No-op?": {
+      "main": [
+        [
+          {
+            "node": "Respond Stage",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Apply Transition",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Transition": {
+      "main": [
+        [
+          {
+            "node": "Route Side Effect",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Side Effect": {
+      "main": [
+        [
+          {
+            "node": "Notify Stage Change",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify Stage Change",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Stage Change": {
+      "main": [
+        [
+          {
+            "node": "Respond Stage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}
