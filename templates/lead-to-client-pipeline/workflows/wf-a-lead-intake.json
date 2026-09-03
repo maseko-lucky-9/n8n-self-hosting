@@ -1,0 +1,525 @@
+{
+  "name": "Lead Pipeline \u2014 A \u2014 Intake",
+  "nodes": [
+    {
+      "name": "Lead Intake Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -720,
+        300
+      ],
+      "parameters": {
+        "path": "lead-intake",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "lead-intake"
+    },
+    {
+      "name": "Validate & Normalise",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -500,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Validate, normalise and classify an inbound lead.\n// Throws -> the Error Workflow (WF-D) fires. Never silently drops a lead.\nconst cfg = $vars ?? {};\nconst raw = $input.first().json;\nconst body = (raw.body && typeof raw.body === 'object') ? raw.body : raw;\n\n// 1. Honeypot. A bot filling the hidden field looks exactly like a real post.\nif (body._gotcha) { return [{ json: { reject: true, code: 400, reason: 'honeypot' } }]; }\n\n// 2. Required fields.\nconst name = String(body.name ?? body.client_name ?? '').trim();\nif (!name) { return [{ json: { reject: true, code: 400, reason: 'missing name' } }]; }\n\n// 3. Normalise. email_norm / phone_norm are the partial-unique-index keys, so\n//    normalisation IS the dedupe rule -- keep it boring and deterministic.\nconst emailRaw = String(body.email ?? '').trim().toLowerCase();\nconst email = /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(emailRaw) ? emailRaw : null;\n\nlet phone = String(body.phone ?? '').replace(/[^\\d+]/g, '');\nif (phone.startsWith('0'))       phone = '+27' + phone.slice(1);   // ZA local -> E.164\nelse if (phone.startsWith('27')) phone = '+' + phone;\nif (phone && !/^\\+\\d{8,15}$/.test(phone)) phone = null;\nif (!phone) phone = null;\n\nif (!email && !phone) {\n  return [{ json: { reject: true, code: 400, reason: 'no contactable channel' } }];\n}\n\n// 4. Classify. Rules come from config, not hardcoded, so a new vertical is a\n//    config edit rather than a workflow edit.\nconst timeline = String(body.timeline ?? '').toLowerCase();\nconst budget   = String(body.budget   ?? '').toLowerCase();\nconst topic    = String(body.topic    ?? '').toLowerCase();\nconst urgentTimelines = (cfg.urgent_timelines ?? 'asap,lt-1-month').split(',');\nconst urgentBudgets   = (cfg.urgent_budgets   ?? '100k-150k,150k-plus').split(',');\nconst urgent = urgentTimelines.includes(timeline) || urgentBudgets.includes(budget);\n\n// 5. Quiet hours. An 02:00 SMS burns the lead; the 08:00 follow-up covers it.\n//    ponytail: no SMS queue table until there is evidence one is needed.\nconst tz   = cfg.timezone ?? 'Africa/Johannesburg';\nconst hour = Number(new Intl.DateTimeFormat('en-GB',\n  { timeZone: tz, hour: 'numeric', hour12: false }).format(new Date()));\nconst qs = Number(cfg.quiet_start ?? 20), qe = Number(cfg.quiet_end ?? 7);\nconst quiet = qs > qe ? (hour >= qs || hour < qe) : (hour >= qs && hour < qe);\n\n// 6. Signature base. Signing a fixed string beats signing the raw body: no JSON\n//    canonicalisation mismatch between Cloudflare Workers and n8n.\nconst ref  = String(body.submissionId ?? body.ref ?? '').trim();\nconst ts   = String(body.submittedAt ?? '').trim();\nconst skew = ts ? Math.abs(Date.now() - Date.parse(ts)) / 1000 : Infinity;\nif (!ref || !ts)      return [{ json: { reject: true, code: 400, reason: 'missing ref/timestamp' } }];\nif (!(skew < 300))    return [{ json: { reject: true, code: 401, reason: 'stale or unparseable timestamp' } }];\n\nreturn [{ json: {\n  reject: false,\n  sigBase: `${ref}.${ts}.${email ?? phone}`,\n  providedSig: String(body.signature ?? ''),\n  lead: {\n    email_norm: email, phone_norm: phone, name,\n    service_type: String(body.service ?? body.topic ?? '').trim() || null,\n    urgency: urgent ? 'urgent' : 'normal',\n    consent_source: 'website_form',\n  },\n  submission: {\n    ref, source: String(body.source ?? 'website'),\n    utm_source: body.utm_source ?? null, utm_medium: body.utm_medium ?? null,\n    utm_campaign: body.utm_campaign ?? null,\n    entry_point: body.entryPoint ?? body.entry_point ?? null, topic: topic || null,\n    raw: JSON.stringify(body),\n  },\n  quiet, urgent,\n} }];\n"
+      }
+    },
+    {
+      "name": "Rejected?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -280,
+        300
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "rej",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.reject }}",
+              "rightValue": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Respond Rejected",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        -60,
+        140
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status:'rejected', reason:$json.reason }) }}",
+        "options": {
+          "responseCode": "={{ $json.code }}"
+        }
+      }
+    },
+    {
+      "name": "HMAC Expected",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "position": [
+        -60,
+        440
+      ],
+      "parameters": {
+        "action": "hmac",
+        "type": "SHA256",
+        "value": "={{ $json.sigBase }}",
+        "dataPropertyName": "expectedSig",
+        "encoding": "hex"
+      },
+      "credentials": {
+        "crypto": {
+          "id": "REPLACE_CRYPTO_CRED",
+          "name": "Lead pipeline HMAC"
+        }
+      }
+    },
+    {
+      "name": "Signature Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        160,
+        440
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "sig",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $json.expectedSig }}",
+              "rightValue": "={{ $json.providedSig }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Respond Unauthorised",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        380,
+        620
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status:'unauthorised' }) }}",
+        "options": {
+          "responseCode": 401
+        }
+      }
+    },
+    {
+      "name": "Upsert Lead + Submission",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        380,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Atomic: lead upsert + submission + audit event in ONE statement.\n-- Stage columns are deliberately absent from the DO UPDATE SET list: a returning\n-- prospect must not be demoted to lead_in and re-enter the follow-up sequence.\nWITH p AS (SELECT $1::jsonb AS d),\nup AS (\n  INSERT INTO leads (email_norm, phone_norm, name, service_type, urgency, consent_source, consent_at)\n  SELECT d->'lead'->>'email_norm', d->'lead'->>'phone_norm', d->'lead'->>'name',\n         d->'lead'->>'service_type', d->'lead'->>'urgency', d->'lead'->>'consent_source', now()\n  FROM p\n  ON CONFLICT (email_norm) WHERE email_norm IS NOT NULL\n  DO UPDATE SET name       = EXCLUDED.name,\n                phone_norm = COALESCE(EXCLUDED.phone_norm, leads.phone_norm),\n                updated_at = now()\n  RETURNING id, (xmax <> 0) AS existed, commercial_stage, urgency, name, email_norm, phone_norm\n),\nsub AS (\n  INSERT INTO submissions (ref, lead_id, source, utm_source, utm_medium, utm_campaign, entry_point, topic, raw)\n  SELECT d->'submission'->>'ref', up.id, d->'submission'->>'source',\n         d->'submission'->>'utm_source', d->'submission'->>'utm_medium',\n         d->'submission'->>'utm_campaign', d->'submission'->>'entry_point',\n         d->'submission'->>'topic', (d->'submission'->>'raw')::jsonb\n  FROM p, up\n  ON CONFLICT (ref) DO NOTHING           -- replayed webhook is a no-op\n  RETURNING lead_id\n),\nev AS (\n  INSERT INTO lead_events (lead_id, facet, from_stage, to_stage, actor, payload)\n  SELECT up.id, 'system',\n         CASE WHEN up.existed THEN up.commercial_stage END,\n         CASE WHEN up.existed THEN 'resubmitted' ELSE 'lead_in' END,\n         'system', jsonb_build_object('ref', d->'submission'->>'ref')\n  FROM p, up\n  RETURNING id\n)\nSELECT id AS lead_id, existed, commercial_stage, urgency, name, email_norm, phone_norm FROM up;",
+        "options": {
+          "queryReplacement": "={{ JSON.stringify($json) }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_LEADS_PG_CRED",
+          "name": "Postgres leads"
+        }
+      }
+    },
+    {
+      "name": "New Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        600,
+        300
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "new",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.existed }}",
+              "rightValue": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Route Urgency",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        820,
+        220
+      ],
+      "parameters": {
+        "options": {},
+        "rules": {
+          "values": [
+            {
+              "outputKey": "urgent",
+              "conditions": {
+                "options": {
+                  "version": 2,
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "u",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.urgency }}",
+                    "rightValue": "urgent"
+                  }
+                ]
+              },
+              "renameOutput": true
+            },
+            {
+              "outputKey": "normal",
+              "conditions": {
+                "options": {
+                  "version": 2,
+                  "caseSensitive": true,
+                  "typeValidation": "strict"
+                },
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "nn",
+                    "operator": {
+                      "type": "string",
+                      "operation": "notEquals"
+                    },
+                    "leftValue": "={{ $json.urgency }}",
+                    "rightValue": "urgent"
+                  }
+                ]
+              },
+              "renameOutput": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Send SMS (SMSGate)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1040,
+        120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.sms_endpoint || 'https://api.sms-gate.app/3rdparty/v1/messages' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ textMessage: { text: `Hi ${$json.name}, thanks for contacting ${$vars.brand}. We have your enquiry and will call you shortly. Book a slot: ${$vars.booking_url}` }, phoneNumbers: [$json.phone_norm] }) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          }
+        }
+      },
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "REPLACE_SMSGATE_CRED",
+          "name": "SMSGate"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "name": "Send Confirmation Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1040,
+        320
+      ],
+      "parameters": {
+        "fromEmail": "={{ $vars.from_email }}",
+        "toEmail": "={{ $json.email_norm }}",
+        "subject": "=We've got your enquiry \u2014 {{ $vars.brand }}",
+        "html": "=<p>Hi {{ $json.name }},</p><p>Thanks for reaching out. We have your enquiry and a consultant will be in touch within <strong>1 business day</strong>.</p><p>Want to skip the wait? <a href=\"{{ $vars.booking_url }}\">Book a consultation directly</a>.</p><p>\u2014 The {{ $vars.brand }} team</p><hr><p style=\"font-size:12px;color:#666\">You are receiving this because you submitted an enquiry on {{ $vars.site_url }}. This is a one-off reply to that enquiry, not a mailing list. Reply STOP and we will not follow up.</p>",
+        "options": {}
+      },
+      "credentials": {
+        "smtp": {
+          "id": "0xN94eNMgcrhTo4O",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "name": "Notify Resubmission",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        820,
+        480
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://ntfy.sh/{{ $vars.ntfy_topic }}",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "body": "=Returning lead: {{ $json.name }} ({{ $json.email_norm }}) is at stage {{ $json.commercial_stage }} and submitted the form again.",
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1300,
+        300
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status:'received', lead_id: $('Upsert Lead + Submission').first().json.lead_id }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "name": "Note [-720, -40]",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -720,
+        -40
+      ],
+      "parameters": {
+        "content": "## WF-A \u2014 Lead Intake\n\nDiagram nodes: **LEAD IN \u2192 CONTACT CREATED \u2192 CASE TYPE TAGGED \u2192 Urgent? \u2192 CONFIRMATION SENT**\n\nAuth is HMAC over `ref.timestamp.contact` (not the raw body \u2014 no JSON canonicalisation mismatch) plus a 300s freshness window.\n\nThe upsert never touches stage columns: a returning client must not be demoted to `lead_in`.",
+        "width": 460,
+        "height": 260
+      }
+    }
+  ],
+  "connections": {
+    "Lead Intake Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate & Normalise",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Normalise": {
+      "main": [
+        [
+          {
+            "node": "Rejected?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rejected?": {
+      "main": [
+        [
+          {
+            "node": "Respond Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HMAC Expected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HMAC Expected": {
+      "main": [
+        [
+          {
+            "node": "Signature Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature Valid?": {
+      "main": [
+        [
+          {
+            "node": "Upsert Lead + Submission",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Unauthorised",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Lead + Submission": {
+      "main": [
+        [
+          {
+            "node": "New Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New Lead?": {
+      "main": [
+        [
+          {
+            "node": "Route Urgency",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify Resubmission",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Urgency": {
+      "main": [
+        [
+          {
+            "node": "Send SMS (SMSGate)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Confirmation Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send SMS (SMSGate)": {
+      "main": [
+        [
+          {
+            "node": "Send Confirmation Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Confirmation Email": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Resubmission": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}

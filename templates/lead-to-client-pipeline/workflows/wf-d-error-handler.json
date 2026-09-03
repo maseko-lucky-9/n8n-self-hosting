@@ -1,0 +1,65 @@
+{
+  "name": "Lead Pipeline \u2014 D \u2014 Error Handler",
+  "nodes": [
+    {
+      "name": "On Workflow Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -300,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "name": "Alert ntfy",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -60,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://ntfy.sh/{{ $vars.ntfy_topic }}",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "body": "=LEAD PIPELINE FAILED\nWorkflow: {{ $json.workflow.name }}\nNode: {{ $json.execution.lastNodeExecuted }}\nError: {{ $json.execution.error.message }}\nExecution: {{ $json.execution.id }}",
+        "options": {}
+      }
+    },
+    {
+      "name": "Note [-300, 20]",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -300,
+        20
+      ],
+      "parameters": {
+        "content": "## WF-D \u2014 Error handler\n\nSet as the **Error Workflow** on A, B and C (Workflow settings \u2192 Error workflow).\n\nWithout this a failed intake is silent: the prospect sees a 200 and the lead is gone. Executions prune after 168h, so the alert carries the message inline, not just a link.",
+        "width": 460,
+        "height": 240
+      }
+    }
+  ],
+  "connections": {
+    "On Workflow Error": {
+      "main": [
+        [
+          {
+            "node": "Alert ntfy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}

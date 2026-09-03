@@ -1,0 +1,131 @@
+# Lead-to-client pipeline
+
+A reusable, stateful funnel for professional services: **enquiry in → client signed**.
+Replicates the pipeline diagrammed in a TikTok by @structurewebworks, with the twelve
+things that video leaves out.
+
+Source analysis: `$V/raw/watched/law-firm-lead-pipeline-1-vs-1m-2026-09-03/report.md`.
+Pattern reference: `~/.claude/skills/n8n/references/pipeline-pattern.md`.
+
+## The shape
+
+```
+[LEAD IN] → [CONTACT CREATED] → [SERVICE TAGGED] → <Urgent?>
+                                                      No ↓   Yes → [CONFIRMATION] → [CONSULT BOOKED]
+                                            [FOLLOW-UP SEQUENCE] ←────────────────────────┘
+                                                      ↓
+                                            [CONSULTATION CALL]   (human)
+                                                      ↓
+                                              [PROPOSAL SENT] ←──────────┐
+                                                      ↓                  │
+                                                  <ACCEPTED?>            │
+                                             No ↓            Yes ↓       │
+                                     [PAYMENT PENDING]  [CLIENT SIGNED] ─┘
+                                                              ↓
+                                                    [ENGAGEMENT OPENED]
+```
+
+Everything from CONSULT BOOKED rightward is **not seven automations — it is values of
+two columns.** One table, one signed webhook, one transition map.
+
+## Two facets, not one stage
+
+A lead can be `payment_pending` *and* `consult_booked` at the same time: you sent a SOW,
+they booked a scoping call before paying. A single `stage` enum forces you to discard
+one, and the transition guard would reject the booking outright. So:
+
+| Column | Values |
+|---|---|
+| `commercial_stage` | `lead_in → contacted → proposal_sent → {proposal_accepted \| payment_pending} → client_signed → engagement_opened`, plus `lost` |
+| `calendar_stage` | `none → consult_booked → consultation_done` |
+
+`payment_pending → proposal_sent` is the video's retry loop.
+
+## Workflows
+
+| File | Trigger | Does |
+|---|---|---|
+| `wf-a-lead-intake.json` | `POST /webhook/lead-intake` | HMAC + honeypot + freshness → upsert lead + submission + event (one atomic statement) → urgency switch → SMS and/or email → respond |
+| `wf-b-lead-followup.json` | 08:00 SAST daily; hourly SLA check | send due touches with jitter and a daily cap, every mail carrying a working opt-out; escalate urgent leads untouched past the SLA |
+| `wf-c-lead-stage.json` | `POST`/`GET /webhook/lead-stage` | the state machine: resolve (or burn a single-use token) → transition guard → apply + audit → per-stage side effect |
+| `wf-d-error-handler.json` | Error Trigger | ntfy alert with the message inline |
+
+## Install
+
+```bash
+# 1. database (separate from n8n's own -- see vault/secrets.md for why)
+kubectl -n n8n-live exec sts/n8n-application-postgres -c postgres -- \
+  psql -U postgres -d postgres -c "CREATE DATABASE leads OWNER n8n_app"
+kubectl -n n8n-live exec sts/n8n-application-postgres -c postgres -- \
+  psql -U postgres -d leads -c "CREATE EXTENSION IF NOT EXISTS pgcrypto"
+kubectl -n n8n-live cp schema.sql n8n-live/n8n-application-postgres-0:/tmp/ -c postgres
+kubectl -n n8n-live exec sts/n8n-application-postgres -c postgres -- \
+  psql -v ON_ERROR_STOP=1 -U n8n_app -d leads -f /tmp/schema.sql
+
+# 2. credentials -- create the four in vault/secrets.md, in the n8n UI
+
+# 3. workflows
+../../scripts/import-workflows.sh . --dry-run     # validate first
+../../scripts/import-workflows.sh .
+```
+
+Then in the n8n UI: attach credentials (imported nodes carry `REPLACE_*` placeholder
+ids), set **WF-D as the Error Workflow** on A/B/C, populate the variables below, and
+activate.
+
+## Variables (`$vars`)
+
+Set under Settings → Variables. Defaults live in `config.example.json`.
+
+`brand`, `from_email`, `site_url`, `booking_url`, `webhook_base`, `ntfy_topic`,
+`timezone`, `quiet_start`, `quiet_end`, `followup_days` (JSON array string),
+`daily_send_cap`, `sla_hours_urgent`, `sms_endpoint`, `urgent_timelines`,
+`urgent_budgets` (comma-separated).
+
+## What the source video omits, and where it is handled
+
+| # | Gap | Handled |
+|---|---|---|
+| 1 | Replayed webhook duplicates the contact | partial unique index + `ON CONFLICT`; `submissions.ref` is `ON CONFLICT DO NOTHING` |
+| 2 | Returning lead not recognised | `existed` flag → `resubmitted` event + notify, no duplicate welcome |
+| 3 | No bot filter | honeypot + HMAC + 300s freshness window |
+| 4 | One API failure silently drops a lead | WF-D on all three workflows |
+| 5 | Follow-ups never stop | `stopped_at` with three producers: opt-out link, booking, `lost` |
+| 6 | Domain gate (conflict check) | N/A for professional services; add a node before the upsert if needed |
+| 7 | No consent trail | `consent_source`/`consent_at` + append-only `lead_events` |
+| 8 | No retention policy | `purge_after` defaults to +13 months, matching the site's KV TTL |
+| 9 | No speed-to-lead SLA | hourly branch in WF-B → ntfy |
+| 10 | Night-time messaging | 08:00 schedule; SMS suppressed during quiet hours |
+| 11 | No attribution | `submissions` holds `source`/`utm_*`/`entry_point`/`topic` |
+| 12 | No reporting | `lead_events` is append-only; the postgres-exporter already scrapes this instance |
+
+## Gotchas worth keeping
+
+- **`queryReplacement` splits on commas.** A resolvable returning `Acme, Inc` becomes two
+  parameters and silently misaligns the query. Every Postgres node here passes one
+  `JSON.stringify(...)` object and unpacks it in SQL with `->>`.
+- **`require('crypto')` is unavailable** — `NODE_FUNCTION_ALLOW_BUILTIN=fs,path`. HMAC is
+  the Crypto node (secret in a credential, not the workflow JSON). Random tokens use
+  `crypto.getRandomValues`, which is a global.
+- **A link click is a GET** and cannot carry an HMAC body. Opt-out and proposal-accept
+  links use opaque single-use expiring tokens instead — an HMAC in a URL is replayable
+  forever and leaks into browser history and edge logs. Opt-out tokens deliberately do
+  *not* burn, so a second click still works.
+- **Stage columns never appear in the upsert's `SET` list.** A returning client must not be
+  demoted to `lead_in` and re-enter nurture.
+- Business tables never belong in database `n8n` — see `vault/secrets.md`.
+
+## Verified
+
+Against the live instance (n8n 2.16.1) and database on 2026-09-03. All statements run in
+a transaction and rolled back:
+
+- upsert is idempotent **and** preserves `commercial_stage`, `calendar_stage`,
+  `touch_number`, `stopped_at`, `phone_norm` on a second submission
+- mutation check: adding `commercial_stage = EXCLUDED.commercial_stage` to the upsert
+  flips the stage assertion to false while `count(*) = 1` stays true — i.e. a row-count
+  test alone would not have caught it
+- `payment_pending` + `consult_booked` coexist
+- normal token single-use; expired token rejected; opt-out token survives re-click
+- a lead with `stopped_at` set is not selected for follow-up
+- commas and apostrophes survive intact through the JSON parameter path
