@@ -45,13 +45,23 @@ the normal chart flow -- no Vault involved.
 never risk `N8N_ENCRYPTION_KEY`). Populate before the first send:
 
 Vault is self-hosted on the homelab server. There is **no `vault` binary on the Mac or
-on the host shell** (`Command 'vault' not found`) -- run it inside the Vault pod, which
-is the pattern `docs/VAULT_INTEGRATION.md` already uses, or use the Vault web UI.
+on the host shell** (`Command 'vault' not found`) -- run it inside the Vault pod, or use
+the Vault web UI. `docs/VAULT_INTEGRATION.md` uses the same `kubectl exec` shape but
+omits `VAULT_SKIP_VERIFY`, so its commands do **not** run as written on this cluster
+(verified 2026-09-04); copy the form below, not that one.
 
 ```bash
 # Sets both keys in one write. Generate the topic with `openssl rand -hex 16`
 # locally and paste it -- never reuse a previous topic.
-microk8s kubectl -n vault exec vault-0 -- vault kv put kv/secret/n8n/live/lead-pipeline \
+#
+# `-c vault` picks the container (the pod also has auto-unseal), and
+# VAULT_SKIP_VERIFY is required: VAULT_ADDR is https://127.0.0.1:8200 with a
+# self-signed cert and the pod carries no VAULT_CACERT, so every `vault kv`
+# call fails "x509: certificate signed by unknown authority" without it. Safe
+# here only because the connection is loopback inside the serving container
+# itself -- never carry this flag to a remote VAULT_ADDR.
+microk8s kubectl -n vault exec vault-0 -c vault -- \
+  env VAULT_SKIP_VERIFY=true vault kv put kv/secret/n8n/live/lead-pipeline \
   LEAD_FROM_EMAIL="<the mailbox that also holds the SMTP credential>" \
   LEAD_NTFY_TOPIC="<32 hex chars>"
 
