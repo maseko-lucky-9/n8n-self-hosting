@@ -85,8 +85,6 @@ extraEnv:
   # $vars keys exactly, which is the only reason they deviate from this file's
   # UPPER_SNAKE_CASE convention -- that keeps the workflow-side diff a pure
   # string substitution, auditable in one grep, rather than a second rename.
-  # Non-secret values only; from_email and ntfy_topic are wired further down
-  # via the (optional) lead-pipeline ExternalSecret, not here.
   - name: brand
     value: "Prudentia Digital"
   - name: site_url
@@ -104,10 +102,12 @@ extraEnv:
   - name: urgent_budgets
     value: "75-150k,150k-plus"
   # from_email/ntfy_topic: same secretKeyRef shape as TELEGRAM_BOT_TOKEN
-  # below, sourced from the isolated lead-pipeline ExternalSecret rather
-  # than n8n-app-secret (a missing key here must never risk
-  # N8N_ENCRYPTION_KEY). optional: true — unpopulated Vault path leaves
-  # these unset, not a crashed pod.
+  # below, sourced from the isolated lead-pipeline ExternalSecret rather than
+  # n8n-app-secret (a missing key here must never risk N8N_ENCRYPTION_KEY).
+  # `optional: true` -- an unpopulated Vault path leaves these unset, not a
+  # crashed pod. Previously duplicated by hand into n8n-deployment.yaml and
+  # n8n-worker-deployment.yaml; extraEnv already reaches both pods, so this
+  # one entry replaces both copies.
   - name: from_email
     valueFrom:
       secretKeyRef:
@@ -139,19 +139,38 @@ extraEnv:
   # Manifest) require fs + path to read manifest CSVs, walk the inbox, append
   # log rows, and rename to processed/. Without these, every execution errors
   # with "Module 'fs' is disallowed".
+  # `crypto` added for the lead pipeline's WF-B `Compose Touch`: the sandbox's
+  # native-global allowlist (@n8n/task-runner's getNativeVariables()) does not
+  # include a `crypto` global -- confirmed by reading the deployed
+  # js-task-runner.js -- so `crypto.getRandomValues(...)` throws ReferenceError
+  # regardless of this setting. `require('crypto')` is the path back in, gated
+  # by exactly this var (js-runner-config.js's allowedBuiltInModules, fed to
+  # the require-resolver). Compose Touch now uses
+  # `require('crypto').randomBytes(24).toString('hex')` to match.
   - name: NODE_FUNCTION_ALLOW_BUILTIN
     value: "fs,path,crypto"
-  # n8n 2.x also blocks `$env` in every expression/Code node by default —
-  # unset means every $env.X access throws ExpressionError('access to env
-  # vars denied'), verified live. The lead pipeline's $vars->$env migration
-  # depends on this being unblocked.
+  # n8n 2.x also blocks `$env` in every expression and Code node by default
+  # (workflow-data-proxy-env-provider.js: unset -> isEnvAccessBlocked -> every
+  # $env.X access throws ExpressionError('access to env vars denied'),
+  # verified live against this instance). The lead pipeline's config
+  # migration off the (unlicensed, Enterprise-only) $vars store onto $env
+  # depends on this being unblocked -- see the "Lead pipeline config" comment
+  # above.
   #
-  # Cost, accepted deliberately: n8n applies NO allowlist once unblocked —
-  # every workflow on this shared instance (reelsmith-social-publish,
-  # gtm-email-sender too) gains read access to the full container env,
-  # N8N_ENCRYPTION_KEY and DB_POSTGRESDB_PASSWORD included. Accepted because
-  # every workflow here is this operator's own reviewed code, not a
-  # multi-tenant boundary. Revisit if that stops being true.
+  # Cost, accepted deliberately rather than overlooked: unblocking $env does
+  # NOT scope to the lead-pipeline keys -- n8n applies no allowlist at all
+  # (workflow-data-proxy-env-provider.js and expression.js both assign
+  # `process.env` to the proxy verbatim), so every workflow on this shared
+  # instance -- including reelsmith-social-publish and gtm-email-sender --
+  # gains read access to the FULL container environment: N8N_ENCRYPTION_KEY,
+  # DB_POSTGRESDB_PASSWORD, TELEGRAM_BOT_TOKEN included. There is no per-key
+  # opt-in in n8n 2.16; the only way to avoid this would be to stop reading
+  # config through $env at all (e.g. a static Set/Code node baked into each
+  # workflow's own JSON for the non-secret values), which is a larger
+  # redesign than this fix. Accepted here because every workflow on this
+  # instance is already this operator's own code, reviewed in this same
+  # repo -- not a multi-tenant boundary. Revisit if that ever stops being
+  # true.
   - name: N8N_BLOCK_ENV_ACCESS_IN_NODE
     value: "false"
 

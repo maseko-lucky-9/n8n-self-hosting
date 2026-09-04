@@ -14,7 +14,7 @@ Never commit any value below. `<PLACEHOLDER>` only.
 | `Postgres account` | Postgres | host `postgres-service`, port `5432`, **database `leads`**, user `n8n_app`, password = existing `POSTGRES_NON_ROOT_PASSWORD` | every Postgres node in A/B/C |
 | `Crypto account` | Crypto | `hmacSecret` — shared with the Cloudflare Worker | WF-A `HMAC Expected`, WF-C `HMAC Expected` |
 | `SMTP account 2` | SMTP | host `smtpout.secureserver.net`, port `465`, **SSL/TLS ON**, user `<SMTP_USERNAME>` (must equal `from_email`/`reply_to` — GoDaddy rejects any other `From`), Client Host Name `<SENDING_DOMAIN>` | WF-A, WF-B |
-| `ntfy_topic` | n8n **variable**, not a credential | 32 random hex chars, e.g. `openssl rand -hex 16`; set **only** in Settings → Variables, never in git | WF-A (urgent push), WF-B (SLA escalation), WF-C (stage change), WF-D (error alerts) |
+| `ntfy_topic` | Vault-only value, not an n8n credential | 32 random hex chars, e.g. `openssl rand -hex 16`; set via the `vault kv` command below — Settings → Variables is unavailable on this instance (see "Config" below), never in git | WF-A (urgent push), WF-B (SLA escalation), WF-C (stage change), WF-D (error alerts) |
 
 ## Config: `$env`, not n8n Variables
 
@@ -48,11 +48,29 @@ never risk `N8N_ENCRYPTION_KEY`). Populate before the first send:
 vault kv put kv/secret/n8n/live/lead-pipeline \
   LEAD_FROM_EMAIL="<the mailbox that also holds the SMTP credential>" \
   LEAD_NTFY_TOPIC="$(openssl rand -hex 16)"
+
+# ESO force-sync, then restart -- secretKeyRef env is a container-start
+# snapshot and is never re-read; without this the pods keep whatever value
+# (including unset) they started with, indefinitely. Same pattern as
+# docs/VAULT_INTEGRATION.md's existing rotation procedure.
+kubectl annotate externalsecret n8n-lead-pipeline-secret -n n8n-live \
+  force-sync=$(date +%s) --overwrite
+kubectl rollout restart deployment/n8n deployment/n8n-application-worker -n n8n-live
 ```
 
+**Updating just one of the two keys?** Use `vault kv patch`, not `vault kv put` --
+`put` replaces the whole secret version, so patching only `LEAD_NTFY_TOPIC` with `put`
+silently drops `LEAD_FROM_EMAIL` from that version. ESO's per-key sync can then fail
+as a unit and leave the Kubernetes Secret at its last-good (now stale) values with no
+visible error. `vault kv patch kv/secret/n8n/live/lead-pipeline LEAD_NTFY_TOPIC=...`
+updates one key without touching the other.
+
 Both env vars are consumed with `optional: true` -- leaving this path unpopulated
-means `from_email`/`ntfy_topic` resolve empty in the workflow (a loud, visible
-failure: an empty `fromEmail` rejects at send time), not a crashed pod.
+means `from_email` resolves empty, which is a loud, visible failure (an empty
+`fromEmail` rejects at send time). **`ntfy_topic` is not equally loud**: every ntfy
+node either swallows its own failure (`onError: continueRegularOutput`) or -- WF-D's
+own alert node -- has no downstream to report to, so an empty `ntfy_topic` degrades
+silently rather than failing visibly.
 
 **`ntfy_topic` must never be a literal anywhere in git.** ntfy public topics are
 unauthenticated in *both* directions -- the topic name is the only thing standing in
