@@ -186,26 +186,6 @@ spec:
             - name: N8N_WEBHOOK_URL
               value: {{ .Values.n8n.webhookUrl | quote }}
             {{- end }}
-            # Lead pipeline: sender mailbox + ntfy topic, from their own
-            # ExternalSecret (isolated from N8N_ENCRYPTION_KEY -- see
-            # values-live.yaml's leadPipelineSecretPath comment). `optional:
-            # true` so an unpopulated Vault path leaves these unset, not a
-            # CrashLoopBackOff. Non-secret lead-pipeline config ($env.brand
-            # etc.) comes through extraEnv below instead.
-            {{- if and .Values.externalSecrets.enabled .Values.externalSecrets.vault.leadPipelineSecretPath }}
-            - name: from_email
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "n8n-application.leadPipelineSecretName" . }}
-                  key: LEAD_FROM_EMAIL
-                  optional: true
-            - name: ntfy_topic
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "n8n-application.leadPipelineSecretName" . }}
-                  key: LEAD_NTFY_TOPIC
-                  optional: true
-            {{- end }}
             {{- if .Values.queue.enabled }}
             # GAP-012: Queue mode — main handles webhooks/scheduling, workers execute jobs
             - name: EXECUTIONS_MODE

@@ -77,49 +77,6 @@ unauthenticated in *both* directions -- the topic name is the only thing standin
 for a secret, so a committed topic is a published one. `config.example.json` carries
 `<NTFY_TOPIC>` for exactly this reason.
 
-## Config: `$env`, not n8n Variables
-
-n8n Variables (Settings -> Variables, `$vars` in expressions) are an
-**Enterprise-licensed feature**. Confirmed against the live instance, not assumed:
-
-```
-$ n8n license:info
-isValid: false
-entitlements: 0
-
-$ SELECT count(*) FROM variables;
-0
-```
-
-`VariablesService.canCreateNewVariable()` throws `FeatureNotLicensedError('feat:variables')`
-on this Community Edition instance, so Settings -> Variables cannot hold any config here.
-All four workflows read `$env.X` instead (a 1:1 rename from `$vars.X` -- see each
-workflow's jsCode/expressions).
-
-**Non-secret values** (`brand`, `site_url`, `booking_url`, `followup_days`,
-`daily_send_cap`, `sla_hours_urgent`, `urgent_timelines`, `urgent_budgets`) are plain
-`extraEnv` entries in `helm/n8n-application/values-live.yaml`. Edit and redeploy via
-the normal chart flow -- no Vault involved.
-
-**`from_email` and `ntfy_topic`** are wired separately, via their own ExternalSecret
-(`n8n-lead-pipeline-secret`, isolated from `n8n-app-secret` so a missing key here can
-never risk `N8N_ENCRYPTION_KEY`). Populate before the first send:
-
-```bash
-vault kv put kv/secret/n8n/live/lead-pipeline \
-  LEAD_FROM_EMAIL="<the mailbox that also holds the SMTP credential>" \
-  LEAD_NTFY_TOPIC="$(openssl rand -hex 16)"
-```
-
-Both env vars are consumed with `optional: true` -- leaving this path unpopulated
-means `from_email`/`ntfy_topic` resolve empty in the workflow (a loud, visible
-failure: an empty `fromEmail` rejects at send time), not a crashed pod.
-
-**`ntfy_topic` must never be a literal anywhere in git.** ntfy public topics are
-unauthenticated in *both* directions -- the topic name is the only thing standing in
-for a secret, so a committed topic is a published one. `config.example.json` carries
-`<NTFY_TOPIC>` for exactly this reason.
-
 ## Creating `Postgres account`
 
 Clone the existing n8n Postgres credential and change **only** the database name to
