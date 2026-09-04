@@ -10,7 +10,7 @@ Never commit any value below. `<PLACEHOLDER>` only.
 |---|---|---|---|
 | `Postgres leads` | Postgres | host `postgres-service`, port `5432`, **database `leads`**, user `n8n_app`, password = existing `POSTGRES_NON_ROOT_PASSWORD` | every Postgres node in A/B/C |
 | `Lead pipeline HMAC` | Crypto | `hmacSecret` — shared with the Cloudflare Worker | WF-A `HMAC Expected`, WF-C `HMAC Expected` |
-| `SMTP leads` | SMTP | host `smtpout.secureserver.net`, port `465`, **SSL/TLS ON**, user `<SMTP_USERNAME>` (must equal `from_email`/`reply_to` — GoDaddy rejects any other `From`), "Ignore SSL Issues" OFF | WF-A, WF-B |
+| `SMTP leads` | SMTP | host `smtpout.secureserver.net`, port `465`, **SSL/TLS ON**, user `<SMTP_USERNAME>` (must equal `from_email`/`reply_to` — GoDaddy rejects any other `From`), Client Host Name `<SENDING_DOMAIN>` | WF-A, WF-B |
 | `ntfy_topic` | n8n **variable**, not a credential | 32 random hex chars, e.g. `openssl rand -hex 16`; set **only** in Settings → Variables, never in git | WF-A (urgent push), WF-B (SLA escalation), WF-C (stage change), WF-D (error alerts) |
 
 ## Creating `Postgres leads`
@@ -50,6 +50,28 @@ WF-C's GET path is the exception and carries no signature — a link click canno
 signed body. It authenticates by burning a single-use expiring token instead.
 
 ## SMTP
+
+### The credential form, field by field
+
+Verified against the running node package on this instance (`Smtp.credentials.js`), not
+from documentation — the field set differs between n8n versions.
+
+| Field | Value | Where it comes from |
+|---|---|---|
+| User | `<SMTP_USERNAME>` | The mailbox address itself. It **must** equal `from_email`/`reply_to`: GoDaddy relays only mail from the authenticated mailbox. |
+| Password | `<SMTP_PASSWORD>` | The mailbox's own password, from the GoDaddy Email & Office dashboard — not the GoDaddy *account* password, and there are no app passwords on this product. Reset it there if unknown. |
+| Host | `smtpout.secureserver.net` | GoDaddy's outbound relay for legacy Workspace Email, which is what the MX records show this domain uses. A Microsoft-365-backed GoDaddy mailbox would need `smtp.office365.com` instead — check MX before assuming. |
+| Port | `465` | The only port the NetworkPolicy permits. 587 and 25 are deliberately dropped. |
+| SSL/TLS | **ON** | 465 is implicit TLS. Off = nodemailer waits for a plaintext banner that never comes. |
+| Disable STARTTLS | *should not be visible* | It only renders when SSL/TLS is OFF. If you can see it, SSL/TLS is off — turn it back on. |
+| Client Host Name | `<SENDING_DOMAIN>` | Optional but recommended. It becomes the EHLO identity (nodemailer's `name`). Left blank, nodemailer uses the container hostname — a pod name like `n8n-68c95f7c77-pdcpl`, which is not an FQDN and changes on every redeploy. |
+
+**"Ignore SSL Issues" is not on this credential.** It is an option on the Send Email
+*node* (`allowUnauthorizedCerts`). Both mail nodes ship with `options` empty, which is
+the safe default. Never add it to silence a connection hang: on this cluster a hang is
+far more likely to be a NetworkPolicy drop or SSL/TLS left off, and disabling
+certificate verification to "fix" it exposes the mailbox password on the wire.
+
 
 The domain is **GoDaddy-hosted, not Titan** — verified live: MX `smtp.secureserver.net` /
 `mailstore1.secureserver.net`; SPF `include:secureserver.net -all`; DMARC

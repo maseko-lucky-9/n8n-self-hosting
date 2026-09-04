@@ -16,12 +16,17 @@
   the network. A curl run from inside the homelab passes and proves nothing. WF-B is
   scheduled and fires against existing lead rows the moment SMTP works; a dead opt-out
   link on a live nurture send is a POPIA s69 / s11(3) exposure, not a placeholder.
-- [ ] **[ACTION REQUIRED]** `templates/lead-to-client-pipeline`: confirm the `SMTP leads`
-  credential's "Ignore SSL Issues" toggle is OFF. This is a hand-set n8n UI value that
-  nothing in the repo asserts. Turning it on while debugging a connection timeout hands
-  the full mailbox password to anyone on the path — a live risk precisely because that
-  misconfiguration and a NetworkPolicy egress drop present as the identical symptom
-  (connection hang).
+- [ ] **[ACTION REQUIRED]** `templates/lead-to-client-pipeline`: confirm "Ignore SSL
+  Issues" is OFF on the **Send Email node's Options** — it is a node option
+  (`allowUnauthorizedCerts`), NOT a field on the SMTP credential. Both mail nodes ship
+  with `options` empty, which is the safe default; the risk is someone adding it by hand
+  while debugging a connection hang, which hands the full mailbox password to anyone on
+  the path. That temptation is real precisely because a NetworkPolicy egress drop and an
+  SSL/TLS misconfiguration present as the identical symptom.
+- [ ] **[ACTION REQUIRED]** Confirm `SSL/TLS` is ON in the `SMTP leads` credential. On
+  port 465 (implicit TLS) turning it off makes nodemailer wait for a plaintext banner
+  that never arrives — again, the same hang. When SSL/TLS is OFF the form reveals a
+  `Disable STARTTLS` field, so seeing that field at all means SSL/TLS is off.
 
 ## Security Hardening (Pillar 1) — Completed
 
