@@ -111,7 +111,7 @@
         460
       ],
       "parameters": {
-        "jsCode": "// Pick the touch copy and mint an opt-out token.\n// One node instead of a Switch plus three near-identical email nodes.\nconst cfg = $vars ?? {};\nconst j = $input.first().json;\nconst nth = Number(j.touch_number ?? 0);          // 0-based: 0 = first touch\nconst brand = cfg.brand ?? 'we';\nconst booking = cfg.booking_url ?? '';\n\nconst TOUCHES = [\n  { subject: `Following up on your ${brand} enquiry`,\n    body: `<p>Hi ${j.name},</p><p>Just checking you got our reply. If it is easier to talk it through, grab a slot here:</p><p><a href=\"${booking}\">Book a consultation</a></p>` },\n  { subject: `Still happy to help \u2014 ${brand}`,\n    body: `<p>Hi ${j.name},</p><p>No rush at all. When you are ready, the calendar is open:</p><p><a href=\"${booking}\">Book a consultation</a></p>` },\n  { subject: `Closing the loop`,\n    body: `<p>Hi ${j.name},</p><p>I will stop following up here so I am not cluttering your inbox. If the timing changes, the door is open.</p><p><a href=\"${booking}\">Book a consultation</a></p>` },\n];\nconst t = TOUCHES[Math.min(nth, TOUCHES.length - 1)];\n\n// Opaque, unguessable, and stored server-side -- an HMAC in a URL is replayable\n// forever and leaks through browser history and edge logs.\nconst token = [...crypto.getRandomValues(new Uint8Array(24))]\n  .map(b => b.toString(16).padStart(2, '0')).join('');\n\nreturn [{ json: {\n  lead_id: j.lead_id, name: j.name, email_norm: j.email_norm,\n  touch_number: nth, subject: t.subject, body: t.body, token,\n  unsubscribe_url: `${cfg.webhook_base}/webhook/lead-stage?t=${token}`,\n  followup_days: JSON.parse(cfg.followup_days ?? '[3,7,14]'),\n} }];\n"
+        "jsCode": "// Pick the touch copy and mint an opt-out token.\n// One node instead of a Switch plus three near-identical email nodes.\nconst cfg = $vars ?? {};\nconst j = $input.first().json;\nconst nth = Number(j.touch_number ?? 0);          // 0-based: 0 = first touch\nconst brand = cfg.brand ?? 'we';\nconst booking = cfg.booking_url ?? '';\n\n// ponytail: this escape is the SECOND layer. The allow-list in WF-A's\n// `Validate & Normalise` is the first and the load-bearing one -- it is what\n// makes leads.name trustworthy. This one covers rows that predate that validator\n// or arrive by another path (manual insert, import, a future writer), because\n// this mail is DMARC-aligned from a domain with SPF -all and p=quarantine: any\n// unescaped markup would ship as fully authenticated phishing.\nconst esc = s => String(s ?? '').replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));\n// Slice the raw token BEFORE escaping -- slicing after can cut an entity in half\n// (`&#39;` -> `&#3`). First token only: a greeting wants a first name, not the\n// whole stored string. Empty name -> `Hi there,`, never `Hi ,`.\nconst firstRaw = String(j.name ?? '').trim().split(/\\s+/)[0].slice(0, 40);\nconst hiHtml = firstRaw ? `Hi ${esc(firstRaw)},` : 'Hi there,';\nconst hiText = firstRaw ? `Hi ${firstRaw},` : 'Hi there,';\n\n// Each touch carries both formats. The plaintext alternate is subject to exactly\n// the same rule as the HTML -- it uses the same validated, truncated first token\n// (no HTML escaping needed there, but it must not become a second unreviewed\n// sink) so the two parts can never disagree about what the recipient is called.\nconst TOUCHES = [\n  { subject: `Following up on your ${brand} enquiry`,\n    body: `<p>${hiHtml}</p><p>Just checking you got our reply. If it is easier to talk it through, grab a slot here:</p><p><a href=\"${booking}\">Book a consultation</a></p>`,\n    text: `${hiText}\\n\\nJust checking you got our reply. If it is easier to talk it through, grab a slot here:\\n\\n${booking}` },\n  { subject: `Still happy to help \u2014 ${brand}`,\n    body: `<p>${hiHtml}</p><p>No rush at all. When you are ready, the calendar is open:</p><p><a href=\"${booking}\">Book a consultation</a></p>`,\n    text: `${hiText}\\n\\nNo rush at all. When you are ready, the calendar is open:\\n\\n${booking}` },\n  { subject: `Closing the loop`,\n    body: `<p>${hiHtml}</p><p>I will stop following up here so I am not cluttering your inbox. If the timing changes, the door is open.</p><p><a href=\"${booking}\">Book a consultation</a></p>`,\n    text: `${hiText}\\n\\nI will stop following up here so I am not cluttering your inbox. If the timing changes, the door is open.\\n\\n${booking}` },\n];\nconst t = TOUCHES[Math.min(nth, TOUCHES.length - 1)];\n\n// Opaque, unguessable, and stored server-side -- an HMAC in a URL is replayable\n// forever and leaks through browser history and edge logs.\nconst token = [...crypto.getRandomValues(new Uint8Array(24))]\n  .map(b => b.toString(16).padStart(2, '0')).join('');\n\nreturn [{ json: {\n  // `name` is deliberately NOT forwarded: nothing downstream reads it, and an\n  // unescaped copy sitting in the item json is a sink waiting for a future edit.\n  lead_id: j.lead_id, email_norm: j.email_norm,\n  touch_number: nth, subject: t.subject, body: t.body, text: t.text, token,\n  unsubscribe_url: `${cfg.webhook_base}/webhook/lead-stage?t=${token}`,\n  followup_days: JSON.parse(cfg.followup_days ?? '[3,7,14]'),\n} }];\n"
       }
     },
     {
@@ -148,16 +148,19 @@
         "fromEmail": "={{ $vars.from_email }}",
         "toEmail": "={{ $('Compose Touch').item.json.email_norm }}",
         "subject": "={{ $('Compose Touch').item.json.subject }}",
+        "emailFormat": "both",
+        "text": "={{ $('Compose Touch').item.json.text }}\n\n---\nYou are receiving this because you enquired at {{ $vars.site_url }}.\nUnsubscribe: {{ $('Compose Touch').item.json.unsubscribe_url }}",
         "html": "={{ $('Compose Touch').item.json.body }}<hr><p style=\"font-size:12px;color:#666\">You are receiving this because you enquired at {{ $vars.site_url }}. <a href=\"{{ $('Compose Touch').item.json.unsubscribe_url }}\">Unsubscribe</a></p>",
-        "options": {}
+        "options": {
+          "appendAttribution": false
+        }
       },
       "credentials": {
         "smtp": {
-          "id": "0xN94eNMgcrhTo4O",
-          "name": "SMTP account"
+          "id": "REPLACE_SMTP_CRED",
+          "name": "SMTP leads"
         }
-      },
-      "onError": "continueRegularOutput"
+      }
     },
     {
       "name": "Mark Touched",
@@ -282,7 +285,7 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "text/plain",
-        "body": "=SLA BREACH: urgent lead {{ $json.name }} ({{ $json.email_norm }}) untouched for {{ $json.age_minutes }} minutes.",
+        "body": "=SLA BREACH: urgent lead #{{ $json.lead_id }} untouched for {{ $json.age_minutes }} minutes.",
         "options": {}
       },
       "onError": "continueRegularOutput"

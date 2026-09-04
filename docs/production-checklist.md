@@ -10,6 +10,18 @@
 - [ ] **[ACTION REQUIRED]** Enable MicroK8s addons: `microk8s enable dns ingress storage observability`
 - [ ] **[ACTION REQUIRED]** Verify the `monitoring.additionalLabels.release` value matches your Prometheus Operator release name
 - [ ] **[ACTION REQUIRED]** If Grafana is in a different namespace, set `monitoring.grafanaDashboard.namespace` to that namespace
+- [ ] **[BLOCKING]** `templates/lead-to-client-pipeline`: do not activate WF-B
+  (`wf-b-lead-followup.json`) until its unsubscribe URL (built from `webhook_base`)
+  resolves from **off-LAN** — verify with `curl -sI <unsubscribe-url>` run from outside
+  the network. A curl run from inside the homelab passes and proves nothing. WF-B is
+  scheduled and fires against existing lead rows the moment SMTP works; a dead opt-out
+  link on a live nurture send is a POPIA s69 / s11(3) exposure, not a placeholder.
+- [ ] **[ACTION REQUIRED]** `templates/lead-to-client-pipeline`: confirm the `SMTP leads`
+  credential's "Ignore SSL Issues" toggle is OFF. This is a hand-set n8n UI value that
+  nothing in the repo asserts. Turning it on while debugging a connection timeout hands
+  the full mailbox password to anyone on the path — a live risk precisely because that
+  misconfiguration and a NetworkPolicy egress drop present as the identical symptom
+  (connection hang).
 
 ## Security Hardening (Pillar 1) — Completed
 
@@ -17,7 +29,7 @@
 - [x] `seccompProfile: RuntimeDefault` on all pods (n8n + postgres)
 - [x] `automountServiceAccountToken: false` on all pods
 - [x] NetworkPolicy template created — restricts postgres to n8n-only ingress, n8n to ingress-controller-only
-- [x] Egress restricted: DNS (53), PostgreSQL (5432), HTTP/HTTPS (80/443) only
+- [x] Egress restricted: DNS (53), PostgreSQL (5432), HTTP/HTTPS (80/443), SMTPS 465 (public ranges only) only
 - [x] Init container has explicit resource limits
 - [x] Ingress security headers added (X-Frame-Options, X-Content-Type-Options, X-XSS-Protection, Referrer-Policy)
 - [x] TLS enforced via `ssl-redirect` and `force-ssl-redirect` annotations

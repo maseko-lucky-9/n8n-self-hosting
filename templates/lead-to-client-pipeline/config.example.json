@@ -1,23 +1,17 @@
 {
   "brand":            "Prudentia Digital",
-  "from_email":       "hello@prudentiadigital.co.za",
-  "reply_to":         "hello@prudentiadigital.co.za",
+  "from_email":       "<SMTP_USERNAME>",
+  "reply_to":         "<SMTP_USERNAME>",
   "booking_url":      "https://calendly.com/prudentiadigital/automation-sprint",
   "site_url":         "https://prudentiadigital.co.za",
-  "webhook_base":     "https://n8n.homelab.local",
-  "ntfy_topic":       "prudentia-alerts",
+  "webhook_base":     "<PUBLIC_WEBHOOK_BASE>",
+  "ntfy_topic":       "<NTFY_TOPIC>",
   "timezone":         "Africa/Johannesburg",
-  "quiet_hours":      { "start": 20, "end": 7 },
   "followup_days":    [3, 7, 14],
   "daily_send_cap":   25,
   "sla_hours_urgent": 1,
-  "sms": {
-    "enabled":  true,
-    "endpoint": "https://api.sms-gate.app/3rdparty/v1/messages"
-  },
   "urgency_rules": {
-    "urgent_timelines": ["asap", "lt-1-month"],
-    "urgent_budgets":   ["100k-150k", "150k-plus"],
-    "urgent_topics":    ["automation-lead-capture"]
+    "urgent_timelines": ["asap"],
+    "urgent_budgets":   ["75-150k", "150k-plus"]
   }
 }

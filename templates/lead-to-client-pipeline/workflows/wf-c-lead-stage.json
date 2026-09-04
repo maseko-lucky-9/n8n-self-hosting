@@ -42,7 +42,140 @@
         400
       ],
       "parameters": {
-        "jsCode": "// Accept BOTH shapes:\n//   GET  /webhook/lead-stage?t=<token>            -- a link clicked by a client\n//   POST /webhook/lead-stage {lead_id,facet,to_stage,signature}\n// A link click is a GET, so it cannot carry a JSON body or an HMAC header. Tokens\n// are single-use and expiring instead -- an HMAC in a URL is replayable forever\n// and leaks into browser history and edge logs.\nconst raw = $input.first().json;\nconst q = raw.query ?? {};\nconst b = (raw.body && typeof raw.body === 'object') ? raw.body : {};\nconst token = q.t ?? q.token ?? null;\nif (token) return [{ json: { token: String(token), lead_id: null, facet: null, to_stage: null } }];\nconst lead_id = b.lead_id ?? b.leadId ?? null;\nif (!lead_id) return [{ json: { token: null, lead_id: null, facet: null, to_stage: null } }];\nreturn [{ json: {\n  token: null, lead_id: String(lead_id),\n  facet: String(b.facet ?? 'commercial'), to_stage: String(b.to_stage ?? ''),\n  sigBase: `${lead_id}.${b.facet ?? 'commercial'}.${b.to_stage ?? ''}`,\n  providedSig: String(b.signature ?? ''),\n} }];\n"
+        "jsCode": "// Accept BOTH shapes:\n//   GET  /webhook/lead-stage?t=<token>            -- a link clicked by a client\n//   POST /webhook/lead-stage {lead_id,facet,to_stage,submittedAt,signature}\n// A link click is a GET, so it cannot carry a JSON body or an HMAC header. Tokens\n// are single-use and expiring instead -- an HMAC in a URL is replayable forever\n// and leaks into browser history and edge logs.\n// `token` is also the routing key: Token Path? sends token-bearing requests\n// straight to the burn query, and everything else through Fresh & Well-formed?\n// -> HMAC Expected -> Signature Valid?, which is all that authenticates a POST.\nconst raw = $input.first().json;\nconst q = raw.query ?? {};\nconst b = (raw.body && typeof raw.body === 'object') ? raw.body : {};\nconst token = q.t ?? q.token ?? null;\nif (token) return [{ json: { token: String(token), lead_id: null, facet: null, to_stage: null } }];\nconst lead_id = b.lead_id ?? b.leadId ?? null;\nconst ts = String(b.submittedAt ?? '').trim();\n// Freshness, identical to WF-A: Math.abs() so a client clock running ahead of ours\n// is caught as well as one running behind, and `!(skew < 300)` rather than\n// `skew >= 300` so an unparseable date (Date.parse -> NaN) lands in the reject\n// branch instead of sliding through a comparison that is false either way.\nconst skew = ts ? Math.abs(Date.now() - Date.parse(ts)) / 1000 : Infinity;\n// Rejections use WF-C's own idiom -- {ok:false, code, reason} rendered by Respond\n// Stage -- and every one of them lands before Resolve Lead / Burn Token. 400 is\n// for a malformed request, 401 for one that failed to authenticate.\nif (!lead_id || !ts)  return [{ json: { token: null, ok: false, code: 400, reason: 'missing lead_id/timestamp' } }];\nif (!(skew < 300))    return [{ json: { token: null, ok: false, code: 401, reason: 'stale or unparseable timestamp' } }];\n// The timestamp is INSIDE sigBase, not merely alongside it: signing it is what\n// stops a captured signature being replayed once its window has closed.\nreturn [{ json: {\n  token: null, ok: true, lead_id: String(lead_id),\n  facet: String(b.facet ?? 'commercial'), to_stage: String(b.to_stage ?? ''),\n  sigBase: `${lead_id}.${b.facet ?? 'commercial'}.${b.to_stage ?? ''}.${ts}`,\n  providedSig: String(b.signature ?? ''),\n} }];\n"
+      }
+    },
+    {
+      "name": "Token Path?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -240,
+        400
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "tok",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.token }}",
+              "rightValue": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Fresh & Well-formed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        0,
+        560
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "fresh",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "HMAC Expected",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "position": [
+        240,
+        560
+      ],
+      "parameters": {
+        "action": "hmac",
+        "type": "SHA256",
+        "value": "={{ $json.sigBase }}",
+        "dataPropertyName": "expectedSig",
+        "encoding": "hex"
+      },
+      "credentials": {
+        "crypto": {
+          "id": "REPLACE_CRYPTO_CRED",
+          "name": "Lead pipeline HMAC"
+        }
+      }
+    },
+    {
+      "name": "Signature Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        480,
+        560
+      ],
+      "parameters": {
+        "options": {},
+        "conditions": {
+          "options": {
+            "version": 2,
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "sig",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $json.expectedSig }}",
+              "rightValue": "={{ $json.providedSig }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Respond Unauthorised",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        720,
+        720
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status:'rejected', reason:'invalid or missing signature', to_stage:null }) }}",
+        "options": {
+          "responseCode": 401
+        }
       }
     },
     {
@@ -50,7 +183,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [
-        -240,
+        720,
         400
       ],
       "parameters": {
@@ -73,7 +206,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        0,
+        960,
         400
       ],
       "parameters": {
@@ -85,7 +218,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [
-        240,
+        1200,
         400
       ],
       "parameters": {
@@ -117,7 +250,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [
-        460,
+        1420,
         300
       ],
       "parameters": {
@@ -149,7 +282,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [
-        700,
+        1660,
         380
       ],
       "parameters": {
@@ -171,7 +304,7 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.4,
       "position": [
-        940,
+        1900,
         380
       ],
       "parameters": {
@@ -235,7 +368,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        1180,
+        2140,
         380
       ],
       "parameters": {
@@ -254,7 +387,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.5,
       "position": [
-        1420,
+        2380,
         400
       ],
       "parameters": {
@@ -266,17 +399,17 @@
       }
     },
     {
-      "name": "Note [-720, 20]",
+      "name": "Note [-720, -140]",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
         -720,
-        20
+        -140
       ],
       "parameters": {
-        "content": "## WF-C \u2014 Stage machine\n\nCollapses **CONSULT BOOKED \u00b7 CONSULTATION CALL \u00b7 RETAINER SENT \u00b7 SIGNED? \u00b7 PAYMENT PENDING \u00b7 CLIENT SIGNED \u00b7 MATTER OPENED** into one workflow.\n\nThose are not seven automations \u2014 they are values of two columns. The maps in *Transition Guard* are the diagram's arrows; `payment_pending \u2192 proposal_sent` is its retry loop.\n\nGET = single-use token (link click). POST = HMAC.",
+        "content": "## WF-C \u2014 Stage machine\n\nCollapses **CONSULT BOOKED \u00b7 CONSULTATION CALL \u00b7 RETAINER SENT \u00b7 SIGNED? \u00b7 PAYMENT PENDING \u00b7 CLIENT SIGNED \u00b7 MATTER OPENED** into one workflow.\n\nThose are not seven automations \u2014 they are values of two columns. The maps in *Transition Guard* are the diagram's arrows; `payment_pending \u2192 proposal_sent` is its retry loop.\n\n### Auth \u2014 split by *Token Path?*\n\n**GET = single-use token.** `?t=<token>` is burned by the `UPDATE \u2026 WHERE used_at IS NULL` in *Resolve Lead / Burn Token*, so a replayed link matches no row. A link click cannot carry a signed body \u2014 that is the whole reason tokens exist.\n\n**POST = HMAC.** *Fresh & Well-formed?* rejects a body whose `submittedAt` is missing, unparseable, or more than **300s** from now in either direction (WF-A's window). *HMAC Expected* then recomputes SHA256 over `sigBase = lead_id.facet.to_stage.submittedAt` and *Signature Valid?* compares. The signature therefore covers the lead, the facet, the exact stage requested **and** the timestamp: it cannot be re-aimed at a different stage, and it stops working once the window closes. Secret lives in the `Lead pipeline HMAC` credential \u2014 never in this JSON, and `require('crypto')` is blocked in Code nodes here.\n\nStale or unparseable timestamp \u2192 **401**; missing `lead_id`/`submittedAt` \u2192 **400**; bad or absent signature \u2192 **401**. Every rejection lands before *Resolve Lead / Burn Token*. Fail closed.\n\nResidual: a signature is still replayable inside its own 300s window; the `from === to` no-op in *Transition Guard* absorbs the common case.",
         "width": 520,
-        "height": 300
+        "height": 420
       }
     }
   ],
@@ -307,7 +440,72 @@
       "main": [
         [
           {
+            "node": "Token Path?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Token Path?": {
+      "main": [
+        [
+          {
             "node": "Resolve Lead / Burn Token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fresh & Well-formed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fresh & Well-formed?": {
+      "main": [
+        [
+          {
+            "node": "HMAC Expected",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Stage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HMAC Expected": {
+      "main": [
+        [
+          {
+            "node": "Signature Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature Valid?": {
+      "main": [
+        [
+          {
+            "node": "Resolve Lead / Burn Token",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Unauthorised",
             "type": "main",
             "index": 0
           }
