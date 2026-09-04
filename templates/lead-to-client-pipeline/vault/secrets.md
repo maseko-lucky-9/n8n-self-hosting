@@ -8,12 +8,12 @@ Never commit any value below. `<PLACEHOLDER>` only.
 
 | n8n credential | Type | Holds | Used by |
 |---|---|---|---|
-| `Postgres leads` | Postgres | host `postgres-service`, port `5432`, **database `leads`**, user `n8n_app`, password = existing `POSTGRES_NON_ROOT_PASSWORD` | every Postgres node in A/B/C |
-| `Lead pipeline HMAC` | Crypto | `hmacSecret` — shared with the Cloudflare Worker | WF-A `HMAC Expected`, WF-C `HMAC Expected` |
-| `SMTP leads` | SMTP | host `smtpout.secureserver.net`, port `465`, **SSL/TLS ON**, user `<SMTP_USERNAME>` (must equal `from_email`/`reply_to` — GoDaddy rejects any other `From`), Client Host Name `<SENDING_DOMAIN>` | WF-A, WF-B |
+| `Postgres account` | Postgres | host `postgres-service`, port `5432`, **database `leads`**, user `n8n_app`, password = existing `POSTGRES_NON_ROOT_PASSWORD` | every Postgres node in A/B/C |
+| `Crypto account` | Crypto | `hmacSecret` — shared with the Cloudflare Worker | WF-A `HMAC Expected`, WF-C `HMAC Expected` |
+| `SMTP account 2` | SMTP | host `smtpout.secureserver.net`, port `465`, **SSL/TLS ON**, user `<SMTP_USERNAME>` (must equal `from_email`/`reply_to` — GoDaddy rejects any other `From`), Client Host Name `<SENDING_DOMAIN>` | WF-A, WF-B |
 | `ntfy_topic` | n8n **variable**, not a credential | 32 random hex chars, e.g. `openssl rand -hex 16`; set **only** in Settings → Variables, never in git | WF-A (urgent push), WF-B (SLA escalation), WF-C (stage change), WF-D (error alerts) |
 
-## Creating `Postgres leads`
+## Creating `Postgres account`
 
 Clone the existing n8n Postgres credential and change **only** the database name to
 `leads`. Same host, same role. The `leads` database is separate from `n8n` on purpose:
@@ -28,7 +28,7 @@ Generate once, then set it in two places — n8n and the Worker:
 openssl rand -hex 32          # keep out of git, out of the Obsidian vault, out of chat
 ```
 
-- n8n → Credentials → new **Crypto** credential named `Lead pipeline HMAC` → paste as HMAC Secret.
+- n8n → Credentials → new **Crypto** credential named `Crypto account` → paste as HMAC Secret.
 - Worker → `npx wrangler secret put LEAD_HMAC_SECRET` (and `LEAD_WEBHOOK_URL`).
 
 Two workflows verify against this one secret, each with its own signing base.
@@ -85,7 +85,7 @@ ranges (private/CGNAT/link-local excluded).
 
 GoDaddy's relay only accepts mail whose `From` equals the authenticated mailbox, so the
 sender is `<SMTP_USERNAME>` — any other address (e.g. `hello@prudentiadigital.co.za`)
-would be rejected. That is why a **new** credential, `SMTP leads`, was created rather than
+would be rejected. That is why a **new** credential, `SMTP account 2`, was created rather than
 reusing `hello@...`. The pre-existing `SMTP account` credential (`<CRED_ID>`) is
 deliberately left untouched — its other consumers are unknown.
 

@@ -95,7 +95,7 @@
       "credentials": {
         "crypto": {
           "id": "REPLACE_CRYPTO_CRED",
-          "name": "Lead pipeline HMAC"
+          "name": "Crypto account"
         }
       }
     },
@@ -164,7 +164,7 @@
       "credentials": {
         "postgres": {
           "id": "REPLACE_LEADS_PG_CRED",
-          "name": "Postgres leads"
+          "name": "Postgres account"
         }
       }
     },
@@ -311,7 +311,7 @@
       "credentials": {
         "smtp": {
           "id": "REPLACE_SMTP_CRED",
-          "name": "SMTP leads"
+          "name": "SMTP account 2"
         }
       }
     },

@@ -127,7 +127,7 @@
       "credentials": {
         "crypto": {
           "id": "REPLACE_CRYPTO_CRED",
-          "name": "Lead pipeline HMAC"
+          "name": "Crypto account"
         }
       }
     },
@@ -196,7 +196,7 @@
       "credentials": {
         "postgres": {
           "id": "REPLACE_LEADS_PG_CRED",
-          "name": "Postgres leads"
+          "name": "Postgres account"
         }
       },
       "alwaysOutputData": true
@@ -295,7 +295,7 @@
       "credentials": {
         "postgres": {
           "id": "REPLACE_LEADS_PG_CRED",
-          "name": "Postgres leads"
+          "name": "Postgres account"
         }
       }
     },
@@ -407,7 +407,7 @@
         -140
       ],
       "parameters": {
-        "content": "## WF-C \u2014 Stage machine\n\nCollapses **CONSULT BOOKED \u00b7 CONSULTATION CALL \u00b7 RETAINER SENT \u00b7 SIGNED? \u00b7 PAYMENT PENDING \u00b7 CLIENT SIGNED \u00b7 MATTER OPENED** into one workflow.\n\nThose are not seven automations \u2014 they are values of two columns. The maps in *Transition Guard* are the diagram's arrows; `payment_pending \u2192 proposal_sent` is its retry loop.\n\n### Auth \u2014 split by *Token Path?*\n\n**GET = single-use token.** `?t=<token>` is burned by the `UPDATE \u2026 WHERE used_at IS NULL` in *Resolve Lead / Burn Token*, so a replayed link matches no row. A link click cannot carry a signed body \u2014 that is the whole reason tokens exist.\n\n**POST = HMAC.** *Fresh & Well-formed?* rejects a body whose `submittedAt` is missing, unparseable, or more than **300s** from now in either direction (WF-A's window). *HMAC Expected* then recomputes SHA256 over `sigBase = lead_id.facet.to_stage.submittedAt` and *Signature Valid?* compares. The signature therefore covers the lead, the facet, the exact stage requested **and** the timestamp: it cannot be re-aimed at a different stage, and it stops working once the window closes. Secret lives in the `Lead pipeline HMAC` credential \u2014 never in this JSON, and `require('crypto')` is blocked in Code nodes here.\n\nStale or unparseable timestamp \u2192 **401**; missing `lead_id`/`submittedAt` \u2192 **400**; bad or absent signature \u2192 **401**. Every rejection lands before *Resolve Lead / Burn Token*. Fail closed.\n\nResidual: a signature is still replayable inside its own 300s window; the `from === to` no-op in *Transition Guard* absorbs the common case.",
+        "content": "## WF-C \u2014 Stage machine\n\nCollapses **CONSULT BOOKED \u00b7 CONSULTATION CALL \u00b7 RETAINER SENT \u00b7 SIGNED? \u00b7 PAYMENT PENDING \u00b7 CLIENT SIGNED \u00b7 MATTER OPENED** into one workflow.\n\nThose are not seven automations \u2014 they are values of two columns. The maps in *Transition Guard* are the diagram's arrows; `payment_pending \u2192 proposal_sent` is its retry loop.\n\n### Auth \u2014 split by *Token Path?*\n\n**GET = single-use token.** `?t=<token>` is burned by the `UPDATE \u2026 WHERE used_at IS NULL` in *Resolve Lead / Burn Token*, so a replayed link matches no row. A link click cannot carry a signed body \u2014 that is the whole reason tokens exist.\n\n**POST = HMAC.** *Fresh & Well-formed?* rejects a body whose `submittedAt` is missing, unparseable, or more than **300s** from now in either direction (WF-A's window). *HMAC Expected* then recomputes SHA256 over `sigBase = lead_id.facet.to_stage.submittedAt` and *Signature Valid?* compares. The signature therefore covers the lead, the facet, the exact stage requested **and** the timestamp: it cannot be re-aimed at a different stage, and it stops working once the window closes. Secret lives in the `Crypto account` credential \u2014 never in this JSON, and `require('crypto')` is blocked in Code nodes here.\n\nStale or unparseable timestamp \u2192 **401**; missing `lead_id`/`submittedAt` \u2192 **400**; bad or absent signature \u2192 **401**. Every rejection lands before *Resolve Lead / Burn Token*. Fail closed.\n\nResidual: a signature is still replayable inside its own 300s window; the `from === to` no-op in *Transition Guard* absorbs the common case.",
         "width": 520,
         "height": 420
       }
