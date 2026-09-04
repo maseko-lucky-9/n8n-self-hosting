@@ -14,6 +14,16 @@
 # cluster (or on the node itself, where kubectl is `microk8s kubectl`).
 #
 # Credential ids in committed JSON must be placeholders, never a live n8n id.
+#
+# UPDATING A WORKFLOW ALREADY IMPORTED: this script has no update mode. n8n's
+# `import:workflow` overwrites only on a matching `id`, and committed templates
+# carry none on purpose (a live id is credential-adjacent -- see above). So
+# re-running this against a directory whose workflows are already live CREATES
+# a duplicate set; the old copy stays untouched, active-eligible, and reachable.
+# To actually update a live workflow: export its current JSON from the n8n UI to
+# recover its `id`, inject that `id` into a throwaway copy of the new template
+# (never commit a live id to this repo), import the throwaway copy, then delete
+# it locally. There is no documented automation for this step.
 set -euo pipefail
 
 NS="${N8N_NAMESPACE:-n8n-live}"

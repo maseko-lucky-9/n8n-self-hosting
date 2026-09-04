@@ -64,14 +64,18 @@ kubectl -n n8n-live exec sts/n8n-application-postgres -c postgres -- \
 
 # 2. credentials -- create the three in vault/secrets.md, in the n8n UI
 
-# 3. workflows
+# 3. workflows -- first import only. Already imported and editing the JSON
+#    instead? import-workflows.sh has no update mode and will create a
+#    duplicate set -- see the header comment in that script before re-running.
 ../../scripts/import-workflows.sh . --dry-run     # validate first
 ../../scripts/import-workflows.sh .
 ```
 
 Then in the n8n UI: attach credentials (imported nodes carry `REPLACE_*` placeholder
-ids), set **WF-D as the Error Workflow** on A/B/C, populate the variables below, and
-activate.
+ids) and set **WF-D as the Error Workflow** on A/B/C before activating. Config does
+**not** go through the n8n UI on this instance — n8n Variables (Settings → Variables)
+are an Enterprise-licensed feature and unavailable here; see "Config (`$env`, not n8n
+Variables)" below for how values actually reach the workflows.
 
 **Blocking pre-activation gate for WF-B:** `webhook_base` must be a publicly resolvable
 URL before WF-B (`wf-b-lead-followup.json`) is activated. WF-B is a *scheduled* workflow
@@ -95,8 +99,9 @@ Variables" for the exact values, the Vault command, and why those two are separa
 from the rest. Defaults for all of them live in `config.example.json`, which stays
 useful as a reference even though nothing reads that file directly at runtime.
 
-`brand`, `from_email`, `site_url`, `booking_url`, `ntfy_topic`, `followup_days` (JSON
-array or comma-separated string), `daily_send_cap`, `sla_hours_urgent`,
+`brand`, `from_email`, `site_url`, `booking_url`, `ntfy_topic`, `followup_days` (**JSON
+array string only** — both consumers call bare `JSON.parse`, unlike
+`urgent_timelines`/`urgent_budgets` below), `daily_send_cap`, `sla_hours_urgent`,
 `urgent_timelines`, `urgent_budgets` (comma-separated) are wired as above and live
 in `extraEnv`/the lead-pipeline Secret today.
 
