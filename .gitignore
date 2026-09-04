@@ -2,3 +2,7 @@
 Anti.Beast.agent.md
 Beast.agent.md
 *.agent.md
+
+# macOS
+.DS_Store
+.vscode/settings.json

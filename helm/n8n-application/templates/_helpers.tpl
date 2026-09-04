@@ -84,6 +84,15 @@ n8n-app-secret
 {{- end }}
 
 {{/*
+Stable name for the lead pipeline's Secret (sender mailbox, ntfy topic).
+Deliberately separate from n8n-app-secret -- see values-live.yaml comment on
+leadPipelineSecretPath for why a missing key here must never risk that Secret.
+*/}}
+{{- define "n8n-application.leadPipelineSecretName" -}}
+n8n-lead-pipeline-secret
+{{- end }}
+
+{{/*
 Stable name for the n8n data PersistentVolumeClaim.
 Kept as a fixed string to prevent accidental PVC renames that would lose live data.
 */}}

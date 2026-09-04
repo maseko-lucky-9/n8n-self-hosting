@@ -75,6 +75,51 @@ extraEnv:
   # Without this, n8n logs a deprecation warning and manual runs bypass the queue.
   - name: OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS
     value: "true"
+  # Lead pipeline config (templates/lead-to-client-pipeline). n8n Variables
+  # ($vars, Settings -> Variables) are an ENTERPRISE-LICENSED feature
+  # (VariablesService.canCreateNewVariable() throws FeatureNotLicensedError on
+  # this Community Edition instance -- confirmed live: `n8n license:info` shows
+  # isValid: false, entitlements: 0, and `SELECT count(*) FROM variables` is 0).
+  # So the workflows read config from $env instead ($vars.X -> $env.X, a 1:1
+  # rename -- see wf-a/b/c/d). Names below are lowercase to match the original
+  # $vars keys exactly, which is the only reason they deviate from this file's
+  # UPPER_SNAKE_CASE convention -- that keeps the workflow-side diff a pure
+  # string substitution, auditable in one grep, rather than a second rename.
+  # Non-secret values only; from_email and ntfy_topic are wired further down
+  # via the (optional) lead-pipeline ExternalSecret, not here.
+  - name: brand
+    value: "Prudentia Digital"
+  - name: site_url
+    value: "https://prudentiadigital.co.za"
+  - name: booking_url
+    value: "https://calendly.com/prudentiadigital/automation-sprint"
+  - name: followup_days
+    value: "[3,7,14]"
+  - name: daily_send_cap
+    value: "25"
+  - name: sla_hours_urgent
+    value: "1"
+  - name: urgent_timelines
+    value: "asap"
+  - name: urgent_budgets
+    value: "75-150k,150k-plus"
+  # from_email/ntfy_topic: same secretKeyRef shape as TELEGRAM_BOT_TOKEN
+  # below, sourced from the isolated lead-pipeline ExternalSecret rather
+  # than n8n-app-secret (a missing key here must never risk
+  # N8N_ENCRYPTION_KEY). optional: true — unpopulated Vault path leaves
+  # these unset, not a crashed pod.
+  - name: from_email
+    valueFrom:
+      secretKeyRef:
+        name: n8n-lead-pipeline-secret
+        key: LEAD_FROM_EMAIL
+        optional: true
+  - name: ntfy_topic
+    valueFrom:
+      secretKeyRef:
+        name: n8n-lead-pipeline-secret
+        key: LEAD_NTFY_TOPIC
+        optional: true
   # Reelsmith social-publish: Telegram alert credentials for failure notifications.
   # Secret created by ESO from kv/secret/n8n/live/reelsmith-telegram.
   - name: TELEGRAM_BOT_TOKEN
@@ -95,7 +140,20 @@ extraEnv:
   # log rows, and rename to processed/. Without these, every execution errors
   # with "Module 'fs' is disallowed".
   - name: NODE_FUNCTION_ALLOW_BUILTIN
-    value: "fs,path"
+    value: "fs,path,crypto"
+  # n8n 2.x also blocks `$env` in every expression/Code node by default —
+  # unset means every $env.X access throws ExpressionError('access to env
+  # vars denied'), verified live. The lead pipeline's $vars->$env migration
+  # depends on this being unblocked.
+  #
+  # Cost, accepted deliberately: n8n applies NO allowlist once unblocked —
+  # every workflow on this shared instance (reelsmith-social-publish,
+  # gtm-email-sender too) gains read access to the full container env,
+  # N8N_ENCRYPTION_KEY and DB_POSTGRESDB_PASSWORD included. Accepted because
+  # every workflow here is this operator's own reviewed code, not a
+  # multi-tenant boundary. Revisit if that stops being true.
+  - name: N8N_BLOCK_ENV_ACCESS_IN_NODE
+    value: "false"
 
 autoscaling:
   enabled: false  # LIVE: Single-node, no autoscaling
@@ -194,6 +252,18 @@ externalSecrets:
     appSecretPath: "secret/n8n/live/app"
     # GAP-007: Off-cluster backup credentials
     backupSecretPath: "secret/n8n/live/backup-offcluster"
+    # Lead pipeline: sender mailbox + ntfy topic name (from_email, ntfy_topic).
+    # Deliberately its OWN ExternalSecret/path, not folded into appSecretPath:
+    # a missing key here must never risk the encryption-key/webhook-url sync
+    # (that Secret is load-bearing -- losing N8N_ENCRYPTION_KEY breaks every
+    # existing credential). Both env vars are wired with `optional: true`, so
+    # an unpopulated or absent path leaves them simply unset, not a failed pod.
+    # ntfy_topic in particular must be a random value generated ONLY here
+    # (openssl rand -hex 16) -- ntfy public topics are unauthenticated in both
+    # directions, so the topic name IS the access control; it must never be
+    # committed to config.example.json or any template (see
+    # templates/lead-to-client-pipeline/vault/secrets.md).
+    leadPipelineSecretPath: "secret/n8n/live/lead-pipeline"
     # CA certificate for Vault TLS verification
     # Prereq: 'vault-tls-ca' Secret with key 'ca.crt' must exist in the namespace
     caProvider:
