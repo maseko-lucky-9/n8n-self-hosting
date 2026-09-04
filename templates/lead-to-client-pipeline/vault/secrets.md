@@ -44,26 +44,38 @@ the normal chart flow -- no Vault involved.
 (`n8n-lead-pipeline-secret`, isolated from `n8n-app-secret` so a missing key here can
 never risk `N8N_ENCRYPTION_KEY`). Populate before the first send:
 
-```bash
-vault kv put kv/secret/n8n/live/lead-pipeline \
-  LEAD_FROM_EMAIL="<the mailbox that also holds the SMTP credential>" \
-  LEAD_NTFY_TOPIC="$(openssl rand -hex 16)"
+Vault is self-hosted on the homelab server. There is **no `vault` binary on the Mac or
+on the host shell** (`Command 'vault' not found`) -- run it inside the Vault pod, which
+is the pattern `docs/VAULT_INTEGRATION.md` already uses, or use the Vault web UI.
 
-# ESO force-sync, then restart -- secretKeyRef env is a container-start
-# snapshot and is never re-read; without this the pods keep whatever value
-# (including unset) they started with, indefinitely. Same pattern as
-# docs/VAULT_INTEGRATION.md's existing rotation procedure.
-kubectl annotate externalsecret n8n-lead-pipeline-secret -n n8n-live \
+```bash
+# Sets both keys in one write. Generate the topic with `openssl rand -hex 16`
+# locally and paste it -- never reuse a previous topic.
+microk8s kubectl -n vault exec vault-0 -- vault kv put kv/secret/n8n/live/lead-pipeline \
+  LEAD_FROM_EMAIL="<the mailbox that also holds the SMTP credential>" \
+  LEAD_NTFY_TOPIC="<32 hex chars>"
+
+# ESO force-sync, then restart -- secretKeyRef env is a container-start snapshot
+# and this chart has no reloader, so without this the pods keep whatever value
+# (including unset) they started with, indefinitely.
+microk8s kubectl -n n8n-live annotate externalsecret n8n-lead-pipeline-secret \
   force-sync=$(date +%s) --overwrite
-kubectl rollout restart deployment/n8n deployment/n8n-application-worker -n n8n-live
+microk8s kubectl -n n8n-live rollout restart deployment/n8n deployment/n8n-application-worker
 ```
 
-**Updating just one of the two keys?** Use `vault kv patch`, not `vault kv put` --
-`put` replaces the whole secret version, so patching only `LEAD_NTFY_TOPIC` with `put`
-silently drops `LEAD_FROM_EMAIL` from that version. ESO's per-key sync can then fail
-as a unit and leave the Kubernetes Secret at its last-good (now stale) values with no
-visible error. `vault kv patch kv/secret/n8n/live/lead-pipeline LEAD_NTFY_TOPIC=...`
-updates one key without touching the other.
+**Changing only one key?** Use `vault kv patch` (same `kubectl exec` prefix), not
+`put`. A KV-v2 `put` -- and equally a save from the **web UI** -- writes a whole new
+version rather than merging, so setting just `LEAD_NTFY_TOPIC` that way drops
+`LEAD_FROM_EMAIL` from the new version. ESO's `data[]` sync is all-or-nothing: the
+missing property fails the whole reconcile, and with `deletionPolicy: Retain` the
+Kubernetes Secret keeps its last-good (now stale) values while the ExternalSecret
+reports `SecretSyncedError`. If you edit via the UI, re-enter **both** keys in the same
+save. Verify either way with `microk8s kubectl -n n8n-live get externalsecret`.
+
+**Checking whether a secret landed, without printing it:** use
+`[ -n "$ntfy_topic" ] && echo SET`. Do **not** use `${ntfy_topic:+SET}${ntfy_topic:-UNSET}`
+-- when the variable is set, the `:-` branch still expands to the value and prints the
+secret.
 
 Both env vars are consumed with `optional: true` -- leaving this path unpopulated
 means `from_email` resolves empty, which is a loud, visible failure (an empty
