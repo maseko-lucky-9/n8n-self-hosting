@@ -12,6 +12,8 @@
 #
 # Looks for <dir>/workflows/*.json. Run from a machine with kubectl access to the
 # cluster (or on the node itself, where kubectl is `microk8s kubectl`).
+#
+# Credential ids in committed JSON must be placeholders, never a live n8n id.
 set -euo pipefail
 
 NS="${N8N_NAMESPACE:-n8n-live}"
@@ -56,7 +58,7 @@ FILES=("$SRC"/*.json)
 # clobbers an unrelated workflow. Templates must carry name/nodes/connections only.
 for f in "${FILES[@]}"; do
   python3 - "$f" <<'PY'
-import json, sys
+import json, re, sys
 p = sys.argv[1]
 try:
     d = json.load(open(p))
@@ -81,6 +83,14 @@ for n in d["nodes"]:
     if n["name"] in seen:
         sys.exit(f"{p}: duplicate node name {n['name']!r}")
     seen.add(n["name"])
+    # A real n8n credential id is 16 alphanumeric characters, e.g. `AAAAAAAAAAAAAAAA`. Pinning
+    # one leaks an instance-specific secret handle into git AND silently binds the
+    # imported workflow to whatever that id happens to be on the target instance.
+    # Match on the SHAPE, not on a REPLACE_ prefix: named placeholders like
+    # `reelsmith-youtube` are legitimate and must keep validating.
+    for ctype, c in (n.get("credentials") or {}).items():
+        if re.fullmatch(r"[A-Za-z0-9]{16}", str(c.get("id", ""))):
+            sys.exit(f"{p}: node {n['name']!r} pins live credential id {c['id']} ({ctype}); use a REPLACE_* placeholder")
 for src in d["connections"]:
     if src not in seen:
         sys.exit(f"{p}: connection from unknown node {src!r}")

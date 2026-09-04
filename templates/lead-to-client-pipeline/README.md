@@ -45,7 +45,7 @@ one, and the transition guard would reject the booking outright. So:
 
 | File | Trigger | Does |
 |---|---|---|
-| `wf-a-lead-intake.json` | `POST /webhook/lead-intake` | HMAC + honeypot + freshness → upsert lead + submission + event (one atomic statement) → urgency switch → SMS and/or email → respond |
+| `wf-a-lead-intake.json` | `POST /webhook/lead-intake` | HMAC + honeypot + freshness → upsert lead + submission + event (one atomic statement) → urgency switch → ntfy push (urgent) + confirmation email → respond |
 | `wf-b-lead-followup.json` | 08:00 SAST daily; hourly SLA check | send due touches with jitter and a daily cap, every mail carrying a working opt-out; escalate urgent leads untouched past the SLA |
 | `wf-c-lead-stage.json` | `POST`/`GET /webhook/lead-stage` | the state machine: resolve (or burn a single-use token) → transition guard → apply + audit → per-stage side effect |
 | `wf-d-error-handler.json` | Error Trigger | ntfy alert with the message inline |
@@ -62,7 +62,7 @@ kubectl -n n8n-live cp schema.sql n8n-live/n8n-application-postgres-0:/tmp/ -c p
 kubectl -n n8n-live exec sts/n8n-application-postgres -c postgres -- \
   psql -v ON_ERROR_STOP=1 -U n8n_app -d leads -f /tmp/schema.sql
 
-# 2. credentials -- create the four in vault/secrets.md, in the n8n UI
+# 2. credentials -- create the three in vault/secrets.md, in the n8n UI
 
 # 3. workflows
 ../../scripts/import-workflows.sh . --dry-run     # validate first
@@ -73,14 +73,23 @@ Then in the n8n UI: attach credentials (imported nodes carry `REPLACE_*` placeho
 ids), set **WF-D as the Error Workflow** on A/B/C, populate the variables below, and
 activate.
 
+**Blocking pre-activation gate for WF-B:** `webhook_base` must be a publicly resolvable
+URL before WF-B (`wf-b-lead-followup.json`) is activated. WF-B is a *scheduled* workflow
+that fires against existing lead rows the moment SMTP works, and it builds every
+nurture email's unsubscribe link from `webhook_base`. If that value is a LAN-only
+ingress host, the opt-out link is dead for every external recipient — a
+POPIA s69 / s11(3) exposure for direct marketing with a non-functional opt-out. Verify
+with `curl -sI <unsubscribe-url>` run from **outside** the network (a mobile hotspot,
+an external host, anything off-LAN); a curl run from inside the homelab passes and
+proves nothing.
+
 ## Variables (`$vars`)
 
 Set under Settings → Variables. Defaults live in `config.example.json`.
 
-`brand`, `from_email`, `site_url`, `booking_url`, `webhook_base`, `ntfy_topic`,
-`timezone`, `quiet_start`, `quiet_end`, `followup_days` (JSON array string),
-`daily_send_cap`, `sla_hours_urgent`, `sms_endpoint`, `urgent_timelines`,
-`urgent_budgets` (comma-separated).
+`brand`, `from_email`, `reply_to`, `site_url`, `booking_url`, `webhook_base`, `ntfy_topic`,
+`timezone`, `followup_days` (JSON array string), `daily_send_cap`, `sla_hours_urgent`,
+`urgent_timelines`, `urgent_budgets` (comma-separated).
 
 ## What the source video omits, and where it is handled
 
@@ -95,7 +104,7 @@ Set under Settings → Variables. Defaults live in `config.example.json`.
 | 7 | No consent trail | `consent_source`/`consent_at` + append-only `lead_events` |
 | 8 | No retention policy | `purge_after` defaults to +13 months, matching the site's KV TTL |
 | 9 | No speed-to-lead SLA | hourly branch in WF-B → ntfy |
-| 10 | Night-time messaging | 08:00 schedule; SMS suppressed during quiet hours |
+| 10 | Night-time messaging | the 08:00 schedule is the whole control now; intake sends email only, so there is no night-time send to suppress |
 | 11 | No attribution | `submissions` holds `source`/`utm_*`/`entry_point`/`topic` |
 | 12 | No reporting | `lead_events` is append-only; the postgres-exporter already scrapes this instance |
 
@@ -114,6 +123,8 @@ Set under Settings → Variables. Defaults live in `config.example.json`.
 - **Stage columns never appear in the upsert's `SET` list.** A returning client must not be
   demoted to `lead_in` and re-enter nurture.
 - Business tables never belong in database `n8n` — see `vault/secrets.md`.
+- SMTP egress is 465-only and public-ranges-only; a mail node that hangs is a policy drop or
+  an SSL/TLS toggle left off — see `vault/secrets.md`.
 
 ## Verified
 

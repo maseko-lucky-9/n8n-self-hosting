@@ -26,7 +26,7 @@
         300
       ],
       "parameters": {
-        "jsCode": "// Validate, normalise and classify an inbound lead.\n// Throws -> the Error Workflow (WF-D) fires. Never silently drops a lead.\nconst cfg = $vars ?? {};\nconst raw = $input.first().json;\nconst body = (raw.body && typeof raw.body === 'object') ? raw.body : raw;\n\n// 1. Honeypot. A bot filling the hidden field looks exactly like a real post.\nif (body._gotcha) { return [{ json: { reject: true, code: 400, reason: 'honeypot' } }]; }\n\n// 2. Required fields.\nconst name = String(body.name ?? body.client_name ?? '').trim();\nif (!name) { return [{ json: { reject: true, code: 400, reason: 'missing name' } }]; }\n\n// 3. Normalise. email_norm / phone_norm are the partial-unique-index keys, so\n//    normalisation IS the dedupe rule -- keep it boring and deterministic.\nconst emailRaw = String(body.email ?? '').trim().toLowerCase();\nconst email = /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(emailRaw) ? emailRaw : null;\n\nlet phone = String(body.phone ?? '').replace(/[^\\d+]/g, '');\nif (phone.startsWith('0'))       phone = '+27' + phone.slice(1);   // ZA local -> E.164\nelse if (phone.startsWith('27')) phone = '+' + phone;\nif (phone && !/^\\+\\d{8,15}$/.test(phone)) phone = null;\nif (!phone) phone = null;\n\nif (!email && !phone) {\n  return [{ json: { reject: true, code: 400, reason: 'no contactable channel' } }];\n}\n\n// 4. Classify. Rules come from config, not hardcoded, so a new vertical is a\n//    config edit rather than a workflow edit.\nconst timeline = String(body.timeline ?? '').toLowerCase();\nconst budget   = String(body.budget   ?? '').toLowerCase();\nconst topic    = String(body.topic    ?? '').toLowerCase();\nconst urgentTimelines = (cfg.urgent_timelines ?? 'asap,lt-1-month').split(',');\nconst urgentBudgets   = (cfg.urgent_budgets   ?? '100k-150k,150k-plus').split(',');\nconst urgent = urgentTimelines.includes(timeline) || urgentBudgets.includes(budget);\n\n// 5. Quiet hours. An 02:00 SMS burns the lead; the 08:00 follow-up covers it.\n//    ponytail: no SMS queue table until there is evidence one is needed.\nconst tz   = cfg.timezone ?? 'Africa/Johannesburg';\nconst hour = Number(new Intl.DateTimeFormat('en-GB',\n  { timeZone: tz, hour: 'numeric', hour12: false }).format(new Date()));\nconst qs = Number(cfg.quiet_start ?? 20), qe = Number(cfg.quiet_end ?? 7);\nconst quiet = qs > qe ? (hour >= qs || hour < qe) : (hour >= qs && hour < qe);\n\n// 6. Signature base. Signing a fixed string beats signing the raw body: no JSON\n//    canonicalisation mismatch between Cloudflare Workers and n8n.\nconst ref  = String(body.submissionId ?? body.ref ?? '').trim();\nconst ts   = String(body.submittedAt ?? '').trim();\nconst skew = ts ? Math.abs(Date.now() - Date.parse(ts)) / 1000 : Infinity;\nif (!ref || !ts)      return [{ json: { reject: true, code: 400, reason: 'missing ref/timestamp' } }];\nif (!(skew < 300))    return [{ json: { reject: true, code: 401, reason: 'stale or unparseable timestamp' } }];\n\nreturn [{ json: {\n  reject: false,\n  sigBase: `${ref}.${ts}.${email ?? phone}`,\n  providedSig: String(body.signature ?? ''),\n  lead: {\n    email_norm: email, phone_norm: phone, name,\n    service_type: String(body.service ?? body.topic ?? '').trim() || null,\n    urgency: urgent ? 'urgent' : 'normal',\n    consent_source: 'website_form',\n  },\n  submission: {\n    ref, source: String(body.source ?? 'website'),\n    utm_source: body.utm_source ?? null, utm_medium: body.utm_medium ?? null,\n    utm_campaign: body.utm_campaign ?? null,\n    entry_point: body.entryPoint ?? body.entry_point ?? null, topic: topic || null,\n    raw: JSON.stringify(body),\n  },\n  quiet, urgent,\n} }];\n"
+        "jsCode": "// Validate, normalise and classify an inbound lead.\n// Throws -> the Error Workflow (WF-D) fires. Never silently drops a lead.\nconst cfg = $vars ?? {};\nconst raw = $input.first().json;\nconst body = (raw.body && typeof raw.body === 'object') ? raw.body : raw;\n\n// 1. Honeypot. A bot filling the hidden field looks exactly like a real post.\nif (body._gotcha) { return [{ json: { reject: true, code: 400, reason: 'honeypot' } }]; }\n\n// 2. Required fields. `name` is compulsory on the site form too (name, email,\n//    services, timeline and budget are its five required fields), so an absent\n//    one is a malformed post rather than a legitimate anonymous enquiry.\nconst name = String(body.name ?? body.client_name ?? '').trim();\nif (!name) { return [{ json: { reject: true, code: 400, reason: 'missing name' } }]; }\n\n// ponytail: REJECTING an implausible name -- not sanitising it -- is what makes\n// leads.name trustworthy on the round trip. WF-B reads this column straight back\n// out and renders it into a DMARC-aligned mail, so escaping at that one sink\n// would still leave the database holding attacker-authored copy for every other\n// consumer (operator inbox, CRM export, any future template). Allow-list only:\n// letters, combining marks, space, both apostrophe forms, dot, hyphen; 60 max.\nif (!/^[\\p{L}\\p{M}][\\p{L}\\p{M} '\u2019.-]{0,59}$/u.test(name)) {\n  return [{ json: { reject: true, code: 400, reason: 'invalid name' } }];\n}\n\n// 3. Normalise. email_norm / phone_norm are the partial-unique-index keys, so\n//    normalisation IS the dedupe rule -- keep it boring and deterministic.\nconst emailRaw = String(body.email ?? '').trim().toLowerCase();\nconst email = /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(emailRaw) ? emailRaw : null;\n\nlet phone = String(body.phone ?? '').replace(/[^\\d+]/g, '');\nif (phone.startsWith('0'))       phone = '+27' + phone.slice(1);   // ZA local -> E.164\nelse if (phone.startsWith('27')) phone = '+' + phone;\nif (phone && !/^\\+\\d{8,15}$/.test(phone)) phone = null;\nif (!phone) phone = null;\n\n// ponytail: email is now the only automated channel, so a lead without a valid\n// one is unreachable and there is nothing to queue. The site form already makes\n// email required; phone stays optional and is only there for a human callback.\nif (!email) {\n  return [{ json: { reject: true, code: 400, reason: 'missing or invalid email' } }];\n}\n\n// 4. Classify. Rules come from config, not hardcoded, so a new vertical is a\n//    config edit rather than a workflow edit.\nconst timeline = String(body.timeline ?? '').toLowerCase();\nconst budget   = String(body.budget   ?? '').toLowerCase();\nconst topic    = String(body.topic    ?? '').toLowerCase();\n// ponytail: these fallbacks are the ONLY urgency rule whenever the $vars are\n// unset, and both previous values were stale -- `lt-1-month` and `100k-150k`\n// exist in neither of the site's enums (timelines: asap|1-3m|3-6m|exploring,\n// budgets: lt-25k|25-75k|75-150k|150k-plus, contact-submit.js:45-53), so they\n// could never match and the urgent branch fired on roughly half its intended\n// triggers. With SMS gone the ntfy push is the only urgent-alert channel, so a\n// missed trigger is now a silently dropped SLA. Values mirror the defaults in\n// config.example.json.\n//\n// $vars are flat strings, but config.example.json expresses these two as JSON\n// arrays (the followup_days convention). A bare .split(',') on `[\"asap\"]` yields\n// one junk element and matches nothing, so accept array, JSON-array-string and\n// comma-separated string alike -- otherwise 'in sync with the config' holds only\n// while the $vars are unset, which is exactly the case nobody tests.\nconst enumList = (v, fallback) => {\n  const s = String(v ?? fallback).trim();\n  let out = null;\n  if (s.startsWith('[')) { try { out = JSON.parse(s); } catch (e) { out = null; } }\n  if (!Array.isArray(out)) out = s.split(',');\n  return out.map(x => String(x).trim().toLowerCase()).filter(Boolean);\n};\nconst urgentTimelines = enumList(cfg.urgent_timelines, 'asap');\nconst urgentBudgets   = enumList(cfg.urgent_budgets, '75-150k,150k-plus');\nconst urgent = urgentTimelines.includes(timeline) || urgentBudgets.includes(budget);\n\n// ponytail: service_type is pushed to a world-readable ntfy topic whose name is\n// committed in this repo, and it sits OUTSIDE the HMAC base, so it must be a\n// value we chose rather than text the visitor typed -- otherwise\n// `service=\"Jane Doe jane@acme.co.za +2782...\"` is published publicly, and ntfy\n// autolinks bare URLs, making the owner's own push a phishing surface.\n// Unmatched -> null, NOT a rejection: an unrecognised service is unclassifiable,\n// not an attack, and the lead is still worth having.\n// Mirrors ALLOWED_SERVICES in the site's functions/contact-submit.js -- the four\n// current pillars plus three pre-repositioning transitional aliases\n// (software-dev, cloud-devops, ai-engineering) kept so a visitor holding a cached\n// copy of the old page is not silently misclassified. Drop the aliases when the\n// site drops them; they were scheduled for removal after 2026-09-01 (ADR-015).\nconst SERVICES = new Set(['automation','seo','digital-marketing','advisory',\n                          'software-dev','cloud-devops','ai-engineering']);\nconst serviceIn = String(body.service ?? body.topic ?? '').trim().toLowerCase();\nconst service = SERVICES.has(serviceIn) ? serviceIn : null;\n\n// 5. Signature base. Signing a fixed string beats signing the raw body: no JSON\n//    canonicalisation mismatch between Cloudflare Workers and n8n.\nconst ref  = String(body.submissionId ?? body.ref ?? '').trim();\nconst ts   = String(body.submittedAt ?? '').trim();\nconst skew = ts ? Math.abs(Date.now() - Date.parse(ts)) / 1000 : Infinity;\nif (!ref || !ts)      return [{ json: { reject: true, code: 400, reason: 'missing ref/timestamp' } }];\nif (!(skew < 300))    return [{ json: { reject: true, code: 401, reason: 'stale or unparseable timestamp' } }];\n\nreturn [{ json: {\n  reject: false,\n  sigBase: `${ref}.${ts}.${email ?? phone}`,\n  providedSig: String(body.signature ?? ''),\n  lead: {\n    email_norm: email, phone_norm: phone, name,\n    service_type: service,\n    urgency: urgent ? 'urgent' : 'normal',\n    consent_source: 'website_form',\n  },\n  submission: {\n    ref, source: String(body.source ?? 'website'),\n    utm_source: body.utm_source ?? null, utm_medium: body.utm_medium ?? null,\n    utm_campaign: body.utm_campaign ?? null,\n    entry_point: body.entryPoint ?? body.entry_point ?? null, topic: topic || null,\n    // Full body verbatim, including the pre-enum `service` string: constraining\n    // service_type above narrows what we PUBLISH, never what we KEEP.\n    raw: JSON.stringify(body),\n  },\n} }];\n"
       }
     },
     {
@@ -263,7 +263,7 @@
       }
     },
     {
-      "name": "Send SMS (SMSGate)",
+      "name": "Notify Owner (ntfy)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
@@ -272,25 +272,20 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "={{ $vars.sms_endpoint || 'https://api.sms-gate.app/3rdparty/v1/messages' }}",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ textMessage: { text: `Hi ${$json.name}, thanks for contacting ${$vars.brand}. We have your enquiry and will call you shortly. Book a slot: ${$vars.booking_url}` }, phoneNumbers: [$json.phone_norm] }) }}",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpBasicAuth",
-        "options": {
-          "response": {
-            "response": {
-              "neverError": false
+        "url": "=https://ntfy.sh/{{ $vars.ntfy_topic }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Priority",
+              "value": "high"
             }
-          }
-        }
-      },
-      "credentials": {
-        "httpBasicAuth": {
-          "id": "REPLACE_SMSGATE_CRED",
-          "name": "SMSGate"
-        }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "body": "=Urgent lead #{{ $json.lead_id }} ({{ $('Validate & Normalise').first().json.lead.service_type ?? 'unspecified' }}) \u2014 call within 1h"
       },
       "onError": "continueRegularOutput"
     },
@@ -304,15 +299,19 @@
       ],
       "parameters": {
         "fromEmail": "={{ $vars.from_email }}",
-        "toEmail": "={{ $json.email_norm }}",
+        "toEmail": "={{ $('Upsert Lead + Submission').first().json.email_norm }}",
         "subject": "=We've got your enquiry \u2014 {{ $vars.brand }}",
-        "html": "=<p>Hi {{ $json.name }},</p><p>Thanks for reaching out. We have your enquiry and a consultant will be in touch within <strong>1 business day</strong>.</p><p>Want to skip the wait? <a href=\"{{ $vars.booking_url }}\">Book a consultation directly</a>.</p><p>\u2014 The {{ $vars.brand }} team</p><hr><p style=\"font-size:12px;color:#666\">You are receiving this because you submitted an enquiry on {{ $vars.site_url }}. This is a one-off reply to that enquiry, not a mailing list. Reply STOP and we will not follow up.</p>",
-        "options": {}
+        "emailFormat": "both",
+        "text": "=Thanks for getting in touch.\n\nWe have your enquiry and a consultant will be in touch within 1 business day.\n\nWant to skip the wait? Book a consultation directly: {{ $vars.booking_url }}\n\n\u2014 The {{ $vars.brand }} team\n\n---\nYou are receiving this because you submitted an enquiry on {{ $vars.site_url }}. This is a one-off reply to that enquiry, not a mailing list. Reply STOP and we will not follow up.",
+        "html": "=<p>Thanks for getting in touch.</p><p>We have your enquiry and a consultant will be in touch within <strong>1 business day</strong>.</p><p>Want to skip the wait? <a href=\"{{ $vars.booking_url }}\">Book a consultation directly</a>.</p><p>\u2014 The {{ $vars.brand }} team</p><hr><p style=\"font-size:12px;color:#666\">You are receiving this because you submitted an enquiry on {{ $vars.site_url }}. This is a one-off reply to that enquiry, not a mailing list. Reply STOP and we will not follow up.</p>",
+        "options": {
+          "appendAttribution": false
+        }
       },
       "credentials": {
         "smtp": {
-          "id": "0xN94eNMgcrhTo4O",
-          "name": "SMTP account"
+          "id": "REPLACE_SMTP_CRED",
+          "name": "SMTP leads"
         }
       }
     },
@@ -330,7 +329,7 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "text/plain",
-        "body": "=Returning lead: {{ $json.name }} ({{ $json.email_norm }}) is at stage {{ $json.commercial_stage }} and submitted the form again.",
+        "body": "=Returning lead #{{ $json.lead_id }} is at stage {{ $json.commercial_stage }} and submitted the form again.",
         "options": {}
       },
       "onError": "continueRegularOutput"
@@ -360,7 +359,7 @@
         -40
       ],
       "parameters": {
-        "content": "## WF-A \u2014 Lead Intake\n\nDiagram nodes: **LEAD IN \u2192 CONTACT CREATED \u2192 CASE TYPE TAGGED \u2192 Urgent? \u2192 CONFIRMATION SENT**\n\nAuth is HMAC over `ref.timestamp.contact` (not the raw body \u2014 no JSON canonicalisation mismatch) plus a 300s freshness window.\n\nThe upsert never touches stage columns: a returning client must not be demoted to `lead_in`.",
+        "content": "## WF-A \u2014 Lead Intake\n\nDiagram nodes: **LEAD IN \u2192 CONTACT CREATED \u2192 CASE TYPE TAGGED \u2192 Urgent? \u2192 CONFIRMATION SENT**\n\nAuth is HMAC over `ref.timestamp.contact` (not the raw body \u2014 no JSON canonicalisation mismatch) plus a 300s freshness window.\n\nThe upsert never touches stage columns: a returning client must not be demoted to `lead_in`.\n\n**Notify branch.** Urgent \u2192 ntfy push to the owner **plus** the confirmation email. Normal \u2192 confirmation email only. **Text messaging has been removed entirely**, and with it the quiet-hours suppression that only ever existed to stop a 02:00 text. The ntfy topic is public and its name is committed here, so the push carries the lead id and service type only \u2014 never a name, email, phone or message. That holds for the *contents* and not merely the field names because `service_type` is constrained to a fixed enum in `Validate & Normalise`: unrecognised input becomes `null`, so free text the visitor typed can never reach the topic.\n\nThe confirmation deliberately echoes **nothing the visitor typed**: it is DMARC-aligned from our own domain, so any echo would turn the form into a signed phishing relay (escaping does not fix that \u2014 the sentence still renders).",
         "width": 460,
         "height": 260
       }
@@ -469,7 +468,7 @@
       "main": [
         [
           {
-            "node": "Send SMS (SMSGate)",
+            "node": "Notify Owner (ntfy)",
             "type": "main",
             "index": 0
           }
@@ -483,7 +482,7 @@
         ]
       ]
     },
-    "Send SMS (SMSGate)": {
+    "Notify Owner (ntfy)": {
       "main": [
         [
           {

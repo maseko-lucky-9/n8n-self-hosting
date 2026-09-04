@@ -25,7 +25,7 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "text/plain",
-        "body": "=LEAD PIPELINE FAILED\nWorkflow: {{ $json.workflow.name }}\nNode: {{ $json.execution.lastNodeExecuted }}\nError: {{ $json.execution.error.message }}\nExecution: {{ $json.execution.id }}",
+        "body": "=LEAD PIPELINE FAILED\nWorkflow: {{ $json.workflow.name }}\nNode: {{ $json.execution.lastNodeExecuted }}\nError: {{ String($json.execution.error.message ?? '').slice(0, 200).replace(/[\\w.+-]+@[\\w.-]+/g, '[email]').slice(0, 120) }}\nExecution: {{ $json.execution.id }}",
         "options": {}
       }
     },
@@ -38,7 +38,7 @@
         20
       ],
       "parameters": {
-        "content": "## WF-D \u2014 Error handler\n\nSet as the **Error Workflow** on A, B and C (Workflow settings \u2192 Error workflow).\n\nWithout this a failed intake is silent: the prospect sees a 200 and the lead is gone. Executions prune after 168h, so the alert carries the message inline, not just a link.",
+        "content": "## WF-D \u2014 Error handler\n\nSet as the **Error Workflow** on A, B and C (Workflow settings \u2192 Error workflow).\n\nWithout this a failed intake is silent: the prospect sees a 200 and the lead is gone. Executions prune after 168h, so the alert carries the message inline, not just a link.\n\nThe topic is **public**, and n8n error messages routinely embed the failing payload \u2014 Postgres quotes the SQL and the offending value, nodemailer quotes the envelope recipient (`all recipients were rejected: someone@example.com`). An attacker can force one on demand by submitting an address the relay rejects, so the message is email-redacted and truncated to 120 chars. Workflow, node and execution id are operator-side and stay verbatim.",
         "width": 460,
         "height": 240
       }
