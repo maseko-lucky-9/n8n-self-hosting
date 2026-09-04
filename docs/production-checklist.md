@@ -23,7 +23,7 @@
   while debugging a connection hang, which hands the full mailbox password to anyone on
   the path. That temptation is real precisely because a NetworkPolicy egress drop and an
   SSL/TLS misconfiguration present as the identical symptom.
-- [ ] **[ACTION REQUIRED]** Confirm `SSL/TLS` is ON in the `SMTP leads` credential. On
+- [ ] **[ACTION REQUIRED]** Confirm `SSL/TLS` is ON in the `SMTP account 2` credential. On
   port 465 (implicit TLS) turning it off makes nodemailer wait for a plaintext banner
   that never arrives — again, the same hang. When SSL/TLS is OFF the form reveals a
   `Disable STARTTLS` field, so seeing that field at all means SSL/TLS is off.
