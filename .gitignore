@@ -5,3 +5,4 @@ Beast.agent.md
 
 # macOS
 .DS_Store
+.vscode/settings.json

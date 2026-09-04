@@ -103,6 +103,23 @@ extraEnv:
     value: "asap"
   - name: urgent_budgets
     value: "75-150k,150k-plus"
+  # from_email/ntfy_topic: same secretKeyRef shape as TELEGRAM_BOT_TOKEN
+  # below, sourced from the isolated lead-pipeline ExternalSecret rather
+  # than n8n-app-secret (a missing key here must never risk
+  # N8N_ENCRYPTION_KEY). optional: true — unpopulated Vault path leaves
+  # these unset, not a crashed pod.
+  - name: from_email
+    valueFrom:
+      secretKeyRef:
+        name: n8n-lead-pipeline-secret
+        key: LEAD_FROM_EMAIL
+        optional: true
+  - name: ntfy_topic
+    valueFrom:
+      secretKeyRef:
+        name: n8n-lead-pipeline-secret
+        key: LEAD_NTFY_TOPIC
+        optional: true
   # Reelsmith social-publish: Telegram alert credentials for failure notifications.
   # Secret created by ESO from kv/secret/n8n/live/reelsmith-telegram.
   - name: TELEGRAM_BOT_TOKEN
@@ -123,7 +140,20 @@ extraEnv:
   # log rows, and rename to processed/. Without these, every execution errors
   # with "Module 'fs' is disallowed".
   - name: NODE_FUNCTION_ALLOW_BUILTIN
-    value: "fs,path"
+    value: "fs,path,crypto"
+  # n8n 2.x also blocks `$env` in every expression/Code node by default —
+  # unset means every $env.X access throws ExpressionError('access to env
+  # vars denied'), verified live. The lead pipeline's $vars->$env migration
+  # depends on this being unblocked.
+  #
+  # Cost, accepted deliberately: n8n applies NO allowlist once unblocked —
+  # every workflow on this shared instance (reelsmith-social-publish,
+  # gtm-email-sender too) gains read access to the full container env,
+  # N8N_ENCRYPTION_KEY and DB_POSTGRESDB_PASSWORD included. Accepted because
+  # every workflow here is this operator's own reviewed code, not a
+  # multi-tenant boundary. Revisit if that stops being true.
+  - name: N8N_BLOCK_ENV_ACCESS_IN_NODE
+    value: "false"
 
 autoscaling:
   enabled: false  # LIVE: Single-node, no autoscaling
