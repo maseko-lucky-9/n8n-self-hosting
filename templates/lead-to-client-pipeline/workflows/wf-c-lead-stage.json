@@ -373,7 +373,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "=https://ntfy.sh/{{ $vars.ntfy_topic }}",
+        "url": "=https://ntfy.sh/{{ $env.ntfy_topic }}",
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "text/plain",

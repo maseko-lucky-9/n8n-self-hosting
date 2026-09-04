@@ -83,13 +83,28 @@ with `curl -sI <unsubscribe-url>` run from **outside** the network (a mobile hot
 an external host, anything off-LAN); a curl run from inside the homelab passes and
 proves nothing.
 
-## Variables (`$vars`)
+## Config (`$env`, not n8n Variables)
 
-Set under Settings → Variables. Defaults live in `config.example.json`.
+n8n Variables are an Enterprise-licensed feature and unavailable on this Community
+Edition instance (`n8n license:info` -> `isValid: false`) -- so despite the workflow
+JSON's expressions all reading `$env.X`, this is **not** a plain OS environment
+variable you export by hand. It is wired through the Helm chart: non-secret values
+via `extraEnv` in `values-live.yaml`, and `from_email`/`ntfy_topic` via a dedicated
+Vault path and ExternalSecret. See `vault/secrets.md` -> "Config: \$env, not n8n
+Variables" for the exact values, the Vault command, and why those two are separated
+from the rest. Defaults for all of them live in `config.example.json`, which stays
+useful as a reference even though nothing reads that file directly at runtime.
 
-`brand`, `from_email`, `reply_to`, `site_url`, `booking_url`, `webhook_base`, `ntfy_topic`,
-`timezone`, `followup_days` (JSON array string), `daily_send_cap`, `sla_hours_urgent`,
-`urgent_timelines`, `urgent_budgets` (comma-separated).
+`brand`, `from_email`, `site_url`, `booking_url`, `ntfy_topic`, `followup_days` (JSON
+array or comma-separated string), `daily_send_cap`, `sla_hours_urgent`,
+`urgent_timelines`, `urgent_budgets` (comma-separated) are wired as above and live
+in `extraEnv`/the lead-pipeline Secret today.
+
+`reply_to` is listed in `config.example.json` for completeness but is not read by any
+workflow node -- nothing needs it wired yet. `webhook_base` and `timezone` are not
+wired as env vars either: `webhook_base` is deliberately unset until it has a public
+route (see the WF-B blocking gate above), and `timezone` is a WF-B scheduling concept
+that has no `$env` consumer in the current workflows.
 
 ## What the source video omits, and where it is handled
 
