@@ -106,28 +106,34 @@ A read-only view of the pipeline for people who will not open a database. It is 
 name through the Drive API on every run, so the sheet can be deleted and recreated
 without editing the workflow. What matters instead is that the **name** is exact.
 
-1. Create a spreadsheet named exactly **`Prudentia Leads Mirror`** (override with
-   `$env.lead_sheet_name` if you want a different one), with two tabs named exactly
-   `leads` and `events`.
+Only two steps are manual, and both are one-time:
 
-2. Paste the header row into **A1** of each tab. These are tab-separated — paste, do not
-   retype: every name must match a SQL alias in WF-E exactly, and `appendOrUpdate` keys
-   on the first column of each tab.
+1. Create an empty spreadsheet named exactly **`Prudentia Leads Mirror`** (override with
+   `$env.lead_sheet_name` if you want a different one).
 
-   `leads`:
+2. **Share** it as **Editor** with the service account:
    ```
-   lead_id	name	email_norm	phone_norm	service_type	urgency	commercial_stage	calendar_stage	touch_number	next_touch_at	stopped_at	stop_reason	created_at	updated_at
+   n8n-sheets@prudentia-n8n.iam.gserviceaccount.com
    ```
+   A sheet the service account cannot see is indistinguishable from one that does not
+   exist — both are zero search results and both fail with the same message. If the sync
+   reports `found 0`, check sharing first: the diagnostic is a Drive search for
+   `name contains ''`, which returns **every** file the service account can see. Zero
+   results there means nothing is shared with it, not that the name is wrong.
 
-   `events`:
-   ```
-   event_id	lead_id	facet	from_stage	to_stage	actor	payload	created_at
-   ```
+Tabs and header rows are **not** manual — `sheet:create` adds the two tabs and a seeded
+`append` writes the header rows, neither of which needs file ownership. Provisioning
+leaves one seed row per tab (its cell values are the column names); delete row 2 of each
+tab afterwards, or the mirror carries a phantom lead whose `lead_id` is the literal
+string `lead_id`.
 
-3. Share the spreadsheet with the service-account email as **Editor** (see
-   `../../docs/google-sheet-setup.md` for where to find it). A sheet the service account
-   cannot see is indistinguishable from one that does not exist — both are zero search
-   results, and both fail with the same message.
+The header names must match WF-E's SQL aliases exactly, since `appendOrUpdate` keys on
+the first column of each tab:
+
+`leads` — `lead_id name email_norm phone_norm service_type urgency commercial_stage
+calendar_stage touch_number next_touch_at stopped_at stop_reason created_at updated_at`
+
+`events` — `event_id lead_id facet from_stage to_stage actor payload created_at`
 
 > **Why creating the sheet is manual.** Service accounts have no Drive storage quota and
 > cannot own files, so `spreadsheet:create` under this credential fails
@@ -144,9 +150,15 @@ Each of these was read out of the deployed n8n 2.16.1 node source, not inferred:
   `USER_ENTERED`, which parses and coerces every value it writes — ISO timestamps come
   back as locale-formatted dates. Nothing reads back from the sheet, so this is cosmetic
   here, but do not "tidy" it away.
-- **Renaming or inserting a column breaks the sync.** `checkForSchemaChanges` throws for
-  node version ≥ 4.4. It breaks the report, never intake — that is the intended blast
-  radius, and it is the thing to test after any change.
+- **A Sheets-side break takes down the report, never intake.** Verified: pointing
+  `Upsert Leads Tab` at a tab that does not exist made the sync fail while
+  `POST /webhook/lead-intake` still answered `400` (its normal validation response) —
+  i.e. lead intake never noticed. That isolation is the whole reason this is a scheduled
+  snapshot rather than a node hanging off WF-A, and it is the thing to re-test after any
+  change here.
+  `[UNVERIFIED]` — that a *header rename* specifically trips `checkForSchemaChanges`
+  (which the deployed source throws for node version ≥ 4.4) is read from the source, not
+  measured. The isolation property above was measured with a missing-tab break instead.
 - **`appendOrUpdate` writes into a hardcoded `!A:Z` range.** 14 columns now, 12 spare.
 - **Deleted leads linger.** Nothing deletes leads today (`purge_after` exists but no
   workflow reads it). Add a Clear-then-Append only if that changes.
