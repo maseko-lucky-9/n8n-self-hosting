@@ -45,7 +45,7 @@ one, and the transition guard would reject the booking outright. So:
 
 | File | Trigger | Does |
 |---|---|---|
-| `wf-a-lead-intake.json` | `POST /webhook/lead-intake` | HMAC + honeypot + freshness → upsert lead + submission + event (one atomic statement) → urgency switch → ntfy push (urgent) + confirmation email → respond |
+| `wf-a-lead-intake.json` | `POST /webhook/lead-intake` | HMAC + honeypot + freshness → upsert lead + submission + event (one atomic statement) → urgency switch → ntfy push (urgent only) → respond. **Sends no acknowledgement** — the Cloudflare Worker owns that (`SEND_AUTO_ACK`), so only one reaches the visitor |
 | `wf-b-lead-followup.json` | 08:00 SAST daily; hourly SLA check | send due touches with jitter and a daily cap, every mail carrying a working opt-out; escalate urgent leads untouched past the SLA |
 | `wf-c-lead-stage.json` | `POST`/`GET /webhook/lead-stage` | the state machine: resolve (or burn a single-use token) → transition guard → apply + audit → per-stage side effect |
 | `wf-d-error-handler.json` | Error Trigger | ntfy alert with the message inline |
