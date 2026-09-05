@@ -1,0 +1,291 @@
+{
+  "name": "Lead Pipeline \u2014 E \u2014 Sheet Mirror",
+  "nodes": [
+    {
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -900,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/15 * * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Note [-900, -60]",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -900,
+        -60
+      ],
+      "parameters": {
+        "content": "## WF-E \u2014 Sheet mirror\n\nRead-only snapshot of the `leads` database into Google Sheets, every 15 minutes.\nPostgres stays the system of record; **nothing here writes back**.\n\nDeliberately a scheduled snapshot rather than an append node hanging off WF-A:\n\n- **Isolation.** Nothing is added to the intake path, so no Sheets outage, quota trip or schema drift can stop a lead being accepted.\n- **No drift.** A per-event write would mirror only the workflow it hangs off; WF-B's `Mark Touched` and WF-C's `Apply Transition` would leave the sheet stale.\n- **Self-healing.** A mangled cell is overwritten within 15 minutes.\n\n**The document id is never pasted in.** `Find Sheet` resolves it by name through the Drive API, so the spreadsheet can be deleted and recreated without editing this workflow. Override the name with `$env.lead_sheet_name`.\n\n`Find Sheet` sets `alwaysOutputData` on purpose: without it, zero search results would mean `Resolve Sheet ID` never runs and the whole sync silently no-ops instead of failing.\n\n`onError` is left at the default everywhere: a sync failure *should* raise and reach WF-D. This is a report \u2014 failing loudly is correct. Do not copy the ntfy nodes' `continueRegularOutput`.\n\nNo `alwaysOutputData` on the two Postgres reads: an empty table must yield zero items, not one empty item that the Sheets node would write as a blank row.",
+        "width": 600,
+        "height": 340
+      }
+    },
+    {
+      "name": "Find Sheet",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -680,
+        300
+      ],
+      "parameters": {
+        "authentication": "serviceAccount",
+        "resource": "fileFolder",
+        "searchMethod": "query",
+        "queryString": "={{ \"name = '\" + ($env.lead_sheet_name ?? 'Prudentia Leads Mirror') + \"' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false\" }}",
+        "returnAll": true,
+        "filter": {},
+        "options": {
+          "fields": [
+            "id",
+            "name"
+          ]
+        }
+      },
+      "credentials": {
+        "googleApi": {
+          "id": "REPLACE_SHEETS_CRED",
+          "name": "Google Sheets account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "name": "Resolve Sheet ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -460,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Resolve the mirror spreadsheet by name so no document id is ever pasted into a\n// node -- the sheet can be deleted and recreated without touching this workflow.\n//\n// Exactly one match, or fail loudly. Zero means the sheet was renamed, trashed, or\n// never shared with the service account. More than one means the name is ambiguous,\n// and picking either could write lead PII into the wrong document -- so refuse rather\n// than guess. `Find Sheet` sets alwaysOutputData so the zero case still reaches here;\n// without it this node would not run at all and the sync would silently do nothing.\nconst want = $env.lead_sheet_name ?? 'Prudentia Leads Mirror';\nconst hits = $input.all().filter((i) => i.json && i.json.id);\n\nif (hits.length !== 1) {\n  throw new Error(\n    `Sheet mirror: expected exactly 1 Drive spreadsheet named \"${want}\", found ${hits.length}. ` +\n    'Check the name, that it is not in the trash, and that it is shared with the ' +\n    'service account as Editor.'\n  );\n}\n\nreturn [{ json: { sheet_id: hits[0].json.id, sheet_name: hits[0].json.name } }];"
+      }
+    },
+    {
+      "name": "Select All Leads",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -240,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Flat snapshot for the Google Sheets mirror. Postgres stays authoritative and this\n-- workflow never writes back, so the sheet is a report that self-heals: anything a\n-- human edits is overwritten on the next run.\n-- Timestamps are emitted as explicit UTC text. The Sheets node writes with\n-- cellFormat RAW, but emitting text here means the value cannot depend on driver or\n-- locale formatting even if that option is ever changed.\nSELECT\n  l.id::text                                                                AS lead_id,\n  l.name,\n  l.email_norm,\n  l.phone_norm,\n  l.service_type,\n  l.urgency,\n  l.commercial_stage,\n  l.calendar_stage,\n  l.touch_number,\n  to_char(l.next_touch_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')  AS next_touch_at,\n  to_char(l.stopped_at    AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')  AS stopped_at,\n  l.stop_reason,\n  to_char(l.created_at    AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')  AS created_at,\n  to_char(l.updated_at    AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')  AS updated_at\nFROM leads l\nORDER BY l.created_at;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_LEADS_PG_CRED",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "name": "Upsert Leads Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -20,
+        200
+      ],
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Resolve Sheet ID').first().json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "leads"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [
+            "lead_id"
+          ],
+          "schema": [],
+          "value": {
+            "lead_id": "={{ $json.lead_id }}",
+            "name": "={{ $json.name }}",
+            "email_norm": "={{ $json.email_norm }}",
+            "phone_norm": "={{ $json.phone_norm }}",
+            "service_type": "={{ $json.service_type }}",
+            "urgency": "={{ $json.urgency }}",
+            "commercial_stage": "={{ $json.commercial_stage }}",
+            "calendar_stage": "={{ $json.calendar_stage }}",
+            "touch_number": "={{ $json.touch_number }}",
+            "next_touch_at": "={{ $json.next_touch_at }}",
+            "stopped_at": "={{ $json.stopped_at }}",
+            "stop_reason": "={{ $json.stop_reason }}",
+            "created_at": "={{ $json.created_at }}",
+            "updated_at": "={{ $json.updated_at }}"
+          }
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "credentials": {
+        "googleApi": {
+          "id": "REPLACE_SHEETS_CRED",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "name": "Select Events",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -240,
+        400
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- The audit trail, append-only. Matched on event_id so a re-run updates in place\n-- instead of duplicating; lead_events ids are a bigserial, never reused.\nSELECT\n  e.id::text                                                              AS event_id,\n  e.lead_id::text                                                         AS lead_id,\n  e.facet,\n  e.from_stage,\n  e.to_stage,\n  e.actor,\n  COALESCE(e.payload::text, '')                                           AS payload,\n  to_char(e.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')  AS created_at\nFROM lead_events e\nORDER BY e.id;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_LEADS_PG_CRED",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "name": "Upsert Events Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -20,
+        400
+      ],
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Resolve Sheet ID').first().json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "events"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [
+            "event_id"
+          ],
+          "schema": [],
+          "value": {
+            "event_id": "={{ $json.event_id }}",
+            "lead_id": "={{ $json.lead_id }}",
+            "facet": "={{ $json.facet }}",
+            "from_stage": "={{ $json.from_stage }}",
+            "to_stage": "={{ $json.to_stage }}",
+            "actor": "={{ $json.actor }}",
+            "payload": "={{ $json.payload }}",
+            "created_at": "={{ $json.created_at }}"
+          }
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "credentials": {
+        "googleApi": {
+          "id": "REPLACE_SHEETS_CRED",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Find Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Sheet": {
+      "main": [
+        [
+          {
+            "node": "Resolve Sheet ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Sheet ID": {
+      "main": [
+        [
+          {
+            "node": "Select All Leads",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Select Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select All Leads": {
+      "main": [
+        [
+          {
+            "node": "Upsert Leads Tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Events": {
+      "main": [
+        [
+          {
+            "node": "Upsert Events Tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}
