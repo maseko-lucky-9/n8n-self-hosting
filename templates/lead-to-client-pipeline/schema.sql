@@ -4,13 +4,13 @@
 -- CronJob runs `pg_dump --clean --if-exists` against that database; restoring it
 -- would DROP these tables and roll the business back to the last backup.
 --
--- Owned by the EXISTING `n8n_live` role on purpose: the isolation that matters is at
+-- Owned by the EXISTING `n8n_app` role on purpose: the isolation that matters is at
 -- the DATABASE level (the backup dumps POSTGRES_DB=n8n and never sees this one), so a
 -- second role would add a password, a Vault path and an ESO manifest for no extra
 -- protection. In n8n, clone the Postgres credential and change only the database name.
 -- ponytail: add a dedicated `leads_app` role only if blast-radius isolation is needed.
 --
---   CREATE DATABASE leads OWNER n8n_live;
+--   CREATE DATABASE leads OWNER n8n_app;
 --   \c leads
 --   CREATE EXTENSION IF NOT EXISTS pgcrypto;   -- gen_random_uuid()
 --   \i schema.sql

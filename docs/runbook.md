@@ -264,8 +264,14 @@ sudo microk8s kubectl logs -n n8n-live -l service=n8n-worker -c n8n-worker -f
 ## 11. Vault Secret Rotation
 
 ```bash
-# 1. Update secret in Vault
-vault kv put secret/n8n/live/postgres \
+# 1. Update secret in Vault.
+#    -c vault: the pod runs more than one container.
+#    VAULT_SKIP_VERIFY: VAULT_ADDR is https://127.0.0.1:8200 with a self-signed cert and
+#    no VAULT_CACERT, so without it every command exits 2 with x509 unknown authority.
+#    The path is kv/secret/... -- `secret/...` alone omits the mount and 404s.
+#    There is no `vault` binary on the Mac or the host; it exists only in the pod.
+microk8s kubectl -n vault exec vault-0 -c vault -- env VAULT_SKIP_VERIFY=true \
+  vault kv put kv/secret/n8n/live/postgres \
   POSTGRES_USER=postgres \
   POSTGRES_PASSWORD=<NEW_PASSWORD> \
   POSTGRES_DB=n8n \

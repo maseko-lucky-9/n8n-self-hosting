@@ -12,8 +12,13 @@
 - [ ] **[ACTION REQUIRED]** If Grafana is in a different namespace, set `monitoring.grafanaDashboard.namespace` to that namespace
 - [ ] **[BLOCKING]** `templates/lead-to-client-pipeline`: do not activate WF-B
   (`wf-b-lead-followup.json`) until its unsubscribe URL (built from `webhook_base`)
-  resolves from **off-LAN** — verify with `curl -sI <unsubscribe-url>` run from outside
-  the network. A curl run from inside the homelab passes and proves nothing. WF-B is
+  resolves from **off-LAN** — verify with `curl -sS -X GET <unsubscribe-url>` run from
+  outside the network. **Use `-X GET`, not `-sI`.** `-sI` sends HEAD, and n8n dispatches
+  webhooks on an exact method match (`live-webhooks.js`: `(parameters?.httpMethod ?? 'GET')
+  === httpMethod`), so a HEAD request returns 404 even against a perfectly healthy webhook.
+  Measured against the live, active intake webhook: `HEAD → 404 · GET → 404 · POST → 400`.
+  The earlier wording of this gate prescribed a test that could never pass.
+  A curl run from inside the homelab passes and proves nothing. WF-B is
   scheduled and fires against existing lead rows the moment SMTP works; a dead opt-out
   link on a live nurture send is a POPIA s69 / s11(3) exposure, not a placeholder.
 - [ ] **[ACTION REQUIRED]** `templates/lead-to-client-pipeline`: confirm "Ignore SSL

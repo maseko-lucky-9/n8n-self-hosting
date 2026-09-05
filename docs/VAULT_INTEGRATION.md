@@ -134,14 +134,23 @@ kubectl exec -n vault vault-0 -- vault read auth/kubernetes/role/n8n-readonly
 
 ## Step 6 — Store Postgres Secrets in Vault (one-time, update on rotation)
 
+> **Every `vault kv` line in this file needs `-c vault` and `VAULT_SKIP_VERIFY=true`.**
+> The pod runs more than one container, so `-c vault` is required to reach the CLI. And
+> `VAULT_ADDR` is `https://127.0.0.1:8200` with a self-signed certificate and no
+> `VAULT_CACERT`, so without `VAULT_SKIP_VERIFY=true` every command exits 2 with
+> `x509: certificate signed by unknown authority`. There is also no `vault` binary on the
+> Mac or the host shell — it exists only inside the pod, which is why each command is
+> wrapped in `microk8s kubectl exec`. This is not optional hardening advice; the commands
+> below do not run without it.
+
 ```bash
-kubectl exec -n vault vault-0 -- vault kv put kv/secret/n8n/live/postgres \
+microk8s kubectl -n vault exec vault-0 -c vault -- env VAULT_SKIP_VERIFY=true vault kv put kv/secret/n8n/live/postgres \
   data='{"POSTGRES_USER":"n8n_live","POSTGRES_PASSWORD":"<SECURE_PASS>","POSTGRES_DB":"n8n","POSTGRES_NON_ROOT_USER":"n8n_app","POSTGRES_NON_ROOT_PASSWORD":"<SECURE_PASS_2>"}'
 ```
 
 Verify:
 ```bash
-kubectl exec -n vault vault-0 -- vault kv get kv/secret/n8n/live/postgres
+microk8s kubectl -n vault exec vault-0 -c vault -- env VAULT_SKIP_VERIFY=true vault kv get kv/secret/n8n/live/postgres
 ```
 
 > Use `openssl rand -base64 32` to generate secure passwords.
@@ -154,7 +163,7 @@ kubectl exec -n vault vault-0 -- vault kv get kv/secret/n8n/live/postgres
 # Extract the existing encryption key from the running n8n pod first:
 kubectl exec -n n8n-live <n8n-pod> -c n8n -- cat /home/node/.n8n/config
 
-kubectl exec -n vault vault-0 -- vault kv put kv/secret/n8n/live/app \
+microk8s kubectl -n vault exec vault-0 -c vault -- env VAULT_SKIP_VERIFY=true vault kv put kv/secret/n8n/live/app \
   N8N_ENCRYPTION_KEY="<EXTRACTED_KEY>" \
   N8N_WEBHOOK_URL="https://n8n.homelab.local"
 ```
@@ -204,7 +213,7 @@ To rotate Postgres passwords:
 
 1. **Update the secret in Vault:**
    ```bash
-   kubectl exec -n vault vault-0 -- vault kv patch kv/secret/n8n/live/postgres \
+   microk8s kubectl -n vault exec vault-0 -c vault -- env VAULT_SKIP_VERIFY=true vault kv patch kv/secret/n8n/live/postgres \
      POSTGRES_PASSWORD="<NEW_PASS>" \
      POSTGRES_NON_ROOT_PASSWORD="<NEW_PASS_2>"
    ```
@@ -250,7 +259,7 @@ kubectl exec -n vault vault-0 -- vault token lookup
 ### Manually verify the secret path exists
 
 ```bash
-kubectl exec -n vault vault-0 -- vault kv get kv/secret/n8n/live/postgres
+microk8s kubectl -n vault exec vault-0 -c vault -- env VAULT_SKIP_VERIFY=true vault kv get kv/secret/n8n/live/postgres
 ```
 
 ### Verify the K8s Secret was created
