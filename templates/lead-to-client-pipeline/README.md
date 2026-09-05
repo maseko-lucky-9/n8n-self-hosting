@@ -49,6 +49,7 @@ one, and the transition guard would reject the booking outright. So:
 | `wf-b-lead-followup.json` | 08:00 SAST daily; hourly SLA check | send due touches with jitter and a daily cap, every mail carrying a working opt-out; escalate urgent leads untouched past the SLA |
 | `wf-c-lead-stage.json` | `POST`/`GET /webhook/lead-stage` | the state machine: resolve (or burn a single-use token) → transition guard → apply + audit → per-stage side effect |
 | `wf-d-error-handler.json` | Error Trigger | ntfy alert with the message inline |
+| `wf-e-sheet-sync.json` | `*/15 * * * *` | resolve the mirror spreadsheet by name via Drive → read-only snapshot of `leads` + `lead_events` into it. Postgres stays the system of record; nothing writes back, and no document id is stored in the workflow |
 
 ## Install
 
@@ -72,7 +73,7 @@ kubectl -n n8n-live exec sts/n8n-application-postgres -c postgres -- \
 ```
 
 Then in the n8n UI: attach credentials (imported nodes carry `REPLACE_*` placeholder
-ids) and set **WF-D as the Error Workflow** on A/B/C before activating. Config does
+ids) and set **WF-D as the Error Workflow** on A/B/C/E before activating. Config does
 **not** go through the n8n UI on this instance — n8n Variables (Settings → Variables)
 are an Enterprise-licensed feature and unavailable here; see "Config (`$env`, not n8n
 Variables)" below for how values actually reach the workflows.
@@ -86,6 +87,168 @@ POPIA s69 / s11(3) exposure for direct marketing with a non-functional opt-out. 
 with `curl -sI <unsubscribe-url>` run from **outside** the network (a mobile hotspot,
 an external host, anything off-LAN); a curl run from inside the homelab passes and
 proves nothing.
+
+## Sheet mirror (WF-E)
+
+A read-only view of the pipeline for people who will not open a database. It is a
+**scheduled snapshot**, not a write hanging off WF-A, and that is the whole design:
+
+- **Isolation.** Nothing is added to the intake path, so no Sheets outage, quota trip or
+  schema drift can stop a lead being accepted.
+- **No drift.** A per-event write would mirror only the workflow it hangs off — WF-B's
+  `Mark Touched` and WF-C's `Apply Transition` would leave the sheet stale.
+- **Self-healing, with a limit worth knowing.** A cell edited by hand on a row the
+  database still owns is overwritten within 15 minutes. Rows are matched *by value* on
+  `lead_id` and there is no clear-then-append, so two things are **not** corrected: a row
+  inserted by hand with a novel `lead_id` is never matched or removed, and editing a
+  `lead_id` cell orphans the real row, which is then re-appended alongside the tampered
+  copy. Anyone with Editor access can therefore plant a permanent fake lead in the
+  report. Nothing reaches Postgres — this is report integrity only.
+
+### Setup
+
+**No document id is ever pasted into a node.** `Find Sheet` resolves the spreadsheet by
+name through the Drive API on every run, so the sheet can be deleted and recreated
+without editing the workflow.
+
+**But a name match proves uniqueness, not identity — so ownership is the real check.**
+Anyone can create a file with this name and share it with our service account; it then
+appears in that account's Drive listing exactly like the real one, and both facts needed
+to do it (the service-account address and the sheet name) are published in this **public**
+repo. So `Resolve Sheet ID` additionally requires the file to be owned by
+`$env.lead_sheet_owner`, which an attacker cannot forge. Unset, WF-E refuses to resolve
+at all rather than writing lead PII somewhere unverified. That value lives in Vault
+(`LEAD_SHEET_OWNER` on the lead-pipeline path), not in this repo — it is a personal
+address.
+
+Without that check the failure modes are: a colliding file makes the count 2 and stops
+the sync indefinitely, and — whenever the real sheet is absent, which includes the whole
+window before step 1 below — the attacker's file is the *only* match and receives every
+prospect's name, email and phone.
+
+Only two steps are manual, and both are one-time:
+
+1. Create an empty spreadsheet named exactly **`Prudentia Leads Mirror`** (override with
+   `$env.lead_sheet_name` if you want a different one).
+
+2. **Share** it as **Editor** with the service account:
+   ```
+   n8n-sheets@prudentia-n8n.iam.gserviceaccount.com
+   ```
+   A sheet the service account cannot see is indistinguishable from one that does not
+   exist — both are zero search results and both fail with the same message. If the sync
+   reports `found 0`, check sharing first: the diagnostic is a Drive search for
+   `name contains ''`, which returns **every** file the service account can see. Zero
+   results there means nothing is shared with it, not that the name is wrong.
+
+Tabs and header rows are **not** manual — `sheet:create` adds the two tabs and a seeded
+`append` writes the header rows, neither of which needs file ownership. Provisioning
+leaves one seed row per tab (its cell values are the column names); delete row 2 of each
+tab afterwards, or the mirror carries a phantom lead whose `lead_id` is the literal
+string `lead_id`.
+
+The header names must match WF-E's SQL aliases exactly, since `appendOrUpdate` keys on
+the first column of each tab:
+
+`leads` — `lead_id name email_norm phone_norm service_type urgency commercial_stage
+calendar_stage touch_number next_touch_at stopped_at stop_reason created_at updated_at`
+
+`events` — `event_id lead_id facet from_stage to_stage actor payload created_at`
+
+> **Why creating the sheet is manual.** Service accounts have no Drive storage quota and
+> cannot own files, so `spreadsheet:create` under this credential fails
+> ([n8n#26050](https://github.com/n8n-io/n8n/issues/26050)). The escapes are a Workspace
+> shared drive or OAuth delegation; this domain is GoDaddy-hosted, not Workspace, so
+> neither applies. Creating tabs and writing rows inside a sheet the service account has
+> been *shared into* needs no ownership and is fully automated.
+
+### Traps
+
+Each of these was read out of the deployed n8n 2.16.1 node source, not inferred:
+
+- **`cellFormat: RAW` is a security control, not a formatting preference.** The node
+  default from v4.1 is `USER_ENTERED`, which evaluates what it writes. Three mirrored
+  columns are free text that originates from webhook input — `leads.name`,
+  `lead_events.actor` and `stop_reason` — so under `USER_ENTERED` a lead submitting the
+  name `=IMPORTRANGE(...)` gets a **live formula** in a sheet shared with the whole team.
+  RAW blocks that. It also keeps ISO timestamps from being coerced to locale dates, which
+  is the cosmetic half. Do not change it to `USER_ENTERED`.
+- **A Sheets-side break takes down the report, never intake.** Verified: pointing
+  `Upsert Leads Tab` at a tab that does not exist made the sync fail while
+  `POST /webhook/lead-intake` still answered `400` (its normal validation response) —
+  i.e. lead intake never noticed. That isolation is the whole reason this is a scheduled
+  snapshot rather than a node hanging off WF-A, and it is the thing to re-test after any
+  change here.
+  `[UNVERIFIED]` — that a *header rename* specifically trips `checkForSchemaChanges`
+  (which the deployed source throws for node version ≥ 4.4) is read from the source, not
+  measured. The isolation property above was measured with a missing-tab break instead.
+- **`appendOrUpdate` writes into a hardcoded `!A:Z` range.** 14 columns now, 12 spare.
+- **Deleted leads linger.** Nothing deletes leads today (`purge_after` exists but no
+  workflow reads it). Add a Clear-then-Append only if that changes.
+- **`onError` is left at the default deliberately.** A sync failure *should* raise and
+  reach WF-D. Do not copy the ntfy nodes' `continueRegularOutput` — this is a report,
+  and failing loudly is correct.
+- **No `alwaysOutputData` on the two Postgres reads.** An empty table must yield zero
+  items, not one empty item that the Sheets node would happily write as a blank row.
+- **`Find Sheet` *does* set `alwaysOutputData`, and must.** Without it, zero search
+  results means `Resolve Sheet ID` never executes, and the sync silently does nothing
+  instead of failing. A no-op that looks like success is the worst outcome available.
+- **The Drive search uses the advanced query mode, not "search by name".** `searchMethod:
+  'name'` builds `name contains '<x>'` — a substring match that would also hit
+  "Copy of <x>" and "<x> OLD". The query mode passes `name = '...'` to the API verbatim,
+  and pins `mimeType` to a spreadsheet and `trashed = false`.
+- **Two files can share an exact name in Drive.** `Resolve Sheet ID` requires exactly one
+  match and throws otherwise, rather than taking `.first()` — picking the wrong one would
+  write lead PII into someone else's document.
+
+### PII
+
+The sheet carries names, emails and phone numbers, and Sheets has no row-level
+permissions: everyone it is shared with sees every prospect's full contact details.
+Under POPIA that is a trans-border information flow (s72) needing its own lawful basis
+plus an operator agreement (s21). To share more narrowly, drop `email_norm` and
+`phone_norm` from `Select All Leads` — though `name` is PII on its own, so that narrows
+the exposure rather than removing it. The mirror is reversible in a way a datastore
+migration would not have been.
+
+**The sheet is not the only sink.** WF-E's `Select All Leads` output is the *entire*
+leads table in one blob, and n8n persists node output for successful production
+executions by default. Left alone that writes a full-table snapshot into the **`n8n`**
+database 96 times a day — the one place `schema.sql` says lead PII must never go, because
+the backup CronJob dumps that database unencrypted and (once `backup.offCluster` is
+enabled) ships it off-cluster. WF-E sets `saveDataSuccessExecution`, `saveDataErrorExecution` and
+`saveManualExecutions` accordingly. Keep them — but they are **not sufficient**, and the
+gap is measured, not theoretical:
+
+> This instance runs `EXECUTIONS_MODE=queue`. The scaling worker's save hook does not
+> consult those settings at all, and main's cleanup is gated on `fullRunData.finished`,
+> which n8n sets only on the success path. So a **failed** run persists the full table
+> regardless of the settings. Proved with a canary lead and a deliberate failure after
+> the read, as a real webhook (not CLI) execution:
+>
+> ```
+> status: error   mode: webhook
+> execution_data rows containing the canary email: 1
+> ```
+>
+> Even on success it is delete-after-write: the worker writes, main soft-deletes, and the
+> hard delete waits for the pruning cycle.
+
+So the honest position is that WF-E's failure path puts the leads table into the `n8n`
+database for up to `EXECUTIONS_DATA_MAX_AGE` (7 days), where the daily **unencrypted**
+`pg_dump` can capture it — the outcome `schema.sql` is written to prevent. Closing it
+properly means either moving the read+write into a sub-workflow (whose executions use a
+hook path that does honour the settings) or encrypting the dumps. Until one of those
+lands, treat a failed WF-E run as a PII event and purge its execution rows.
+
+WF-A/B/C are not affected in the same way — their executions hold one lead each, not the
+whole table.
+
+**Not mirrored, deliberately:** `consent_source` and `consent_at`. The sheet is not
+consent evidence; the database is. `lead_events.payload` **is** mirrored verbatim, and is
+PII-free today (its three producers write only `ref`, `channel` and `source`) — but any
+future workflow that puts an email or a token in that jsonb would ship it to the sheet
+silently, and dropping `email_norm`/`phone_norm` would not catch it.
 
 ## Config (`$env`, not n8n Variables)
 
