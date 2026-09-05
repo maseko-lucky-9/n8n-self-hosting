@@ -47,7 +47,18 @@ CREATE TABLE IF NOT EXISTS leads (
 
 -- Partial unique indexes: idempotency + dedupe, while still allowing phone-only leads.
 CREATE UNIQUE INDEX IF NOT EXISTS leads_email_uq ON leads (email_norm) WHERE email_norm IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS leads_phone_uq ON leads (phone_norm) WHERE phone_norm IS NOT NULL;
+
+-- There is deliberately NO unique index on phone_norm. WF-A's upsert names only
+-- (email_norm) as its ON CONFLICT target, so a second unique index cannot be caught
+-- by it: a submission whose email is new but whose phone matches an existing row
+-- raises unique_violation (23505), and because the upsert is one atomic CTE the whole
+-- statement aborts -- no lead, no submission, no audit event, and the node throws.
+-- Email is required by `Validate & Normalise` (a lead without one is unreachable and
+-- is rejected), so email is the only dedupe key that can ever fire. A second unique
+-- index bought nothing and could abort the write path.
+-- ponytail: if phone-only leads ever become a real intake channel, add the index back
+-- AND give the upsert a matching conflict target -- never one without the other.
+DROP INDEX IF EXISTS leads_phone_uq;
 CREATE INDEX IF NOT EXISTS leads_due_idx ON leads (next_touch_at) WHERE stopped_at IS NULL;
 
 -- One row per form submission. The website's PD-YYMMDD-XXXX reference is the join key

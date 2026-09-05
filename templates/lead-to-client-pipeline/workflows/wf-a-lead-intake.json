@@ -156,7 +156,7 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "-- Atomic: lead upsert + submission + audit event in ONE statement.\n-- Stage columns are deliberately absent from the DO UPDATE SET list: a returning\n-- prospect must not be demoted to lead_in and re-enter the follow-up sequence.\nWITH p AS (SELECT $1::jsonb AS d),\nup AS (\n  INSERT INTO leads (email_norm, phone_norm, name, service_type, urgency, consent_source, consent_at)\n  SELECT d->'lead'->>'email_norm', d->'lead'->>'phone_norm', d->'lead'->>'name',\n         d->'lead'->>'service_type', d->'lead'->>'urgency', d->'lead'->>'consent_source', now()\n  FROM p\n  ON CONFLICT (email_norm) WHERE email_norm IS NOT NULL\n  DO UPDATE SET name       = EXCLUDED.name,\n                phone_norm = COALESCE(EXCLUDED.phone_norm, leads.phone_norm),\n                updated_at = now()\n  RETURNING id, (xmax <> 0) AS existed, commercial_stage, urgency, name, email_norm, phone_norm\n),\nsub AS (\n  INSERT INTO submissions (ref, lead_id, source, utm_source, utm_medium, utm_campaign, entry_point, topic, raw)\n  SELECT d->'submission'->>'ref', up.id, d->'submission'->>'source',\n         d->'submission'->>'utm_source', d->'submission'->>'utm_medium',\n         d->'submission'->>'utm_campaign', d->'submission'->>'entry_point',\n         d->'submission'->>'topic', (d->'submission'->>'raw')::jsonb\n  FROM p, up\n  ON CONFLICT (ref) DO NOTHING           -- replayed webhook is a no-op\n  RETURNING lead_id\n),\nev AS (\n  INSERT INTO lead_events (lead_id, facet, from_stage, to_stage, actor, payload)\n  SELECT up.id, 'system',\n         CASE WHEN up.existed THEN up.commercial_stage END,\n         CASE WHEN up.existed THEN 'resubmitted' ELSE 'lead_in' END,\n         'system', jsonb_build_object('ref', d->'submission'->>'ref')\n  FROM p, up\n  RETURNING id\n)\nSELECT id AS lead_id, existed, commercial_stage, urgency, name, email_norm, phone_norm FROM up;",
+        "query": "-- Atomic: lead upsert + submission + audit event in ONE statement.\n-- Stage columns are deliberately absent from the DO UPDATE SET list: a returning\n-- prospect must not be demoted to lead_in and re-enter the follow-up sequence.\nWITH p AS (SELECT $1::jsonb AS d),\nup AS (\n  INSERT INTO leads (email_norm, phone_norm, name, service_type, urgency, consent_source, consent_at)\n  SELECT d->'lead'->>'email_norm', d->'lead'->>'phone_norm', d->'lead'->>'name',\n         d->'lead'->>'service_type', d->'lead'->>'urgency', d->'lead'->>'consent_source', now()\n  FROM p\n  ON CONFLICT (email_norm) WHERE email_norm IS NOT NULL\n  DO UPDATE SET name       = EXCLUDED.name,\n                phone_norm = COALESCE(EXCLUDED.phone_norm, leads.phone_norm),\n                -- Urgency ratchets UP only: a second, calmer enquiry must not\n                -- cancel an urgent one already raised.\n                urgency      = CASE WHEN EXCLUDED.urgency = 'urgent'\n                                    THEN 'urgent' ELSE leads.urgency END,\n                service_type = COALESCE(EXCLUDED.service_type, leads.service_type),\n                updated_at = now()\n  RETURNING id, (xmax <> 0) AS existed, commercial_stage, urgency, name, email_norm, phone_norm\n),\nsub AS (\n  INSERT INTO submissions (ref, lead_id, source, utm_source, utm_medium, utm_campaign, entry_point, topic, raw)\n  SELECT d->'submission'->>'ref', up.id, d->'submission'->>'source',\n         d->'submission'->>'utm_source', d->'submission'->>'utm_medium',\n         d->'submission'->>'utm_campaign', d->'submission'->>'entry_point',\n         d->'submission'->>'topic', (d->'submission'->>'raw')::jsonb\n  FROM p, up\n  ON CONFLICT (ref) DO NOTHING           -- replayed webhook is a no-op\n  RETURNING lead_id\n),\nev AS (\n  INSERT INTO lead_events (lead_id, facet, from_stage, to_stage, actor, payload)\n  SELECT up.id, 'system',\n         CASE WHEN up.existed THEN up.commercial_stage END,\n         CASE WHEN up.existed THEN 'resubmitted' ELSE 'lead_in' END,\n         'system', jsonb_build_object('ref', d->'submission'->>'ref')\n  FROM p, up\n  RETURNING id\n)\nSELECT id AS lead_id, existed, commercial_stage, urgency, name, email_norm, phone_norm FROM up;",
         "options": {
           "queryReplacement": "={{ JSON.stringify($json) }}"
         }
@@ -290,32 +290,6 @@
       "onError": "continueRegularOutput"
     },
     {
-      "name": "Send Confirmation Email",
-      "type": "n8n-nodes-base.emailSend",
-      "typeVersion": 2.1,
-      "position": [
-        1040,
-        320
-      ],
-      "parameters": {
-        "fromEmail": "={{ $env.from_email }}",
-        "toEmail": "={{ $('Upsert Lead + Submission').first().json.email_norm }}",
-        "subject": "=We've got your enquiry \u2014 {{ $env.brand }}",
-        "emailFormat": "both",
-        "text": "=Thanks for getting in touch.\n\nWe have your enquiry and a consultant will be in touch within 1 business day.\n\nWant to skip the wait? Book a consultation directly: {{ $env.booking_url }}\n\n\u2014 The {{ $env.brand }} team\n\n---\nYou are receiving this because you submitted an enquiry on {{ $env.site_url }}. This is a one-off reply to that enquiry, not a mailing list. Reply STOP and we will not follow up.",
-        "html": "=<p>Thanks for getting in touch.</p><p>We have your enquiry and a consultant will be in touch within <strong>1 business day</strong>.</p><p>Want to skip the wait? <a href=\"{{ $env.booking_url }}\">Book a consultation directly</a>.</p><p>\u2014 The {{ $env.brand }} team</p><hr><p style=\"font-size:12px;color:#666\">You are receiving this because you submitted an enquiry on {{ $env.site_url }}. This is a one-off reply to that enquiry, not a mailing list. Reply STOP and we will not follow up.</p>",
-        "options": {
-          "appendAttribution": false
-        }
-      },
-      "credentials": {
-        "smtp": {
-          "id": "REPLACE_SMTP_CRED",
-          "name": "SMTP account 2"
-        }
-      }
-    },
-    {
       "name": "Notify Resubmission",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -359,7 +333,7 @@
         -40
       ],
       "parameters": {
-        "content": "## WF-A \u2014 Lead Intake\n\nDiagram nodes: **LEAD IN \u2192 CONTACT CREATED \u2192 CASE TYPE TAGGED \u2192 Urgent? \u2192 CONFIRMATION SENT**\n\nAuth is HMAC over `ref.timestamp.contact` (not the raw body \u2014 no JSON canonicalisation mismatch) plus a 300s freshness window.\n\nThe upsert never touches stage columns: a returning client must not be demoted to `lead_in`.\n\n**Notify branch.** Urgent \u2192 ntfy push to the owner **plus** the confirmation email. Normal \u2192 confirmation email only. **Text messaging has been removed entirely**, and with it the quiet-hours suppression that only ever existed to stop a 02:00 text. The ntfy topic is public and its name is committed here, so the push carries the lead id and service type only \u2014 never a name, email, phone or message. That holds for the *contents* and not merely the field names because `service_type` is constrained to a fixed enum in `Validate & Normalise`: unrecognised input becomes `null`, so free text the visitor typed can never reach the topic.\n\nThe confirmation deliberately echoes **nothing the visitor typed**: it is DMARC-aligned from our own domain, so any echo would turn the form into a signed phishing relay (escaping does not fix that \u2014 the sentence still renders).",
+        "content": "## WF-A \u2014 Lead Intake\n\nDiagram nodes: **LEAD IN \u2192 CONTACT CREATED \u2192 CASE TYPE TAGGED \u2192 Urgent? \u2192 CONFIRMATION SENT**\n\nAuth is HMAC over `ref.timestamp.contact` (not the raw body \u2014 no JSON canonicalisation mismatch) plus a 300s freshness window.\n\nThe upsert never touches stage columns: a returning client must not be demoted to `lead_in`.\n\n**Notify branch.** Urgent \u2192 ntfy push to the owner, then respond. Normal \u2192 respond directly. **Text messaging has been removed entirely**, and with it the quiet-hours suppression that only ever existed to stop a 02:00 text.\n\n**WF-A no longer sends the acknowledgement.** The Cloudflare Worker already sends one (`SEND_AUTO_ACK`, gated on the primary mail queueing), and two systems acknowledging one submission meant the visitor got two emails. The Worker's copy wins: it fires even when n8n is unreachable. Anything added here must not reintroduce a second sender.\n\nThe ntfy topic is public and unauthenticated in both directions, so the push carries the lead id and service type only \u2014 never a name, email, phone or message. That holds for the *contents*, not merely the field names, because `service_type` is constrained to a fixed enum in `Validate & Normalise`: unrecognised input becomes `null`, so free text the visitor typed can never reach the topic.",
         "width": 460,
         "height": 260
       }
@@ -475,7 +449,7 @@
         ],
         [
           {
-            "node": "Send Confirmation Email",
+            "node": "Respond OK",
             "type": "main",
             "index": 0
           }
@@ -483,17 +457,6 @@
       ]
     },
     "Notify Owner (ntfy)": {
-      "main": [
-        [
-          {
-            "node": "Send Confirmation Email",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Send Confirmation Email": {
       "main": [
         [
           {

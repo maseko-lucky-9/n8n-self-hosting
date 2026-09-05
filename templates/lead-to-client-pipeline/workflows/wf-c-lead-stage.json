@@ -309,7 +309,7 @@
       ],
       "parameters": {
         "options": {
-          "fallbackOutput": "none"
+          "fallbackOutput": "extra"
         },
         "rules": {
           "values": [
@@ -583,6 +583,13 @@
     },
     "Route Side Effect": {
       "main": [
+        [
+          {
+            "node": "Notify Stage Change",
+            "type": "main",
+            "index": 0
+          }
+        ],
         [
           {
             "node": "Notify Stage Change",
