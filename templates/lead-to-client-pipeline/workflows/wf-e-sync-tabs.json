@@ -1,0 +1,240 @@
+{
+  "name": "Lead Pipeline \u2014 E1 \u2014 Sheet Tabs",
+  "nodes": [
+    {
+      "name": "Called With Sheet",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [
+        -820,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "name": "Select All Leads",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -600,
+        200
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Flat snapshot for the Google Sheets mirror. Postgres stays authoritative and this\n-- workflow never writes back, so the sheet is a report that self-heals: anything a\n-- human edits is overwritten on the next run.\n-- Timestamps are emitted as explicit UTC text. The Sheets node writes with\n-- cellFormat RAW, but emitting text here means the value cannot depend on driver or\n-- locale formatting even if that option is ever changed.\nSELECT\n  l.id::text                                                                AS lead_id,\n  l.name,\n  l.email_norm,\n  l.phone_norm,\n  l.service_type,\n  l.urgency,\n  l.commercial_stage,\n  l.calendar_stage,\n  l.touch_number,\n  to_char(l.next_touch_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')  AS next_touch_at,\n  to_char(l.stopped_at    AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')  AS stopped_at,\n  l.stop_reason,\n  to_char(l.created_at    AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')  AS created_at,\n  to_char(l.updated_at    AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')  AS updated_at\nFROM leads l\nORDER BY l.created_at;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_LEADS_PG_CRED",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "name": "Upsert Leads Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -380,
+        200
+      ],
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Called With Sheet').first().json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "leads"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [
+            "lead_id"
+          ],
+          "schema": [],
+          "value": {
+            "lead_id": "={{ $json.lead_id }}",
+            "name": "={{ $json.name }}",
+            "email_norm": "={{ $json.email_norm }}",
+            "phone_norm": "={{ $json.phone_norm }}",
+            "service_type": "={{ $json.service_type }}",
+            "urgency": "={{ $json.urgency }}",
+            "commercial_stage": "={{ $json.commercial_stage }}",
+            "calendar_stage": "={{ $json.calendar_stage }}",
+            "touch_number": "={{ $json.touch_number }}",
+            "next_touch_at": "={{ $json.next_touch_at }}",
+            "stopped_at": "={{ $json.stopped_at }}",
+            "stop_reason": "={{ $json.stop_reason }}",
+            "created_at": "={{ $json.created_at }}",
+            "updated_at": "={{ $json.updated_at }}"
+          }
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "credentials": {
+        "googleApi": {
+          "id": "REPLACE_SHEETS_CRED",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "name": "Select Events",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -600,
+        400
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- The audit trail, append-only. Matched on event_id so a re-run updates in place\n-- instead of duplicating; lead_events ids are a bigserial, never reused.\nSELECT\n  e.id::text                                                              AS event_id,\n  e.lead_id::text                                                         AS lead_id,\n  e.facet,\n  e.from_stage,\n  e.to_stage,\n  e.actor,\n  COALESCE(e.payload::text, '')                                           AS payload,\n  to_char(e.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')  AS created_at\nFROM lead_events e\nORDER BY e.id;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_LEADS_PG_CRED",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "name": "Upsert Events Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -380,
+        400
+      ],
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('Called With Sheet').first().json.sheet_id }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "events"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [
+            "event_id"
+          ],
+          "schema": [],
+          "value": {
+            "event_id": "={{ $json.event_id }}",
+            "lead_id": "={{ $json.lead_id }}",
+            "facet": "={{ $json.facet }}",
+            "from_stage": "={{ $json.from_stage }}",
+            "to_stage": "={{ $json.to_stage }}",
+            "actor": "={{ $json.actor }}",
+            "payload": "={{ $json.payload }}",
+            "created_at": "={{ $json.created_at }}"
+          }
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "credentials": {
+        "googleApi": {
+          "id": "REPLACE_SHEETS_CRED",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "name": "Summarise Only",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Counts only. Returning the written rows would hand the parent execution the\n// very PII this sub-workflow exists to contain.\nreturn [{ json: { rows_written: $input.all().length } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Called With Sheet": {
+      "main": [
+        [
+          {
+            "node": "Select All Leads",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Select Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select All Leads": {
+      "main": [
+        [
+          {
+            "node": "Upsert Leads Tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Events": {
+      "main": [
+        [
+          {
+            "node": "Upsert Events Tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Leads Tab": {
+      "main": [
+        [
+          {
+            "node": "Summarise Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Events Tab": {
+      "main": [
+        [
+          {
+            "node": "Summarise Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": false,
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "callerPolicy": "workflowsFromSameOwner"
+  }
+}
