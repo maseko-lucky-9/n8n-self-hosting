@@ -3,6 +3,9 @@ Anti.Beast.agent.md
 Beast.agent.md
 *.agent.md
 
+# Downloaded community workflow templates -- reference material, not ours to version.
+demos/templates/
+
 # macOS
 .DS_Store
 .vscode/settings.json

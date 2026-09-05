@@ -309,8 +309,11 @@ backup:
   failedJobsHistoryLimit: 2
   # GAP-007: Off-cluster backup via rclone to S3-compatible target.
   # Prerequisites before enabling:
-  #   1. Populate Vault: vault kv put kv/secret/n8n/live/backup-offcluster \
-  #        RCLONE_S3_ACCESS_KEY_ID=<key> RCLONE_S3_SECRET_ACCESS_KEY=<secret>
+  #   1. Populate Vault (-c vault and VAULT_SKIP_VERIFY are both required; without
+  #      them this exits 2 with an x509 error -- see docs/VAULT_INTEGRATION.md):
+  #        microk8s kubectl -n vault exec vault-0 -c vault -- env VAULT_SKIP_VERIFY=true \
+  #          vault kv put kv/secret/n8n/live/backup-offcluster \
+  #          RCLONE_S3_ACCESS_KEY_ID=<key> RCLONE_S3_SECRET_ACCESS_KEY=<secret>
   #   2. Set endpoint, bucket, path below
   #   3. Set enabled: true and helm upgrade
   offCluster:
