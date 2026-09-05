@@ -120,6 +120,19 @@ extraEnv:
         name: n8n-lead-pipeline-secret
         key: LEAD_NTFY_TOPIC
         optional: true
+  # WF-E's authorisation check. It resolves the mirror spreadsheet by NAME, which
+  # proves uniqueness, not identity -- anyone can create a same-named file and share
+  # it with our service account, and it then appears in the same Drive listing. This
+  # is the account that must OWN the sheet; an attacker cannot forge ownership.
+  # Unset leaves WF-E refusing to resolve at all (fails closed, loudly) rather than
+  # writing lead PII somewhere unverified. Held in Vault, not here: it is a personal
+  # address and this repo is public.
+  - name: lead_sheet_owner
+    valueFrom:
+      secretKeyRef:
+        name: n8n-lead-pipeline-secret
+        key: LEAD_SHEET_OWNER
+        optional: true
   # Reelsmith social-publish: Telegram alert credentials for failure notifications.
   # Secret created by ESO from kv/secret/n8n/live/reelsmith-telegram.
   - name: TELEGRAM_BOT_TOKEN

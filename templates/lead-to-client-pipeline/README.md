@@ -73,7 +73,7 @@ kubectl -n n8n-live exec sts/n8n-application-postgres -c postgres -- \
 ```
 
 Then in the n8n UI: attach credentials (imported nodes carry `REPLACE_*` placeholder
-ids) and set **WF-D as the Error Workflow** on A/B/C before activating. Config does
+ids) and set **WF-D as the Error Workflow** on A/B/C/E before activating. Config does
 **not** go through the n8n UI on this instance — n8n Variables (Settings → Variables)
 are an Enterprise-licensed feature and unavailable here; see "Config (`$env`, not n8n
 Variables)" below for how values actually reach the workflows.
@@ -97,14 +97,34 @@ A read-only view of the pipeline for people who will not open a database. It is 
   schema drift can stop a lead being accepted.
 - **No drift.** A per-event write would mirror only the workflow it hangs off — WF-B's
   `Mark Touched` and WF-C's `Apply Transition` would leave the sheet stale.
-- **Self-healing.** A cell someone edits by hand is overwritten within 15 minutes.
-  Postgres is authoritative by construction, not by convention.
+- **Self-healing, with a limit worth knowing.** A cell edited by hand on a row the
+  database still owns is overwritten within 15 minutes. Rows are matched *by value* on
+  `lead_id` and there is no clear-then-append, so two things are **not** corrected: a row
+  inserted by hand with a novel `lead_id` is never matched or removed, and editing a
+  `lead_id` cell orphans the real row, which is then re-appended alongside the tampered
+  copy. Anyone with Editor access can therefore plant a permanent fake lead in the
+  report. Nothing reaches Postgres — this is report integrity only.
 
 ### Setup
 
 **No document id is ever pasted into a node.** `Find Sheet` resolves the spreadsheet by
 name through the Drive API on every run, so the sheet can be deleted and recreated
-without editing the workflow. What matters instead is that the **name** is exact.
+without editing the workflow.
+
+**But a name match proves uniqueness, not identity — so ownership is the real check.**
+Anyone can create a file with this name and share it with our service account; it then
+appears in that account's Drive listing exactly like the real one, and both facts needed
+to do it (the service-account address and the sheet name) are published in this **public**
+repo. So `Resolve Sheet ID` additionally requires the file to be owned by
+`$env.lead_sheet_owner`, which an attacker cannot forge. Unset, WF-E refuses to resolve
+at all rather than writing lead PII somewhere unverified. That value lives in Vault
+(`LEAD_SHEET_OWNER` on the lead-pipeline path), not in this repo — it is a personal
+address.
+
+Without that check the failure modes are: a colliding file makes the count 2 and stops
+the sync indefinitely, and — whenever the real sheet is absent, which includes the whole
+window before step 1 below — the attacker's file is the *only* match and receives every
+prospect's name, email and phone.
 
 Only two steps are manual, and both are one-time:
 
@@ -146,10 +166,13 @@ calendar_stage touch_number next_touch_at stopped_at stop_reason created_at upda
 
 Each of these was read out of the deployed n8n 2.16.1 node source, not inferred:
 
-- **`cellFormat` is set to `RAW` on purpose.** The node default from v4.1 is
-  `USER_ENTERED`, which parses and coerces every value it writes — ISO timestamps come
-  back as locale-formatted dates. Nothing reads back from the sheet, so this is cosmetic
-  here, but do not "tidy" it away.
+- **`cellFormat: RAW` is a security control, not a formatting preference.** The node
+  default from v4.1 is `USER_ENTERED`, which evaluates what it writes. Three mirrored
+  columns are free text that originates from webhook input — `leads.name`,
+  `lead_events.actor` and `stop_reason` — so under `USER_ENTERED` a lead submitting the
+  name `=IMPORTRANGE(...)` gets a **live formula** in a sheet shared with the whole team.
+  RAW blocks that. It also keeps ISO timestamps from being coerced to locale dates, which
+  is the cosmetic half. Do not change it to `USER_ENTERED`.
 - **A Sheets-side break takes down the report, never intake.** Verified: pointing
   `Upsert Leads Tab` at a tab that does not exist made the sync fail while
   `POST /webhook/lead-intake` still answered `400` (its normal validation response) —
@@ -184,8 +207,25 @@ The sheet carries names, emails and phone numbers, and Sheets has no row-level
 permissions: everyone it is shared with sees every prospect's full contact details.
 Under POPIA that is a trans-border information flow (s72) needing its own lawful basis
 plus an operator agreement (s21). To share more narrowly, drop `email_norm` and
-`phone_norm` from `Select All Leads` — the mirror is reversible in a way a datastore
+`phone_norm` from `Select All Leads` — though `name` is PII on its own, so that narrows
+the exposure rather than removing it. The mirror is reversible in a way a datastore
 migration would not have been.
+
+**The sheet is not the only sink.** WF-E's `Select All Leads` output is the *entire*
+leads table in one blob, and n8n persists node output for successful production
+executions by default. Left alone that writes a full-table snapshot into the **`n8n`**
+database 96 times a day — the one place `schema.sql` says lead PII must never go, because
+the backup CronJob dumps that database unencrypted and (once `backup.offCluster` is
+enabled) ships it off-cluster. WF-E therefore sets `saveDataSuccessExecution: "none"` and
+`saveManualExecutions: false`. Do not remove either; the isolation `schema.sql` describes
+depends on them for this workflow specifically. WF-A/B/C are not affected in the same
+way — their executions hold one lead each, not the whole table.
+
+**Not mirrored, deliberately:** `consent_source` and `consent_at`. The sheet is not
+consent evidence; the database is. `lead_events.payload` **is** mirrored verbatim, and is
+PII-free today (its three producers write only `ref`, `channel` and `source`) — but any
+future workflow that puts an email or a token in that jsonb would ship it to the sheet
+silently, and dropping `email_norm`/`phone_norm` would not catch it.
 
 ## Config (`$env`, not n8n Variables)
 

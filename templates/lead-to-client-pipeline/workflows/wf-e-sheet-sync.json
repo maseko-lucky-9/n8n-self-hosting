@@ -46,13 +46,14 @@
         "authentication": "serviceAccount",
         "resource": "fileFolder",
         "searchMethod": "query",
-        "queryString": "={{ \"name = '\" + ($env.lead_sheet_name ?? 'Prudentia Leads Mirror') + \"' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false\" }}",
+        "queryString": "={{ \"name = '\" + String($env.lead_sheet_name ?? 'Prudentia Leads Mirror').replace(/['\\\\]/g, \"\\\\$&\") + \"' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false\" }}",
         "returnAll": true,
         "filter": {},
         "options": {
           "fields": [
             "id",
-            "name"
+            "name",
+            "owners"
           ]
         }
       },
@@ -73,7 +74,7 @@
         300
       ],
       "parameters": {
-        "jsCode": "// Resolve the mirror spreadsheet by name so no document id is ever pasted into a\n// node -- the sheet can be deleted and recreated without touching this workflow.\n//\n// Exactly one match, or fail loudly. Zero means the sheet was renamed, trashed, or\n// never shared with the service account. More than one means the name is ambiguous,\n// and picking either could write lead PII into the wrong document -- so refuse rather\n// than guess. `Find Sheet` sets alwaysOutputData so the zero case still reaches here;\n// without it this node would not run at all and the sync would silently do nothing.\nconst want = $env.lead_sheet_name ?? 'Prudentia Leads Mirror';\nconst hits = $input.all().filter((i) => i.json && i.json.id);\n\nif (hits.length !== 1) {\n  throw new Error(\n    `Sheet mirror: expected exactly 1 Drive spreadsheet named \"${want}\", found ${hits.length}. ` +\n    'Check the name, that it is not in the trash, and that it is shared with the ' +\n    'service account as Editor.'\n  );\n}\n\nreturn [{ json: { sheet_id: hits[0].json.id, sheet_name: hits[0].json.name } }];"
+        "jsCode": "// Resolve the mirror spreadsheet by name so no document id is stored in the workflow\n// -- the sheet can be deleted and recreated without editing this.\n//\n// SECURITY: a name match proves uniqueness, NOT identity. Anyone can create a file\n// with this name and share it with our service account; it then appears in the\n// service account's Drive listing exactly like the real one. Both facts needed to do\n// that (the service-account address and this sheet name) are published in a PUBLIC\n// repo. So ownership is the actual authorisation check -- an attacker cannot make\n// their file owned by our account.\n//\n// Fails closed three ways: owner not configured, no owned match, or more than one.\n// `Find Sheet` sets alwaysOutputData so the zero-hit case still reaches this node;\n// without it this would not run at all and the sync would silently no-op.\nconst want = $env.lead_sheet_name ?? 'Prudentia Leads Mirror';\nconst owner = ($env.lead_sheet_owner ?? '').trim().toLowerCase();\n\nif (!owner) {\n  throw new Error(\n    'lead_sheet_owner is not set. Refusing to resolve the mirror spreadsheet by name ' +\n    'alone: name matching proves uniqueness, not identity, and anyone can share a ' +\n    'same-named file with this service account. Set it from the lead-pipeline Vault path.'\n  );\n}\n\nconst owned = $input.all().filter((i) => {\n  const o = i.json && i.json.owners;\n  return i.json && i.json.id && Array.isArray(o) &&\n    o.some((x) => String(x.emailAddress ?? '').toLowerCase() === owner);\n});\n\nif (owned.length !== 1) {\n  const seen = $input.all().filter((i) => i.json && i.json.id).length;\n  throw new Error(\n    `Sheet mirror: expected exactly 1 spreadsheet named \"${want}\" owned by ${owner}, ` +\n    `found ${owned.length} (${seen} name match(es) total). Check the name, that it is ` +\n    `not in the trash, that it is shared with the service account, and that it is owned ` +\n    `by the configured account.`\n  );\n}\n\nreturn [{ json: { sheet_id: owned[0].json.id, sheet_name: owned[0].json.name } }];"
       }
     },
     {
@@ -285,7 +286,8 @@
   },
   "settings": {
     "executionOrder": "v1",
-    "saveManualExecutions": true,
+    "saveManualExecutions": false,
+    "saveDataSuccessExecution": "none",
     "callerPolicy": "workflowsFromSameOwner"
   }
 }
