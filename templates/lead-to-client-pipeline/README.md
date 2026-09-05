@@ -216,10 +216,33 @@ leads table in one blob, and n8n persists node output for successful production
 executions by default. Left alone that writes a full-table snapshot into the **`n8n`**
 database 96 times a day — the one place `schema.sql` says lead PII must never go, because
 the backup CronJob dumps that database unencrypted and (once `backup.offCluster` is
-enabled) ships it off-cluster. WF-E therefore sets `saveDataSuccessExecution: "none"` and
-`saveManualExecutions: false`. Do not remove either; the isolation `schema.sql` describes
-depends on them for this workflow specifically. WF-A/B/C are not affected in the same
-way — their executions hold one lead each, not the whole table.
+enabled) ships it off-cluster. WF-E sets `saveDataSuccessExecution`, `saveDataErrorExecution` and
+`saveManualExecutions` accordingly. Keep them — but they are **not sufficient**, and the
+gap is measured, not theoretical:
+
+> This instance runs `EXECUTIONS_MODE=queue`. The scaling worker's save hook does not
+> consult those settings at all, and main's cleanup is gated on `fullRunData.finished`,
+> which n8n sets only on the success path. So a **failed** run persists the full table
+> regardless of the settings. Proved with a canary lead and a deliberate failure after
+> the read, as a real webhook (not CLI) execution:
+>
+> ```
+> status: error   mode: webhook
+> execution_data rows containing the canary email: 1
+> ```
+>
+> Even on success it is delete-after-write: the worker writes, main soft-deletes, and the
+> hard delete waits for the pruning cycle.
+
+So the honest position is that WF-E's failure path puts the leads table into the `n8n`
+database for up to `EXECUTIONS_DATA_MAX_AGE` (7 days), where the daily **unencrypted**
+`pg_dump` can capture it — the outcome `schema.sql` is written to prevent. Closing it
+properly means either moving the read+write into a sub-workflow (whose executions use a
+hook path that does honour the settings) or encrypting the dumps. Until one of those
+lands, treat a failed WF-E run as a PII event and purge its execution rows.
+
+WF-A/B/C are not affected in the same way — their executions hold one lead each, not the
+whole table.
 
 **Not mirrored, deliberately:** `consent_source` and `consent_at`. The sheet is not
 consent evidence; the database is. `lead_events.payload` **is** mirrored verbatim, and is

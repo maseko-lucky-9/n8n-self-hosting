@@ -64,7 +64,8 @@ omits `VAULT_SKIP_VERIFY`, so its commands do **not** run as written on this clu
 microk8s kubectl -n vault exec vault-0 -c vault -- \
   env VAULT_SKIP_VERIFY=true vault kv put kv/secret/n8n/live/lead-pipeline \
   LEAD_FROM_EMAIL="<the mailbox that also holds the SMTP credential>" \
-  LEAD_NTFY_TOPIC="<32 hex chars>"
+  LEAD_NTFY_TOPIC="<32 hex chars>" \
+  LEAD_SHEET_OWNER="<the Google account that OWNS the mirror spreadsheet>"
 
 # ESO force-sync, then restart -- secretKeyRef env is a container-start snapshot
 # and this chart has no reloader, so without this the pods keep whatever value
@@ -80,7 +81,7 @@ version rather than merging, so setting just `LEAD_NTFY_TOPIC` that way drops
 `LEAD_FROM_EMAIL` from the new version. ESO's `data[]` sync is all-or-nothing: the
 missing property fails the whole reconcile, and with `deletionPolicy: Retain` the
 Kubernetes Secret keeps its last-good (now stale) values while the ExternalSecret
-reports `SecretSyncedError`. If you edit via the UI, re-enter **both** keys in the same
+reports `SecretSyncedError`. If you edit via the UI, re-enter **all three** keys in the same
 save. Verify either way with `microk8s kubectl -n n8n-live get externalsecret`.
 
 **Checking whether a secret landed, without printing it:** use

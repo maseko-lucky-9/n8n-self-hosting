@@ -288,6 +288,7 @@
     "executionOrder": "v1",
     "saveManualExecutions": false,
     "saveDataSuccessExecution": "none",
-    "callerPolicy": "workflowsFromSameOwner"
+    "callerPolicy": "workflowsFromSameOwner",
+    "saveDataErrorExecution": "none"
   }
 }
