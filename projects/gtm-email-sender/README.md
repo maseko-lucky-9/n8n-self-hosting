@@ -29,7 +29,7 @@ Automated send + measure loop for Prudentia Digital n8n GTM outreach.
 - [ ] Resend account created; domain `prudentiadigital.co.za` verified (status: "verified")
 - [ ] Resend API key generated (scope: "Sending access")
 - [ ] Resend webhook secret generated; webhook configured to POST to `https://n8n.homelab.local/webhook/gtm-bounce` for events `email.bounced` and `email.complained`
-- [ ] Mailbox `gtm@prudentiadigital.co.za` exists (Cloudflare Email Routing → forward to `ltmaseko7@gmail.com`)
+- [ ] Mailbox `gtm@prudentiadigital.co.za` exists (Cloudflare Email Routing → forward to `<YOUR_EMAIL>`)
 - [ ] Notion database "GTM Prospects" created with all 22 properties from `~/Repo/apps/n8n-gtm-research/docs/notion-schema.md` (or reproduce from the v2 schema in the plan)
 - [ ] Notion internal integration `n8n-gtm-sender` created; database shared with it
 - [ ] Static `web/unsubscribe.html` deployed to Cloudflare Pages at `prudentiadigital.co.za/unsubscribe` (replace the `WEBHOOK_URL` constant in the page with the actual n8n webhook URL — note `.local` will only work on LAN; for public access route via Cloudflare Tunnel)
@@ -48,7 +48,7 @@ Set on the `n8n-live` deployment via Vault → ESO (preferred) or directly in He
 | `GTM_DAILY_CAP` | `10` | safety cap |
 | `GTM_FROM_EMAIL` | `gtm@prudentiadigital.co.za` | sender address |
 | `GTM_FROM_NAME` | `Thulani Maseko · Prudentia Digital` | display name |
-| `DEV_OVERRIDE_TO` | `ltmaseko7@gmail.com` | **canary mode — set for first 3 days, unset for production** |
+| `DEV_OVERRIDE_TO` | `<YOUR_EMAIL>` | **canary mode — set for first 3 days, unset for production** |
 
 ### n8n credentials (manual UI setup, mirrors Google Sheets pattern)
 
@@ -85,16 +85,16 @@ cp ~/Repo/infra/n8n/n8n-self-hosting/projects/gtm-email-sender/workflows/*.json 
 
 ## Canary Test (Day 1-3)
 
-With `DEV_OVERRIDE_TO=ltmaseko7@gmail.com` set:
+With `DEV_OVERRIDE_TO=<YOUR_EMAIL>` set:
 
 1. Run pipeline `cd ~/Repo/apps/n8n-gtm-research && .venv/bin/python -m src.orchestrator --max-companies 1`
 2. Verify Notion row appears with `status=draft`
-3. Manually approve in Notion: set `status=approved`, fill `email_address` with `ltmaseko7@gmail.com`
+3. Manually approve in Notion: set `status=approved`, fill `email_address` with `<YOUR_EMAIL>`
 4. Manually trigger `gtm-email-sender` workflow in n8n UI
 5. Verify:
-   - Email arrives in `ltmaseko7@gmail.com` (not the address in Notion — DEV_OVERRIDE wins)
+   - Email arrives in `<YOUR_EMAIL>` (not the address in Notion — DEV_OVERRIDE wins)
    - Notion row updates `status=sent`, `sent_at` populated, `resend_message_id` populated
-6. Reply to the email from `ltmaseko7@gmail.com`
+6. Reply to the email from `<YOUR_EMAIL>`
 7. Wait ≤30 min → verify Notion `status=replied`, ntfy fires
 8. Click the unsubscribe link → verify Notion `status=unsubscribed`
 9. Send a deliberate bounce: change `email_address` to `bounce@simulator.amazonses.com` (or use Resend's test bounce address) → re-trigger → verify `status=bounced` after Resend webhook fires
