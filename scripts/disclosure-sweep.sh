@@ -12,6 +12,7 @@
 # a false positive costs a reader a moment, so the trade runs this way deliberately. The
 # email rule matches any two-to-24 character top-level domain rather than a fixed list, minus
 # the RFC 2606 reserved names, which cannot be real mailboxes and are allowed by name. The
+# phone rule allows the 000 000X synthetic form used in test payloads, and nothing wider. The
 # IPv6 rule needs two hex groups before the double colon, which means a single-group form
 # such as fe80::1 is not caught by that branch; the Tailscale prefix rule covers the case
 # that actually occurs here.
@@ -59,6 +60,7 @@ ALLOW='^n8n-sheets@prudentia-n8n\.iam\.gserviceaccount\.com$
 ^topic[ :]+[0-9]{4}-[0-9]{2}-[0-9]{2}$
 ^[A-Za-z0-9._%+-]+@example\.(com|net|org)$
 ^[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)*(test|example|invalid|localhost)$
+^\+27 [0-9]{2} 000 000[0-9] ?$
 ^kv/secret/n8n/(live|local)/[a-z-]+$
 ^secret/n8n/(live|local)/[a-z-]+$'
 

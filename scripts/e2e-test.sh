@@ -156,7 +156,7 @@ EOF
   echo "  Manual checks required:"
   echo "  → Quote email received at ${TEST_EMAIL} (subject: 'Your Quotation from Prudentia Digital')"
   echo "    NOTE: SMTP blocked from pod network — email will fail until Brevo/port fix applied"
-  echo "  → Consultant alert received (to: thulani@prudentiadigital.co.za, subject: '[ACTION] Quote sent')"
+  echo "  → Consultant alert received at the address configured on W3's alert node (subject: '[ACTION] Quote sent')"
 }
 
 # ── Summary ─────────────────────────────────────────────────────────────────
