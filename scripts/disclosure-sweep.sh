@@ -6,6 +6,14 @@
 #
 # Exit 0 = clean. Exit 1 = at least one hit, printed as file:line:match.
 #
+# KNOWN LIMITS, stated rather than discovered later. The topic rule fails CLOSED: any
+# five-plus-character value after the word "topic" is a hit, so ordinary prose can trip it
+# and the allow-list below carries the words seen so far. A miss would leak an alert topic;
+# a false positive costs a reader a moment, so the trade runs this way deliberately. The
+# IPv6 rule needs two hex groups before the double colon, which means a single-group form
+# such as fe80::1 is not caught by that branch; the Tailscale prefix rule covers the case
+# that actually occurs here.
+#
 # WHY THIS EXISTS: this repository is public. A report or ADR that documents the estate is
 # exactly the kind of document that leaks a personal address, an internal IP, a tunnel id or
 # an alert topic, because those are the things it is describing. The gate has to outlive the
@@ -27,10 +35,10 @@ set -uo pipefail
 # Deny patterns, one per line, case-insensitive extended regex.
 DENY='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(com|za|net|org|io|dev)
 iam\.gserviceaccount\.com|prudentia-n8n
-(ntfy\.sh/[A-Za-z0-9_-]{4,}|topic["'"'"'`=:/[:space:]]+[A-Za-z0-9][A-Za-z0-9_-]{4,}[0-9_-][A-Za-z0-9_-]*)
+(ntfy\.sh/[A-Za-z0-9_-]{4,}|topic["'"'"'`=:/[:space:]]+[A-Za-z0-9][A-Za-z0-9_-]{4,})
 ([0-9]{1,3} ?\. ?){3}[0-9]{1,3}
 [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
-homelab\.local|homelab-tailscale|100\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|[a-z0-9-]+\.[a-z0-9-]+\.svc\.cluster\.local|fd7a:[0-9a-f:]{4,}|\b[0-9a-f]{1,4}(:[0-9a-f]{1,4})*::([0-9a-f]{1,4}(:[0-9a-f]{1,4})*)?\b
+homelab\.local|homelab-tailscale|100\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|[a-z0-9-]+\.[a-z0-9-]+\.svc\.cluster\.local|fd7a:[0-9a-f:]{4,}|\b[0-9a-f]{1,4}(:[0-9a-f]{1,4})+::([0-9a-f]{1,4}(:[0-9a-f]{1,4})*)?\b
 (kv/)?secret/n8n/[a-z]+/[a-z-]+
 (id|credentialsId|workflowId)["'"'"' :=]+[A-Za-z0-9]{16}
 \+ ?27[ -]?[0-9][0-9 -]{7,}
@@ -45,6 +53,8 @@ ALLOW='^n8n-sheets@prudentia-n8n\.iam\.gserviceaccount\.com$
 ^homelab\.local$
 ^127\.0\.0\.1$
 ^0\.0\.0\.0$
+^topic[ :]+(remains|archival|follow-up|end-to-end|above|below|here|itself|covered|discussed|these|those|which|rotation|value|owner|names?|name)$
+^topic[ :]+[0-9]{4}-[0-9]{2}-[0-9]{2}$
 ^kv/secret/n8n/(live|local)/[a-z-]+$
 ^secret/n8n/(live|local)/[a-z-]+$'
 
@@ -58,7 +68,7 @@ for f in "$@"; do
     while IFS= read -r hit; do
       [ -n "$hit" ] || continue
       text=${hit#*:}; text=${text#*:}
-      echo "$text" | grep -qE "$ALLOW" && continue
+      echo "$text" | grep -qiE "$ALLOW" && continue
       echo "$f:$hit"
       rc=1
     done < <(grep -noEi "$pat" "$f" 2>/dev/null)

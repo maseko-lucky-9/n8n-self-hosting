@@ -32,7 +32,7 @@ workflow enabled".
 | Intake, stage machine, error handler, sheet mirror and its sub-workflow are all published and executing. Intake ran 15 times in the window, all successful. | The public route does not exist. No DNS record, no tunnel entry, so the website form cannot reach the pipeline. |
 | The mirror runs on a schedule, resolves its spreadsheet by name with an ownership check, and writes both tabs. Verified end to end. | The website form does not sign or forward submissions. That is unwritten work in the website repository, not here. |
 | The lead database is healthy and empty: four tables, zero rows. | Error routing is unproven. A qualifying failure produced no handler execution. Blocker 1 below. |
-| Follow-up is correctly held as a draft behind the opt-out gate. | Intake and stage executions persist their payloads. Blocker 2 below. |
+| Follow-up shows as unpublished behind the opt-out gate, with no scheduled run in the window. | Intake and stage executions persist their payloads. Blocker 2 below. |
 
 ### Lane 2 — Client acquisition: the machine is not running
 
@@ -84,7 +84,7 @@ flowchart LR
   intake -->|urgent only| push[Owner push alert]
   stage[C. Stage machine] --> db
   link[Opt-out and stage links] --> stage
-  followup[B. Follow-up, draft] --> db
+  followup[B. Follow-up, not running] --> db
   followup -->|email| lead[Lead]
   mirror[E. Mirror, every 15 min] --> tabs[E1. Write tabs]
   tabs --> db
@@ -214,9 +214,10 @@ Each item states the approval it needs.
   editor's own path, not the public API's deactivate: that endpoint clears the legacy active column
   without clearing the published-version pointer, which is exactly how four workflows ended up
   running while the interface showed them as inactive. **First step, before touching anything:**
-  query the published-version pointer for all eleven rows, because their unpublished state was read
-  from the legacy column and never measured. A row that comes back published is running now and
-  needs unpublishing, not merely archiving. **Pass:** the pointer is queried for all eleven, and the
+  query the published-version pointer for all eleven rows. Four of them, the three duplicates and
+  the monitor, are measured published and so are running right now: they need unpublishing before
+  archiving, not archiving alone. The other seven have an unmeasured published state, and any that
+  comes back published joins the first group. **Pass:** the pointer is queried for all eleven, and the
   startup log no longer activates them. **Destructive, approval required.**
 - **Demo mail credential** — disabled, so the kit cannot send. Fix it or retire the kit. **Yours.**
 - **Video publishing workflow** — shows as unpublished (unmeasured, per the appendix caveat) and its supporting services still run. Keep dormant, or
@@ -237,7 +238,9 @@ identifiers appear here.
 
 | Claim | Command | Result |
 | --- | --- | --- |
-| 22 workflows, activation state | `SELECT id, name, active, "activeVersionId" IS NOT NULL FROM workflow_entity` | 22 rows; **12 published** (5 lead pipeline, 6 demo kit, 1 monitor); 4 of those 12 have the legacy column false |
+| 22 workflows exist | `SELECT id, name, active, "isArchived", "triggerCount", "createdAt"::date, "updatedAt"::date, settings::text FROM workflow_entity ORDER BY name` | 22 rows. This query does **not** read the published-version pointer |
+| Published flag, measured | the same select plus `"activeVersionId" IS NOT NULL AS published`, `WHERE id IN (nine ids)` | 9 rows, every one published true |
+| The other 13 rows, inferred | legacy `active` column from the inventory query, plus trigger type and window health | 3 with the column true are published, because the write paths set both together; 10 with it false are inferred unpublished, corroborated by the schedule argument below |
 | Activation reads the version pointer | `getAllActiveIds` in the workflow repository | `where: { activeVersionId: Not(IsNull()) }` |
 | Four rows are published while the legacy column says otherwise | published flag queried per id; main pod startup log | published true for the monitor and all three duplicate copies; the log shows `Activated workflow` for the monitor and two of the three pairs, the third falling outside the filter used |
 | Retention window | pod environment; oldest execution row | prune on, max age 168; oldest row exactly 168 h old |
@@ -259,11 +262,18 @@ four divergent activation rows, which is inferred from the public API's handler.
 
 Health is in the 168-hour window. Identifiers are omitted deliberately.
 
-**Read the Published column with one caveat.** Every `yes` was measured: the published-version
-pointer was queried for each of those 12 rows. No `no` was. Those 10 come from the legacy column
-alone, and the sync health monitor is the standing proof that the legacy column can disagree with
-what the instance actually runs. None of the 10 has a run in the window, so the practical risk is
-low, but the flag itself is unmeasured and is re-checked before anything is archived.
+**Read the Published column with one caveat, in three tiers.** The published-version pointer was
+queried directly for nine rows, and every one came back published. Three more, the stage machine,
+the error handler and the sheet tabs, show the legacy column true; that direction is sound,
+because the write paths set both together. The remaining ten show the legacy column false and
+were never queried, and the sync health monitor is the standing proof that this direction can
+lie.
+
+What corroborates those ten: nine of them carry a schedule trigger, and a published schedule
+trigger fires. Zero runs across the whole 168-hour window is what an unpublished workflow looks
+like, and is not what a published one would produce. The exception is the approval workflow,
+which is webhook-only and so has no such evidence either way. The flag is re-queried before
+anything is archived.
 
 | Workflow | Project | Published | Trigger | Window health | Credentials | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |

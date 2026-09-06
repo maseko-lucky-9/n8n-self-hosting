@@ -36,7 +36,9 @@ done
 # carries that context is a judgement no regex can make, so this surfaces candidates for a human.
 # Do not claim this script checks all six hard constraints: it enforces five and surfaces the sixth.
 echo "--- constraint 4: client metrics (advisory, needs human judgement) ---"
-if printf '%s' "$B" | grep -niE '[0-9]+ ?(%|percent)|[0-9]+x |(increase|reduce|save|grew|growth|improve)[a-z]* (of |by )?[0-9]' | sed 's/^/        /' | grep -q .; then
+c4=$(printf '%s' "$B" | grep -niE '[0-9]+ ?(%|percent)|[0-9]+x |(increase|reduce|save|grew|growth|improve)[a-z]* (of |by )?[0-9]' || true)
+if [ -n "$c4" ]; then
+  printf '%s\n' "$c4" | sed 's/^/        /'
   echo "        ^ each needs sector, size band, engagement type and measurement basis"
 else
   echo "ok    no client-metric candidates"
