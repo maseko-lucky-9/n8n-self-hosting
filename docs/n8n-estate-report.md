@@ -50,7 +50,7 @@ Publishing the route matters, and so does starting to send.
 
 | Group | Count | State |
 | --- | --- | --- |
-| Desk Architecture | 7 | Drafts, zero runs in the window. Superseded by a decision record in the infrastructure repository; that record states the system never functioned end to end. |
+| Desk Architecture | 7 | Zero runs in the window, and the legacy column shows them unpublished, which is unmeasured — see the appendix caveat. Superseded by a decision record in the infrastructure repository; that record states the system never functioned end to end. |
 | Duplicate demo workflows | 3 | Same names as the originals, created three weeks later. They own the registered webhook paths, so they are the copies that answer. Queued for archival. |
 | Sync health monitor | 1 | Runs roughly 48 times a day. Every run fails to resolve its target, whose namespace no longer exists. The failure lands on an unconnected error output, so each run is recorded as a success and the alert branch cannot fire. It monitors nothing and reports green. |
 | Demo kit | 3 | Its shared mail credential is disabled, so the kit cannot send mail. It cannot be demonstrated as-is. |
@@ -213,10 +213,13 @@ Each item states the approval it needs.
 - **Archive eleven rows** — seven Desk Architecture, three duplicates, one dead monitor. Use the
   editor's own path, not the public API's deactivate: that endpoint clears the legacy active column
   without clearing the published-version pointer, which is exactly how four workflows ended up
-  running while the interface showed them as inactive. **Pass:** the startup log no longer activates
-  them. **Destructive, approval required.**
+  running while the interface showed them as inactive. **First step, before touching anything:**
+  query the published-version pointer for all eleven rows, because their unpublished state was read
+  from the legacy column and never measured. A row that comes back published is running now and
+  needs unpublishing, not merely archiving. **Pass:** the pointer is queried for all eleven, and the
+  startup log no longer activates them. **Destructive, approval required.**
 - **Demo mail credential** — disabled, so the kit cannot send. Fix it or retire the kit. **Yours.**
-- **Video publishing workflow** — a draft whose supporting services still run. Keep dormant, or
+- **Video publishing workflow** — shows as unpublished (unmeasured, per the appendix caveat) and its supporting services still run. Keep dormant, or
   scale those services to zero and reclaim the capacity. **Your call.**
 - **Outreach engine** — import only after its secret manifests exist, not before.
 - **Delete the superseded demo intake file** from this repository. **Approval required.**
@@ -255,6 +258,12 @@ four divergent activation rows, which is inferred from the public API's handler.
 ## Appendix — the 22 workflows
 
 Health is in the 168-hour window. Identifiers are omitted deliberately.
+
+**Read the Published column with one caveat.** Every `yes` was measured: the published-version
+pointer was queried for each of those 12 rows. No `no` was. Those 10 come from the legacy column
+alone, and the sync health monitor is the standing proof that the legacy column can disagree with
+what the instance actually runs. None of the 10 has a run in the window, so the practical risk is
+low, but the flag itself is unmeasured and is re-checked before anything is archived.
 
 | Workflow | Project | Published | Trigger | Window health | Credentials | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |

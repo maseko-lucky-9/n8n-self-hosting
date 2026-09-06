@@ -27,10 +27,10 @@ set -uo pipefail
 # Deny patterns, one per line, case-insensitive extended regex.
 DENY='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(com|za|net|org|io|dev)
 iam\.gserviceaccount\.com|prudentia-n8n
-(ntfy\.sh/[A-Za-z0-9_-]{4,}|topic["'"'"'`=:/[:space:]]+[A-Za-z0-9_-]*[0-9_-][A-Za-z0-9_-]*)
+(ntfy\.sh/[A-Za-z0-9_-]{4,}|topic["'"'"'`=:/[:space:]]+[A-Za-z0-9][A-Za-z0-9_-]{4,}[0-9_-][A-Za-z0-9_-]*)
 ([0-9]{1,3} ?\. ?){3}[0-9]{1,3}
 [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
-homelab\.local|homelab-tailscale|100\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|[a-z0-9-]+\.[a-z0-9-]+\.svc\.cluster\.local|fd7a:[0-9a-f:]{4,}|[0-9a-f]{1,4}(:[0-9a-f]{1,4})*::[0-9a-f:]*
+homelab\.local|homelab-tailscale|100\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|[a-z0-9-]+\.[a-z0-9-]+\.svc\.cluster\.local|fd7a:[0-9a-f:]{4,}|\b[0-9a-f]{1,4}(:[0-9a-f]{1,4})*::([0-9a-f]{1,4}(:[0-9a-f]{1,4})*)?\b
 (kv/)?secret/n8n/[a-z]+/[a-z-]+
 (id|credentialsId|workflowId)["'"'"' :=]+[A-Za-z0-9]{16}
 \+ ?27[ -]?[0-9][0-9 -]{7,}

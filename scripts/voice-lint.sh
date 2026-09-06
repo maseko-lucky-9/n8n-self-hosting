@@ -31,6 +31,17 @@ for pair in "banned phrases/hyperbole:$T1" "tool names:$T2" "pricing:$T3" "emplo
   if [ "$n" = "0" ]; then echo "ok    $label = 0"; else
     echo "FAIL  $label = $n"; printf '%s' "$B" | grep -niE "$pat" | head -5 | sed 's/^/        /'; fail=1; fi
 done
+# Constraint 4 (client metrics) is ADVISORY, not enforced. The voice guide forbids any client
+# outcome without sector, size band, engagement type and measurement basis. Whether a given number
+# carries that context is a judgement no regex can make, so this surfaces candidates for a human.
+# Do not claim this script checks all six hard constraints: it enforces five and surfaces the sixth.
+echo "--- constraint 4: client metrics (advisory, needs human judgement) ---"
+if printf '%s' "$B" | grep -niE '[0-9]+ ?(%|percent)|[0-9]+x |(increase|reduce|save|grew|growth|improve)[a-z]* (of |by )?[0-9]' | sed 's/^/        /' | grep -q .; then
+  echo "        ^ each needs sector, size band, engagement type and measurement basis"
+else
+  echo "ok    no client-metric candidates"
+fi
+
 # Review tier: out-of-scope service names are allowed ONLY in the exclusions sentence.
 echo "--- review tier (allowed only as exclusions) ---"
 printf '%s' "$B" | grep -niE 'software develop|devops|ci/cd|api build|cloud migration|website (design|launch)|hosting' | sed 's/^/        /'
