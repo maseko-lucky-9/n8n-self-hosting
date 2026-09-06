@@ -17,28 +17,43 @@ This file documents WHICH secrets the workflows depend on and WHERE they live. *
 | `kv/secret/n8n/live/gtm-gmail` | `refresh_token` | `gmail-gtm-mailbox` | Long-lived refresh token from localhost OAuth flow |
 | `kv/secret/n8n/live/lead-pipeline` | `LEAD_NTFY_TOPIC` | the five alert nodes in `gtm-error-handler`, `gtm-bounce-handler`, `gtm-reply-tracker` and `gtm-email-sender` | Reaches the workflows as `$env.ntfy_topic`, already wired through the chart. Shared with the lead pipeline on purpose: one operator, one phone, one topic to rotate. **A public ntfy topic is unauthenticated in both directions** — anyone who knows the name can read the alerts and publish fake ones — so the value is random and lives only in Vault |
 
-## Alert topic rotation, started 2026-09-06 — HALF DONE
+## Alert topic rotation, 2026-09-06 — measured, and smaller than it looked
 
-**Done:** these workflows no longer carry the topic name. Five alert nodes across four files now
-resolve it from `$env.ntfy_topic`, the same Vault-backed variable the lead pipeline already uses.
+**The live topic was never the leaked one.** Measured on the running instance by hash, never by
+printing a value:
 
-**Not done, because it needs the cluster:** minting the new value into Vault, and updating the one
-live workflow that still holds the old name inline (the sync health monitor, which is queued for
-archival anyway). Until the Vault key holds a fresh value, these workflows would resolve the topic
-the lead pipeline is already using. They are not imported on the instance, so nothing publishes
-from them today.
+| | length | all hex | sha256, first 12 |
+| --- | --- | --- | --- |
+| The name that sits in git history | 16 | no | `c6769f9bb2bb` |
+| Vault `LEAD_NTFY_TOPIC` | 32 | yes | `160d7f6f9605` |
+| `ntfy_topic` in the running main and worker pods | 32 | yes | `160d7f6f9605` |
 
-**Why a new value is required rather than the old one.** This repository is public and the old name
-sits in the history of five earlier commits. Removing it from the current files does not unpublish
-it, so it is burned permanently. A public ntfy topic is unauthenticated in both directions: anyone
-who knows the name can read every alert sent to it and publish convincing fake ones.
+The live value matches Vault and differs from the burned one. So minting a fresh secret is **not**
+required to close the exposure, which is what the earlier draft of this section assumed. What
+closed it was taking the name out of the workflow files: the five alert nodes across four files now
+resolve `$env.ntfy_topic`, which has always pointed at a value that was never public.
 
-**The step that is easy to forget:** unsubscribe the phone from the old topic. Rotating the value
-stops future alerts going to a public name, but a device still subscribed to the old one keeps
-receiving whatever strangers choose to publish there.
+**One live reference to the burned name remains.** The sync health monitor still carries it inline
+— confirmed against the 2026-09-06 export, `sha256` `c6769f9bb2bb` — and that workflow is published
+and running. It has never actually published to it, because its alert branch hangs off an
+unconnected error output, but it is the last live thing holding a public name. Archiving it removes
+the reference; that is queued as part of the estate clean-up and is the real reason to do it
+promptly.
 
-**To finish, once the host is reachable.** The value is generated inside the pod and never printed,
-never pasted into this file, and never committed:
+**Still worth knowing.** The outreach workflows and the lead pipeline now share one topic. That is a
+separation choice rather than a leak, and worth splitting if the outreach volume ever justifies its
+own channel. Mint a second value the same way if so.
+
+**The step that is easy to forget, and still outstanding:** unsubscribe the phone from the old
+topic. Nothing publishes to it now, but a public ntfy topic is unauthenticated in both directions —
+a device still subscribed keeps receiving whatever strangers choose to publish there. This one is
+yours; it cannot be done from the cluster.
+
+**Why the old name cannot be reused.** This repository is public and the name sits in the history of
+five earlier commits. Removing it from the current files does not unpublish it, so it is burned
+permanently.
+
+**If a fresh value is ever wanted** — generated inside the pod, never printed, never committed:
 
 ```bash
 microk8s kubectl -n vault exec vault-0 -c vault -- sh -c '
