@@ -10,7 +10,8 @@
 # five-plus-character value after the word "topic" is a hit, so ordinary prose can trip it
 # and the allow-list below carries the words seen so far. A miss would leak an alert topic;
 # a false positive costs a reader a moment, so the trade runs this way deliberately. The
-# email rule matches any two-to-24 character top-level domain rather than a fixed list. The
+# email rule matches any two-to-24 character top-level domain rather than a fixed list, minus
+# the RFC 2606 reserved names, which cannot be real mailboxes and are allowed by name. The
 # IPv6 rule needs two hex groups before the double colon, which means a single-group form
 # such as fe80::1 is not caught by that branch; the Tailscale prefix rule covers the case
 # that actually occurs here.
@@ -56,6 +57,8 @@ ALLOW='^n8n-sheets@prudentia-n8n\.iam\.gserviceaccount\.com$
 ^0\.0\.0\.0$
 ^topic[ :]+(remains|archival|follow-up|end-to-end|above|below|here|itself|covered|discussed|these|those|which|rotation|value|owner|names?|name)$
 ^topic[ :]+[0-9]{4}-[0-9]{2}-[0-9]{2}$
+^[A-Za-z0-9._%+-]+@example\.(com|net|org)$
+^[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)*(test|example|invalid|localhost)$
 ^kv/secret/n8n/(live|local)/[a-z-]+$
 ^secret/n8n/(live|local)/[a-z-]+$'
 

@@ -29,7 +29,7 @@ workflow enabled".
 
 | What runs today | What blocks a real lead |
 | --- | --- |
-| Intake and the sheet mirror are measured published; the stage machine, error handler and mirror sub-workflow are inferred published from the legacy column. Intake ran 15 times in the window, all successful. The error handler has never run, which is Blocker 1, and the mirror pair persists no executions by design, so its silence is not evidence either way. | The public route does not exist. No DNS record, no tunnel entry, so the website form cannot reach the pipeline. |
+| Intake and the sheet mirror are measured published; the stage machine, error handler and mirror sub-workflow are inferred published from the legacy column. Intake ran 15 times in the window, all successful. The error handler has no run in the window, which is Blocker 1, and the mirror pair persists no executions by design, so its silence is not evidence either way. | The public route does not exist. No DNS record, no tunnel entry, so the website form cannot reach the pipeline. |
 | The mirror runs on a schedule, resolves its spreadsheet by name with an ownership check, and writes both tabs. Verified end to end. | The website form does not sign or forward submissions. That is unwritten work in the website repository, not here. |
 | The lead database is healthy and empty: four tables, zero rows. | Error routing is unproven. A qualifying failure produced no handler execution. Blocker 1 below. |
 | Follow-up shows as unpublished behind the opt-out gate, with no scheduled run in the window. | Intake and stage executions persist their payloads. Blocker 2 below. |
@@ -50,7 +50,7 @@ Publishing the route matters, and so does starting to send.
 
 | Group | Count | State |
 | --- | --- | --- |
-| Desk Architecture | 7 | Zero runs in the window, and the legacy column shows them unpublished, which is unmeasured — see the appendix caveat. Superseded by a decision record in the infrastructure repository; that record states the system never functioned end to end. |
+| Desk Architecture | 7 | Zero runs in the window, and all seven are measured unpublished — the version pointer is null on every one. Superseded by a decision record in the infrastructure repository; that record states the system never functioned end to end. |
 | Duplicate demo workflows | 3 | Same names as the originals, created three weeks later. They own the registered webhook paths, so they are the copies that answer. Queued for archival. |
 | Sync health monitor | 1 | Runs roughly 48 times a day. Every run fails to resolve its target, whose namespace no longer exists. The failure lands on an unconnected error output, so each run is recorded as a success and the alert branch cannot fire. It monitors nothing and reports green. |
 | Demo kit | 3 | Its shared mail credential is disabled, so the kit cannot send mail. It cannot be demonstrated as-is. |
@@ -144,7 +144,7 @@ bands. Rows expire with the retention window, on 2026-09-12 for the oldest.
 
 ### Blocker 3 — Rotate the shared alert topic
 
-Five workflow files in this repository hardcode a push-notification topic that is public and
+Four workflow files in this repository hardcode a push-notification topic, in five places that is public and
 unauthenticated in both directions. Nothing publishes to it today, because the outreach workflows
 are not imported and the monitor's alert branch cannot fire. But anyone reading this public
 repository can push messages to it, and the outreach workflows would publish prospect details to it
@@ -214,13 +214,16 @@ Each item states the approval it needs.
   editor's own path, not the public API's deactivate: that endpoint clears the legacy active column
   without clearing the published-version pointer, which is exactly how four workflows ended up
   running while the interface showed them as inactive. **First step, before touching anything:**
-  query the published-version pointer for all eleven rows. Four of them, the three duplicates and
-  the monitor, are measured published and so are running right now: they need unpublishing before
-  archiving, not archiving alone. The other seven have an unmeasured published state, and any that
-  comes back published joins the first group. **Pass:** the pointer is queried for all eleven, and the
-  startup log no longer activates them. **Destructive, approval required.**
+  all eleven rows are measured. The seven Desk workflows are unpublished;
+  the monitor and three demo copies are published and running. There is no separate unpublish step,
+  because none exists: `archive()` calls the active-workflow manager's remove and then writes
+  `isArchived`, `active` and the version pointer in a single update, and an archived row cannot be
+  activated afterwards. Of each demo pair, archive the **April** row rather than the May one — the
+  two are byte-identical, and the May rows own the registered webhook paths, so archiving April
+  moves no registration at all. **Pass:** the estate count goes from 22/12/4/0 to 22/9/1/11, and
+  both demo paths still answer. **Destructive, approval required.**
 - **Demo mail credential** — disabled, so the kit cannot send. Fix it or retire the kit. **Yours.**
-- **Video publishing workflow** — shows as unpublished (unmeasured, per the appendix caveat) and its supporting services still run. Keep dormant, or
+- **Video publishing workflow** — measured unpublished, and its supporting services still run. Keep dormant, or
   scale those services to zero and reclaim the capacity. **Your call.**
 - **Outreach engine** — import only after its secret manifests exist, not before.
 - **Delete the superseded demo intake file** from this repository. **Approval required.**
@@ -239,10 +242,10 @@ identifiers appear here.
 | Claim | Command | Result |
 | --- | --- | --- |
 | 22 workflows exist | `SELECT id, name, active, "isArchived", "triggerCount", "createdAt"::date, "updatedAt"::date, settings::text FROM workflow_entity ORDER BY name` | 22 rows. This query does **not** read the published-version pointer |
-| Published flag, measured | the same select plus `"activeVersionId" IS NOT NULL AS published`, `WHERE id IN (nine ids)` | 9 rows, every one published true |
-| The other 13 rows, inferred | legacy `active` column from the inventory query, plus trigger type and window health | 3 with the column true are published, because the write paths set both together; 10 with it false are inferred unpublished, corroborated by the schedule argument below |
+| Published flag, measured across the whole estate | `SELECT id, name, active, ("activeVersionId" IS NOT NULL) AS pub, "isArchived" FROM workflow_entity ORDER BY name` — unfiltered, 2026-09-06 | 22 rows. Aggregate: `total 22, published 12, divergent 4, archived 0`. An earlier round could measure only nine and inferred the rest |
+| The 13 rows previously inferred | the same unfiltered select | all 13 measured directly. The three inferred published are published; the ten inferred unpublished are unpublished. The inference held, but it is no longer what the claim rests on |
 | Activation reads the version pointer | `getAllActiveIds` in the workflow repository | `where: { activeVersionId: Not(IsNull()) }` |
-| Four rows are published while the legacy column says otherwise | published flag queried per id; main pod startup log | published true for the monitor and all three duplicate copies; the log shows `Activated workflow` for the monitor and two of the three pairs, the third falling outside the filter used |
+| Four rows are published while the legacy column says otherwise | published flag queried per id; main pod startup log | published true for the monitor and all three May copies, measured. `workflow_publish_history` carries an `activated` and a `deactivated` record for the monitor at the same second on 2026-05-02, and **no rows at all** for the three copies |
 | Trigger types and node counts | `SELECT ... jsonb_array_elements(nodes::jsonb) ... WHERE type ~* 'trigger|webhook|schedule|cron'` per workflow | one row per workflow; the Trigger column in the appendix comes from here, not from the inventory query |
 | Retention window | pod environment; oldest execution row | prune on, max age 168; oldest row exactly 168 h old |
 | Intake and stage persist payloads | join execution data to workflows, match an address pattern | 15 and 2 executions; domains present, addresses not printed |
@@ -250,34 +253,39 @@ identifiers appear here.
 | Error routing did not fire | failed stage execution's mode, class and stored settings; handler execution count | webhook mode, node operation error, snapshot points at the handler, handler count zero |
 | Monitor fails silently | node error setting and connections; namespace lookup | continue-on-error output unconnected; namespace not found; 336 runs recorded successful |
 | Demo kit cannot send | both copies' failed executions | authentication rejected, 7 failures each in the window |
-| Duplicates own the paths | webhook table; upsert key in the webhook service | one row per path and method, owned by the later copies; last activation wins |
+| The May copies own the paths | webhook table; upsert key in the webhook service | two demo rows, `prudentia-client-intake` and `prudentia-quote`, both owned by May copies; last activation wins |
+| The two copies of each demo pair are the same workflow | `jsonb_array_length(nodes::jsonb)` and `md5(nodes::text)` per row | identical node counts and identical checksums across all three pairs. There is no canonical-versus-stale distinction between them |
 | Webhook base ignored | grep the deployed source for every token ending in the variable name | one hit, reading the un-prefixed name; the prefixed name appears nowhere |
 | Lead database empty | row counts | four tables, zero rows |
 | Chart matches git | ArgoCD application status | synced, healthy, at the current main commit |
 
-**`[UNVERIFIED]`** — the published state of the 10 rows this report marks unpublished. Only the legacy column was read for them, and the monitor proves that column can disagree with reality. They show no runs in the window, so the practical risk is low, but the flag itself is unmeasured and is re-checked before the archival step in A3; why error routing did not fire; whether renaming a spreadsheet header trips the
-node's schema check, which is read from source but not measured; the mechanism that produced the
-four divergent activation rows, which is inferred from the public API's handler.
+**`[UNVERIFIED]`** — why error routing did not fire; whether renaming a spreadsheet header trips
+the node's schema check, which is read from source but not measured.
+
+**Resolved 2026-09-06.** The published state of all 22 rows is now measured directly rather than
+inferred from the legacy column, so the caveat that stood over ten of them is withdrawn. The
+inference had been right; it is simply no longer what the claim rests on.
+
+**Corrected, same date.** This report inferred that the divergent activation rows came from the
+public API's deactivate handler setting the legacy column without clearing the published pointer.
+That inference is **false**. Every `active: false` write in the deployed 2.16.1 source clears the
+pointer in the same statement — `workflow.service.js:523-524` on the public API path, and three
+others besides — so no code path in this version can produce the divergence. The publish history
+points elsewhere: the monitor carries an `activated` and a `deactivated` record at the same second
+in May 2026, and the three copies have no publish history at all, which is what a direct import
+looks like rather than an API call. Both predate this n8n version, so the mechanism itself stays
+`[UNVERIFIED]` — but it is not the one this report named, and current code will not recreate it.
 
 ## Appendix — the 22 workflows
 
 Health is in the 168-hour window. Identifiers are omitted deliberately.
 
-**Read the Published column with one caveat, in three tiers.** The published-version pointer was
-queried directly for nine rows, and every one came back published. Three more, the stage machine,
-the error handler and the sheet tabs, show the legacy column true; that direction is sound,
-because the write paths set both together. The remaining ten show the legacy column false and
-were never queried, and the sync health monitor is the standing proof that this direction can
-lie.
-
-What corroborates those ten without settling them: nine carry a schedule trigger, and a
-published schedule trigger fires, so no runs across the window is at least consistent with
-being unpublished. It does not prove it, and two facts from this same report cut the other
-way. A weekly schedule can legitimately produce nothing inside a 168-hour window, and one of
-the ten is a weekly workflow. The estate also runs workflows that persist no executions at
-all, so an absence of rows is not an absence of runs. Treat this as corroboration, not proof.
-The approval workflow is webhook-only and has no such evidence either way. The flag is re-queried before
-anything is archived.
+**The Published column is measured, every row.** The published-version pointer was queried
+directly for all 22 on 2026-09-06: twelve published, ten not, four of the twelve showing the
+legacy `active` column false while running. Earlier drafts of this report could measure only nine
+rows and reasoned about the rest from the legacy column and from schedule triggers; that
+reasoning turned out to be correct, but it has been replaced by the measurement rather than
+propped up by it.
 
 | Workflow | Project | Published | Trigger | Window health | Credentials | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |
