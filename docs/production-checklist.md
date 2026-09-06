@@ -98,14 +98,21 @@
 
 ## Post-Deployment Verification
 
-- [ ] Verify all pods are `Running` and `Ready`: `kubectl get pods -n n8n-live`
+> Six items below were measured against the live instance on 2026-09-06; the evidence
+> is in the pull request that ticked them. The four left unticked here are genuinely
+> open: Ingress/TLS and NetworkPolicy both need a request from outside the cluster,
+> the Grafana dashboard needs Grafana itself (its ConfigMap exists and carries the
+> `grafana_dashboard` label, which is not the same thing), and the end-to-end run
+> needs doing deliberately.
+
+- [x] Verify all pods are `Running` and `Ready`: `kubectl get pods -n n8n-live`
   - `n8n-*` (main), `n8n-application-postgres-0`, `n8n-application-redis-*`, `n8n-application-worker-*`
-- [ ] Verify n8n health endpoint: `kubectl exec -n n8n-live deploy/n8n -- wget -qO- http://localhost:5678/healthz`
+- [x] Verify n8n health endpoint: `kubectl exec -n n8n-live deploy/n8n -- wget -qO- http://localhost:5678/healthz`
 - [ ] Verify Ingress and TLS: `curl -I https://<your-domain>`
 - [ ] Verify NetworkPolicy blocks unauthorized traffic
-- [ ] Verify ExternalSecret is synced: `kubectl get externalsecret -n n8n-live`
-- [ ] Verify ServiceMonitor is discovered: check Prometheus targets page
+- [x] Verify ExternalSecret is synced: `kubectl get externalsecret -n n8n-live`
+- [x] Verify ServiceMonitor is discovered: check Prometheus targets page
 - [ ] Verify Grafana dashboard loads under "n8n Self-Hosted"
-- [ ] Verify backup CronJob: `kubectl get cronjob -n n8n-live`
-- [ ] Verify worker is connected to queue: `kubectl logs -n n8n-live -l service=n8n-worker -c n8n-worker --tail=5` (expect "n8n worker is now ready")
+- [x] Verify backup CronJob: `kubectl get cronjob -n n8n-live`
+- [x] Verify worker is connected to queue: `kubectl logs -n n8n-live deploy/n8n-application-worker -c n8n-worker --tail=-1 | grep "worker is now ready"` — the `-l service=n8n-worker` selector matches nothing on this deployment, and the line scrolls out of a `--tail=5` window
 - [ ] Run a test workflow in n8n to confirm end-to-end execution via queue
