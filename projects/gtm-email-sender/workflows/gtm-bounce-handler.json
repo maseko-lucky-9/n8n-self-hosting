@@ -103,7 +103,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://ntfy.sh/prudentia-alerts",
+        "url": "=https://ntfy.sh/{{ $env.ntfy_topic }}",
         "sendBody": true,
         "specifyBody": "string",
         "body": "=Bounce/complaint: {{ $('Verify + Parse').item.json.reason }} (msg {{ $('Verify + Parse').item.json.message_id }})",
