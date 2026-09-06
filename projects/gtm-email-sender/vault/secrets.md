@@ -14,8 +14,8 @@ This file documents WHICH secrets the workflows depend on and WHERE they live. *
 | `kv/secret/n8n/live/gtm-app` | `notion_gtm_db_id` | All workflows querying the DB | 32-char Notion DB ID |
 | `kv/secret/n8n/live/gtm-gmail` | `client_id` | `gmail-gtm-mailbox` | Google OAuth2 client ID |
 | `kv/secret/n8n/live/gtm-gmail` | `client_secret` | `gmail-gtm-mailbox` | Google OAuth2 client secret |
-| `kv/secret/n8n/live/lead-pipeline` | `LEAD_NTFY_TOPIC` | the four alert nodes in `gtm-error-handler`, `gtm-bounce-handler`, `gtm-reply-tracker` and `gtm-email-sender` | Reaches the workflows as `$env.ntfy_topic`, already wired through the chart. Shared with the lead pipeline on purpose: one operator, one phone, one topic to rotate. **A public ntfy topic is unauthenticated in both directions** — anyone who knows the name can read the alerts and publish fake ones — so the value is random and lives only in Vault |
 | `kv/secret/n8n/live/gtm-gmail` | `refresh_token` | `gmail-gtm-mailbox` | Long-lived refresh token from localhost OAuth flow |
+| `kv/secret/n8n/live/lead-pipeline` | `LEAD_NTFY_TOPIC` | the five alert nodes in `gtm-error-handler`, `gtm-bounce-handler`, `gtm-reply-tracker` and `gtm-email-sender` | Reaches the workflows as `$env.ntfy_topic`, already wired through the chart. Shared with the lead pipeline on purpose: one operator, one phone, one topic to rotate. **A public ntfy topic is unauthenticated in both directions** — anyone who knows the name can read the alerts and publish fake ones — so the value is random and lives only in Vault |
 
 ## Alert topic rotation, started 2026-09-06 — HALF DONE
 
@@ -41,14 +41,19 @@ receiving whatever strangers choose to publish there.
 never pasted into this file, and never committed:
 
 ```bash
-microk8s kubectl -n vault exec vault-0 -c vault -- sh -c \
-  'env VAULT_SKIP_VERIFY=true vault kv patch kv/secret/n8n/live/lead-pipeline \
-     LEAD_NTFY_TOPIC=$(openssl rand -hex 16) >/dev/null && echo written'
+microk8s kubectl -n vault exec vault-0 -c vault -- sh -c '
+  t=$(openssl rand -hex 16 2>/dev/null)
+  # Without this guard an absent openssl expands to nothing, the patch succeeds, and the
+  # confirmation still prints -- writing an empty topic that every alert then publishes to.
+  [ ${#t} -eq 32 ] || { echo "FAILED: generator produced ${#t} chars, expected 32"; exit 1; }
+  env VAULT_SKIP_VERIFY=true vault kv patch kv/secret/n8n/live/lead-pipeline \
+    LEAD_NTFY_TOPIC="$t" >/dev/null && echo "written, 32 chars"
+'
 ```
 
 Then force the secret store to resync and restart both n8n pods, because the environment variable
-is read once at start-up. Confirm by comparing a hash of the running value before and after, not by
-printing it.
+is read once at start-up. Confirm with a length and a hash, never by printing the value: a hash
+alone would also change if the value were written empty, so check the length too.
 
 ## ESO ExternalSecret manifests (TODO)
 
