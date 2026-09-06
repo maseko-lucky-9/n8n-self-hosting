@@ -46,7 +46,7 @@ this repository.
 The honest summary: there is no lead-generation activity, so the pipeline has nothing to carry.
 Publishing the route matters, and so does starting to send.
 
-### Lane 3 — Estate hygiene: three-quarters of the instance is dead weight
+### Lane 3 — Estate hygiene: 15 of 22 rows do no useful work
 
 | Group | Count | State |
 | --- | --- | --- |
@@ -56,7 +56,7 @@ Publishing the route matters, and so does starting to send.
 | Demo kit | 3 | Its shared mail credential is disabled, so the kit cannot send mail. It cannot be demonstrated as-is. |
 | Reference workflow | 1 | A downloaded community template, untracked by git, no credentials. |
 
-Eleven rows are archival candidates. One monitor is actively misleading.
+Eleven rows are archival candidates, and four more (the demo kit and the reference workflow) cannot be used as they stand. One monitor is actively misleading.
 
 ### What stands between today and a paying client
 
@@ -234,9 +234,9 @@ identifiers appear here.
 
 | Claim | Command | Result |
 | --- | --- | --- |
-| 22 workflows, activation state | `SELECT id, name, active, "activeVersionId" IS NOT NULL FROM workflow_entity` | 22 rows; 10 published; 4 published rows have the legacy column false |
+| 22 workflows, activation state | `SELECT id, name, active, "activeVersionId" IS NOT NULL FROM workflow_entity` | 22 rows; **12 published** (5 lead pipeline, 6 demo kit, 1 monitor); 4 of those 12 have the legacy column false |
 | Activation reads the version pointer | `getAllActiveIds` in the workflow repository | `where: { activeVersionId: Not(IsNull()) }` |
-| Four divergent rows do run | main pod startup log | `Activated workflow` for the monitor and both duplicate pairs |
+| Four rows are published while the legacy column says otherwise | published flag queried per id; main pod startup log | published true for the monitor and all three duplicate copies; the log shows `Activated workflow` for the monitor and two of the three pairs, the third falling outside the filter used |
 | Retention window | pod environment; oldest execution row | prune on, max age 168; oldest row exactly 168 h old |
 | Intake and stage persist payloads | join execution data to workflows, match an address pattern | 15 and 2 executions; domains present, addresses not printed |
 | Mirror persists nothing | same query for the mirror pair | zero rows matching the canary |
@@ -248,7 +248,7 @@ identifiers appear here.
 | Lead database empty | row counts | four tables, zero rows |
 | Chart matches git | ArgoCD application status | synced, healthy, at the current main commit |
 
-**`[UNVERIFIED]`** — why error routing did not fire; whether renaming a spreadsheet header trips the
+**`[UNVERIFIED]`** — the published state of the 10 rows this report marks unpublished. Only the legacy column was read for them, and the monitor proves that column can disagree with reality. They show no runs in the window, so the practical risk is low, but the flag itself is unmeasured and is re-checked before the archival step in A3; why error routing did not fire; whether renaming a spreadsheet header trips the
 node's schema check, which is read from source but not measured; the mechanism that produced the
 four divergent activation rows, which is inferred from the public API's handler.
 

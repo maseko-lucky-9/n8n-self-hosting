@@ -23,7 +23,7 @@ to satisfy, so this record keeps the direction and the constraints together.
    own Drive files, so the owner account creates the spreadsheet (an OAuth2 credential for that
    account makes creation repeatable) and shares it to the service account the workflows use.
 2. **Postgres: backup only.** A scheduled reverse mirror (Sheets to Postgres) plus the existing
-   daily dump CronJob. Workflow logic does not read Postgres.
+   daily dump CronJob. Workflow logic does not read Postgres, except where item 4 carves it out.
 3. **Scope:** append-mostly, single-writer, non-secret records.
 4. **Carve-out, pending the owner's decision** (tracked in the pull request that introduces this
    record): atomic single-use state, today the `stage_tokens` burn, stays Postgres-primary until a
@@ -42,6 +42,7 @@ to satisfy, so this record keeps the direction and the constraints together.
 | `Get Row(s)` filters after fetching the whole tab | tabs stay small, or are partitioned by month or status |
 | `cellFormat` defaults to `USER_ENTERED`: values are coerced and `=` formulas execute | `RAW` on every write **and** a leading-apostrophe escape for values starting with `=`, `+`, `-` or `@`, because `RAW` does not survive CSV export and re-import |
 | No field-level access control; any viewer can export the whole sheet | secrets and tokens never enter a sheet |
+| Renaming or reordering a header column trips the node's schema check, which throws from version 4.4 onward. A store people edit by hand is exactly where this happens | headers are treated as an interface: a locked, protected header row, and a rename is a migration with a workflow change, not a spreadsheet edit |
 | Per-user write quota; ten million cells per spreadsheet | bursts are queued rather than retried blindly; tabs are archived yearly |
 | Sharing defaults | link-sharing disabled per file; the owner check in the mirror sub-workflow extended to assert no link-sharing permission; quarterly permissions audit |
 | The owner account is a single point of failure for every record | hardware-key or TOTP multi-factor authentication, not SMS; recovery address and phone recorded in the runbook |

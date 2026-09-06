@@ -27,10 +27,10 @@ set -uo pipefail
 # Deny patterns, one per line, case-insensitive extended regex.
 DENY='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(com|za|net|org|io|dev)
 iam\.gserviceaccount\.com|prudentia-n8n
-(ntfy\.sh/|topic["'"'"'`=:/]+ ?)[A-Za-z0-9_-]{6,}
+(ntfy\.sh/[A-Za-z0-9_-]{4,}|topic["'"'"'`=:/[:space:]]+[A-Za-z0-9_-]*[0-9_-][A-Za-z0-9_-]*)
 ([0-9]{1,3} ?\. ?){3}[0-9]{1,3}
 [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
-homelab\.local|homelab-tailscale|100\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}
+homelab\.local|homelab-tailscale|100\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|[a-z0-9-]+\.[a-z0-9-]+\.svc\.cluster\.local|fd7a:[0-9a-f:]{4,}|[0-9a-f]{1,4}(:[0-9a-f]{1,4})*::[0-9a-f:]*
 (kv/)?secret/n8n/[a-z]+/[a-z-]+
 (id|credentialsId|workflowId)["'"'"' :=]+[A-Za-z0-9]{16}
 \+ ?27[ -]?[0-9][0-9 -]{7,}
@@ -50,8 +50,9 @@ ALLOW='^n8n-sheets@prudentia-n8n\.iam\.gserviceaccount\.com$
 
 rc=0
 for f in "$@"; do
-  [ -f "$f" ] || continue
-  case "$f" in */disclosure-sweep.sh) continue ;; esac   # never flag its own patterns
+  if [ ! -f "$f" ]; then echo "$f: NOT FOUND (wrong directory? deleted file?)" >&2; rc=1; continue; fi
+  # Skip only this script at its own repo path -- a same-named file elsewhere must still be scanned.
+  case "$f" in scripts/disclosure-sweep.sh|./scripts/disclosure-sweep.sh|*/n8n-self-hosting/scripts/disclosure-sweep.sh) continue ;; esac
   while IFS= read -r pat; do
     [ -n "$pat" ] || continue
     while IFS= read -r hit; do
