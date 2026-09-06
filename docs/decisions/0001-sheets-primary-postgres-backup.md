@@ -34,22 +34,22 @@ to satisfy, so this record keeps the direction and the constraints together.
 
 ## Consequences: the controls every Sheets-primary workflow carries
 
-| Constraint. Measured against the deployed Google Sheets node v4.7 unless the row names another source | Control |
-| --- | --- |
-| `appendOrUpdate` is read-modify-write with no compare-and-set; two concurrent executions can compute the same row index and one update is lost | one writer per sheet (`maxConcurrency: 1` on that workflow) or an idempotent key plus a periodic reconcile; never two webhook workflows writing one tab |
-| Matching is client-side on one column | the key column is unique and first |
-| The range is hardcoded to `A:Z` | at most 26 columns per tab |
-| `Get Row(s)` filters after fetching the whole tab | tabs stay small, or are partitioned by month or status |
-| `cellFormat` defaults to `USER_ENTERED`: values are coerced and `=` formulas execute | `RAW` on every write **and** a leading-apostrophe escape for values starting with `=`, `+`, `-` or `@`, because `RAW` does not survive CSV export and re-import |
-| No field-level access control; any viewer can export the whole sheet | secrets and tokens never enter a sheet |
-| Renaming or reordering a header column trips the node's schema check, which throws from version 4.4 onward. **Read from the node source, not measured** — the same caveat the pipeline README and the estate report carry. A store people edit by hand is exactly where this would bite | headers are treated as an interface: a locked, protected header row, and a rename is a migration with a workflow change, not a spreadsheet edit |
-| **Google's published platform limits, not measured here:** per-user write quota, and ten million cells per spreadsheet | bursts are queued rather than retried blindly; tabs are archived yearly |
-| **Google platform behaviour, not measured here:** sharing defaults | link-sharing disabled per file; the owner check in the mirror sub-workflow extended to assert no link-sharing permission; quarterly permissions audit |
-| The owner account is a single point of failure for every record | hardware-key or TOTP multi-factor authentication, not SMS; recovery address and phone recorded in the runbook |
-| **Account terms, not a node behaviour:** no data-processing agreement exists under a consumer Google account | accepted risk, recorded here; migration trigger is the first client contract that requires one |
-| The service-account key sits in n8n's encrypted credential store | rotate yearly and on any exposure |
-| **Google platform behaviour, not measured here:** Sheets has no retention mechanism | a scheduled purge implements the retention limit |
-| The reverse mirror runs on a schedule | the data-loss window equals the mirror interval; at fifteen minutes, up to fifteen minutes of records sit between a sheet corruption and the last backup |
+| Constraint | Source | Control |
+| --- | --- | --- |
+| `appendOrUpdate` is read-modify-write with no compare-and-set; two concurrent executions can compute the same row index and one update is lost | node, measured | one writer per sheet (`maxConcurrency: 1` on that workflow) or an idempotent key plus a periodic reconcile; never two webhook workflows writing one tab |
+| Matching is client-side on one column | node, measured | the key column is unique and first |
+| The range is hardcoded to `A:Z` | node, measured | at most 26 columns per tab |
+| `Get Row(s)` filters after fetching the whole tab | node, measured | tabs stay small, or are partitioned by month or status |
+| `cellFormat` defaults to `USER_ENTERED`: values are coerced and `=` formulas execute | node, measured | `RAW` on every write **and** a leading-apostrophe escape for values starting with `=`, `+`, `-` or `@`, because `RAW` does not survive CSV export and re-import |
+| No field-level access control; any viewer can export the whole sheet | platform | secrets and tokens never enter a sheet |
+| Renaming or reordering a header column trips the node's schema check, which throws from version 4.4 onward. **Read from the node source, not measured** — the same caveat the pipeline README and the estate report carry. A store people edit by hand is exactly where this would bite | node, read not measured | headers are treated as an interface: a locked, protected header row, and a rename is a migration with a workflow change, not a spreadsheet edit |
+| per-user write quota, and ten million cells per spreadsheet | platform docs | bursts are queued rather than retried blindly; tabs are archived yearly |
+| sharing defaults | platform | link-sharing disabled per file; the owner check in the mirror sub-workflow extended to assert no link-sharing permission; quarterly permissions audit |
+| The owner account is a single point of failure for every record | this design | hardware-key or TOTP multi-factor authentication, not SMS; recovery address and phone recorded in the runbook |
+| no data-processing agreement exists under a consumer Google account | account terms | accepted risk, recorded here; migration trigger is the first client contract that requires one |
+| The service-account key sits in n8n's encrypted credential store | this deployment | rotate yearly and on any exposure |
+| Sheets has no retention mechanism | platform | a scheduled purge implements the retention limit |
+| The reverse mirror runs on a schedule | this design | the data-loss window equals the mirror interval; at fifteen minutes, up to fifteen minutes of records sit between a sheet corruption and the last backup |
 
 ## Migration triggers
 

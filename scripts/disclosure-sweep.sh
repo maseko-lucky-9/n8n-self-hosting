@@ -10,6 +10,7 @@
 # five-plus-character value after the word "topic" is a hit, so ordinary prose can trip it
 # and the allow-list below carries the words seen so far. A miss would leak an alert topic;
 # a false positive costs a reader a moment, so the trade runs this way deliberately. The
+# email rule matches any two-to-24 character top-level domain rather than a fixed list. The
 # IPv6 rule needs two hex groups before the double colon, which means a single-group form
 # such as fe80::1 is not caught by that branch; the Tailscale prefix rule covers the case
 # that actually occurs here.
@@ -33,7 +34,7 @@ set -uo pipefail
 [ "$#" -gt 0 ] || { echo "usage: $0 <file> [file...]" >&2; exit 2; }
 
 # Deny patterns, one per line, case-insensitive extended regex.
-DENY='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(com|za|net|org|io|dev)
+DENY='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}
 iam\.gserviceaccount\.com|prudentia-n8n
 (ntfy\.sh/[A-Za-z0-9_-]{4,}|topic["'"'"'`=:/[:space:]]+[A-Za-z0-9][A-Za-z0-9_-]{4,})
 ([0-9]{1,3} ?\. ?){3}[0-9]{1,3}
@@ -67,7 +68,9 @@ for f in "$@"; do
     [ -n "$pat" ] || continue
     while IFS= read -r hit; do
       [ -n "$hit" ] || continue
-      text=${hit#*:}; text=${text#*:}
+      # grep -no emits LINE:MATCH for a single file, so strip exactly one field. Stripping
+      # twice ate a colon inside the match and made every anchored allow entry unreachable.
+      text=${hit#*:}
       echo "$text" | grep -qiE "$ALLOW" && continue
       echo "$f:$hit"
       rc=1

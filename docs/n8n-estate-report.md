@@ -29,7 +29,7 @@ workflow enabled".
 
 | What runs today | What blocks a real lead |
 | --- | --- |
-| Intake, stage machine, error handler, sheet mirror and its sub-workflow are all published and executing. Intake ran 15 times in the window, all successful. | The public route does not exist. No DNS record, no tunnel entry, so the website form cannot reach the pipeline. |
+| Intake and the sheet mirror are measured published; the stage machine, error handler and mirror sub-workflow are inferred published from the legacy column. Intake ran 15 times in the window, all successful. The error handler has never run, which is Blocker 1, and the mirror pair persists no executions by design, so its silence is not evidence either way. | The public route does not exist. No DNS record, no tunnel entry, so the website form cannot reach the pipeline. |
 | The mirror runs on a schedule, resolves its spreadsheet by name with an ownership check, and writes both tabs. Verified end to end. | The website form does not sign or forward submissions. That is unwritten work in the website repository, not here. |
 | The lead database is healthy and empty: four tables, zero rows. | Error routing is unproven. A qualifying failure produced no handler execution. Blocker 1 below. |
 | Follow-up shows as unpublished behind the opt-out gate, with no scheduled run in the window. | Intake and stage executions persist their payloads. Blocker 2 below. |
@@ -84,7 +84,7 @@ flowchart LR
   intake -->|urgent only| push[Owner push alert]
   stage[C. Stage machine] --> db
   link[Opt-out and stage links] --> stage
-  followup[B. Follow-up, not running] --> db
+  followup[B. Follow-up, no run in window] --> db
   followup -->|email| lead[Lead]
   mirror[E. Mirror, every 15 min] --> tabs[E1. Write tabs]
   tabs --> db
@@ -193,7 +193,7 @@ Order matters. The allow-list must exist before the hostname resolves.
    name it would reject is caught in the browser instead of vanishing after a success message.
 7. **Opt-out link must not act on GET.** Mail scanners prefetch links in delivered mail, which would
    unsubscribe recipients who never clicked. The GET renders a confirmation page; the button posts.
-8. **Activate in order:** error handler, stage machine, then follow-up. Follow-up last, or the first
+8. **Publish in order:** confirm the error handler and stage machine are published, which the legacy column suggests they already are, then publish follow-up last. Follow-up last, or the first
    send mints long-lived links pointing at a route that does not answer.
 9. **One real lead, urgent.** Four artifacts or it did not happen: the lead row appears, a push
    alert arrives, a stage token exists, and the row reaches the spreadsheet within fifteen minutes.
@@ -243,6 +243,7 @@ identifiers appear here.
 | The other 13 rows, inferred | legacy `active` column from the inventory query, plus trigger type and window health | 3 with the column true are published, because the write paths set both together; 10 with it false are inferred unpublished, corroborated by the schedule argument below |
 | Activation reads the version pointer | `getAllActiveIds` in the workflow repository | `where: { activeVersionId: Not(IsNull()) }` |
 | Four rows are published while the legacy column says otherwise | published flag queried per id; main pod startup log | published true for the monitor and all three duplicate copies; the log shows `Activated workflow` for the monitor and two of the three pairs, the third falling outside the filter used |
+| Trigger types and node counts | `SELECT ... jsonb_array_elements(nodes::jsonb) ... WHERE type ~* 'trigger|webhook|schedule|cron'` per workflow | one row per workflow; the Trigger column in the appendix comes from here, not from the inventory query |
 | Retention window | pod environment; oldest execution row | prune on, max age 168; oldest row exactly 168 h old |
 | Intake and stage persist payloads | join execution data to workflows, match an address pattern | 15 and 2 executions; domains present, addresses not printed |
 | Mirror persists nothing | same query for the mirror pair | zero rows matching the canary |
@@ -269,10 +270,13 @@ because the write paths set both together. The remaining ten show the legacy col
 were never queried, and the sync health monitor is the standing proof that this direction can
 lie.
 
-What corroborates those ten: nine of them carry a schedule trigger, and a published schedule
-trigger fires. Zero runs across the whole 168-hour window is what an unpublished workflow looks
-like, and is not what a published one would produce. The exception is the approval workflow,
-which is webhook-only and so has no such evidence either way. The flag is re-queried before
+What corroborates those ten without settling them: nine carry a schedule trigger, and a
+published schedule trigger fires, so no runs across the window is at least consistent with
+being unpublished. It does not prove it, and two facts from this same report cut the other
+way. A weekly schedule can legitimately produce nothing inside a 168-hour window, and one of
+the ten is a weekly workflow. The estate also runs workflows that persist no executions at
+all, so an absence of rows is not an absence of runs. Treat this as corroboration, not proof.
+The approval workflow is webhook-only and has no such evidence either way. The flag is re-queried before
 anything is archived.
 
 | Workflow | Project | Published | Trigger | Window health | Credentials | Verdict |
