@@ -9,7 +9,7 @@ namespace: n8n-live
 image:
   repository: n8nio/n8n
   pullPolicy: IfNotPresent
-  tag: "2.16.1@sha256:ad20607cdd24bac004ec44804b6b8ded9a2fbf92ed46c4496bf007762c883af2"
+  tag: "2.39.8@sha256:b73045abaddb40cb4024e86eea1b1f69093501a7339f685a4cd486b7743d23ae"
 
 imagePullSecrets: []
 nameOverride: ""

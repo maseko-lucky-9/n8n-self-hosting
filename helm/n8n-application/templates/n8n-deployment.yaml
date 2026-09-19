@@ -214,7 +214,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /healthz/readiness
               port: {{ .Values.n8n.port | default 5678 }}
             initialDelaySeconds: 15
             periodSeconds: 10
