@@ -4,7 +4,10 @@ This document provides a quick reference for starting, accessing, and using the 
 
 ## 1. Start / Install ArgoCD
 
-If ArgoCD is not already running or you are setting up a fresh cluster, use the automated bootstrap script:
+> **Not for the homelab cluster.** ArgoCD is already installed there (v3.x) and `n8n-live` is owned by homelab-infra's `monitoring-root`.
+> `scripts/bootstrap-argocd.sh` now refuses to run: it would downgrade ArgoCD and deploy an auto-syncing `n8n-local` onto the production node.
+
+For a genuinely fresh cluster, the (obsolete) bootstrap script is:
 
 ```bash
 ./scripts/bootstrap-argocd.sh

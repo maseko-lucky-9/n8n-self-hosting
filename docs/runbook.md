@@ -1,5 +1,8 @@
 # n8n MicroK8s Operations Runbook
 
+> **`n8n-live` is deployed only by ArgoCD** (Application `n8n-live`, manual sync, tracks `main`). Merging a PR deploys nothing until you sync — see §4.
+> **Never run Helm against it.** There is no Helm release there any more, and `scripts/deploy.sh live` now refuses. Upgrades follow §13.
+
 ## Quick Reference
 
 | Action | Command |
@@ -62,7 +65,9 @@ sudo microk8s kubectl rollout restart deployment/n8n-application-worker -n n8n-l
 # Scale workers up (safe — workers are stateless, pick jobs from Redis queue)
 sudo microk8s kubectl scale deployment/n8n-application-worker -n n8n-live --replicas=2
 
-# Scale workers down (in-flight jobs complete within terminationGracePeriodSeconds=120s)
+# Scale workers down. n8n exits after its own 30 s graceful-shutdown default
+# (N8N_GRACEFUL_SHUTDOWN_TIMEOUT); terminationGracePeriodSeconds=120 does not extend it.
+# For a clean stop, drain the queue first (see §13 step 7).
 sudo microk8s kubectl scale deployment/n8n-application-worker -n n8n-live --replicas=1
 
 # Maintenance shutdown (scale main + workers to 0, keep postgres running)
@@ -78,23 +83,82 @@ sudo microk8s kubectl scale deployment/n8n-application-worker -n n8n-live --repl
 
 ---
 
-## 4. Roll Back a Deployment
+## 4. Deploy, Sync & Roll Back
 
-**When:** A new n8n version or config change causes issues.
+**`n8n-live` is managed by ArgoCD** (Application `n8n-live`, manual sync, tracks `main`). Merging a PR deploys nothing until you sync.
+
+> **Do not use Helm or `rollout undo` on `n8n-live`.**
+> There is no Helm release for `n8n-live`. A stale record (last written 2026-04-07, n8n 1.19.4) listed both data PVCs, so `helm uninstall` would have deleted the
+> database and the n8n data dir. It was removed on 2026-09-20; `helm list -n n8n-live` is empty and `helm rollback`/`uninstall` now exit "release: not found".
+> - **If `helm list -n n8n-live` ever shows a release again, stop and investigate** — something ran Helm against live, and a later `uninstall` would target live data.
+> - `helm upgrade`/`install` (including `scripts/deploy.sh live`, which now refuses) aborts on ownership conflicts, because resources ArgoCD created carry no Helm metadata.
+> - `kubectl rollout undo` isn't reverted by ArgoCD (no selfHeal), so live silently drifts from git. After a version upgrade it also runs old code against a migrated schema.
+>
+> The three data PVs are reclaim `Retain` (set 2026-09-20), so deleting a PVC no longer destroys the data — but the PV is left `Released` and needs manual re-binding.
+
+### Sync (after a PR is merged)
+The `argocd` CLI on the node is not logged in. Patching `.operation` does the same thing as `argocd app sync`.
+```bash
+SHA=<merge commit SHA on main>
+sudo microk8s kubectl -n argocd patch application n8n-live --type merge \
+  -p "{\"operation\":{\"initiatedBy\":{\"username\":\"$USER\"},\"sync\":{\"revision\":\"$SHA\"}}}"
+
+# One resource only: add this inside "sync":
+#   ,"resources":[{"group":"apps","kind":"Deployment","name":"n8n","namespace":"n8n-live"}]
+
+# BEFORE patching: phase must not be "Running", or you'll queue onto someone else's sync.
+# AFTER: syncResult.revision must equal $SHA and finishedAt must be later than your patch —
+# "Synced/Healthy" alone can be left over from an earlier sync.
+sudo microk8s kubectl -n argocd get application n8n-live -o jsonpath='{.status.operationState.phase}
+{.status.operationState.syncResult.revision}
+{.status.operationState.finishedAt}
+{.status.sync.status} {.status.health.status}{"\n"}'
+```
+A plain full sync is fine for config-only changes. **An n8n version change must follow §13.**
+
+### Roll back a config change (same n8n version)
+`git revert <sha>` → PR → merge → Sync (above).
+
+### Roll back an n8n version upgrade
+The migrations only run forward (`n8n db:revert` undoes one migration per run, which is impractical across ~100), so the database goes back with the image.
+This needs the `n8n_pre_<ver>` copy taken in §13. Without it, the pre-upgrade dump is the only route — but **§9's restore does not work as written** (see the warning there).
+
+> **The copy is a point in time.** Everything written after it is lost: executions, workflow edits, new credentials. Export anything you need first.
 
 ```bash
-# Check rollout history
-sudo microk8s kubectl rollout history deployment/n8n -n n8n-live
+K="sudo microk8s kubectl -n n8n-live"
+PSQL="$K exec -i n8n-application-postgres-0 -c postgres -- psql -U postgres -d postgres -v ON_ERROR_STOP=1"
 
-# Roll back to previous revision
-sudo microk8s kubectl rollout undo deployment/n8n -n n8n-live
+# 0. FIRST: git revert the upgrade PR and merge it, so main is back on the old version.
+#    Syncing an old SHA while the app tracks HEAD leaves it OutOfSync, and the obvious
+#    "fix" (sync) would redeploy the new version onto the restored database.
 
-# Roll back to specific revision
-sudo microk8s kubectl rollout undo deployment/n8n -n n8n-live --to-revision=<N>
+# 1. Stop main, let the worker drain, then stop the worker.
+#    Jobs enqueued by the new version must not reach the old one.
+$K scale deploy/n8n --replicas=0
+$K exec deploy/n8n-application-redis -- sh -c \
+  'for q in active wait paused; do redis-cli llen bull:jobs:$q; done; redis-cli zcard bull:jobs:delayed'   # all must be 0
+$K scale deploy/n8n-application-worker --replicas=0
 
-# Via Helm (preferred — rolls back all resources)
-helm rollback n8n-application <REVISION> -n n8n-live
+# 2. Swap the databases. Run this from db "postgres": the postgres-exporter sidecar keeps a session
+#    open on "n8n", and a database with open sessions can't be renamed.
+#    CREATE DATABASE ... TEMPLATE doesn't copy database-level GRANTs; the GRANTs below restore
+#    the original ACL (n8n_app=CTc, n8n_live=CTc, n8n_watchdog=c).
+$PSQL <<'SQL'
+ALTER DATABASE n8n ALLOW_CONNECTIONS false;
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'n8n' AND pid <> pg_backend_pid();
+ALTER DATABASE n8n RENAME TO n8n_failed_<ver>;
+ALTER DATABASE n8n_pre_<ver> RENAME TO n8n;
+GRANT CONNECT, TEMPORARY, CREATE ON DATABASE n8n TO n8n_app, n8n_live;
+GRANT CONNECT ON DATABASE n8n TO n8n_watchdog;
+SQL
+
+# 3. Sync HEAD (the revert commit from step 0). This restores the old image and replicas: 1.
+# 4. Verify: both pods on the old digest, readiness 200, published workflows and webhook_entity
+#    match the pre-upgrade baseline.
 ```
+The SQL above was rehearsed on scratch databases on 2026-09-19 (copy, rename, re-GRANT, data intact).
+The full rollback — n8n booting on the restored database, and the ArgoCD step — has **not** been drilled.
 
 ---
 
@@ -162,7 +226,7 @@ sudo microk8s kubectl rollout restart deployment/n8n -n n8n-live
 #    - Increase resources.limits.memory (e.g., 1Gi → 1.5Gi)
 #    - Increase NODE_OPTIONS --max-old-space-size (e.g., 768 → 1024)
 #    - Reduce EXECUTIONS_DATA_MAX_AGE (e.g., 168 → 72)
-#    Then: helm upgrade n8n-application ./helm/n8n-application -f ./helm/n8n-application/values-live.yaml -n n8n-live
+#    Then: PR the values change, merge, and sync (§4). Never helm upgrade.
 ```
 
 ---
@@ -188,6 +252,12 @@ sudo microk8s kubectl delete secret n8n-live-tls -n n8n-live
 ---
 
 ## 9. Backup & Restore
+
+> **The restore steps below do not work as written — do not follow them in an incident.** Verified 2026-09-20:
+> `/backups` is not mounted in the postgres pod (the StatefulSet mounts only its data volume), so step 3 fails immediately.
+> The dump also carries no ownership, so restoring it as `postgres` leaves every table owned by `postgres` while the app connects as `n8n_app`.
+> A working restore needs a Job that mounts the backup PVC and loads the dump **as `n8n_app`**, ideally into a fresh database first. Write and drill that before relying on it.
+> The `n8n_pre_<ver>` database copy in §13 is the tested rollback path.
 
 ### Check Backup Status
 ```bash
@@ -263,6 +333,11 @@ sudo microk8s kubectl logs -n n8n-live -l service=n8n-worker -c n8n-worker -f
 
 ## 11. Vault Secret Rotation
 
+> **The values below are wrong for this instance — do not run them as written.** Verified 2026-09-20: the live secret carries
+> `POSTGRES_USER=n8n_live` and `POSTGRES_NON_ROOT_USER=n8n_app`, and `n8n_app` owns every table. Writing the values shown here points n8n at the wrong role.
+> Changing a password in Vault also does nothing on its own: Postgres keeps the old one until an `ALTER ROLE ... PASSWORD` runs, so the pods then fail SCRAM auth.
+> A correct procedure (ALTER ROLE first, then `vault kv patch` the matching key, then force ESO sync and restart) still needs to be written and drilled.
+
 ```bash
 # 1. Update secret in Vault.
 #    -c vault: the pod runs more than one container.
@@ -311,29 +386,60 @@ sudo microk8s kubectl port-forward -n observability svc/grafana 3000:80 &
 
 ---
 
-## 13. Full Redeployment
+## 13. Upgrade n8n (new version)
 
-**When:** Major version upgrade or complete infrastructure refresh.
+**Used for 2.16.1 → 2.39.8 on 2026-09-19: 2m12s of webhook downtime, no data loss.**
+Main and worker must never run different versions against one database, and both Deployments are `RollingUpdate maxSurge 1` — so a plain sync is unsafe for a version change.
+The worker runs migrations too, which is why main is synced alone first.
 
 ```bash
-# 1. Backup database first
-sudo microk8s kubectl create job --from=cronjob/n8n-application-db-backup pre-upgrade-backup -n n8n-live
-
-# 2. Wait for backup to complete
-sudo microk8s kubectl wait --for=condition=complete job/pre-upgrade-backup -n n8n-live --timeout=300s
-
-# 3. Update image tag in values-live.yaml, then:
-helm upgrade n8n-application ./helm/n8n-application \
-  -f ./helm/n8n-application/values-live.yaml \
-  -n n8n-live
-
-# 4. Watch rollout
-sudo microk8s kubectl rollout status deployment/n8n -n n8n-live --timeout=180s
-
-# 5. Verify
-sudo microk8s kubectl get pods -n n8n-live
-curl -I https://<your-domain>/healthz
+K="sudo microk8s kubectl -n n8n-live"
 ```
+
+**Prepare — no downtime**
+1. Pick the target: `npm view n8n dist-tags` (use `stable`, not `beta`). Staying inside the current major needs no breaking-change work; crossing one does.
+2. Resolve the multi-arch digest and pin tag **and** digest:
+   ```bash
+   TOKEN=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:n8nio/n8n:pull" \
+     | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+   curl -sI -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.oci.image.index.v1+json" \
+     https://registry-1.docker.io/v2/n8nio/n8n/manifests/<ver> | grep -i docker-content-digest
+   ```
+3. PR `values-live.yaml` (`image.tag: "<ver>@sha256:<digest>"`) and `Chart.yaml` (`appVersion`). Confirm `helm template -f values-live.yaml` differs from main only in the image and version labels. Merge — that deploys nothing.
+4. Pre-pull on the node (saves ~2 min of downtime; no sudo needed):
+   `$K run n8n-prepull --image=n8nio/n8n@sha256:<digest> --restart=Never --command -- node -e 0` → wait for the Pulled event → delete the pod.
+5. Baselines to compare against afterwards: published workflows (`SELECT id FROM workflow_entity WHERE "activeVersionId" IS NOT NULL`), `webhook_entity` rows, and the newest `migrations` name.
+
+**Cutover**
+6. Copy the data dir off the node (it holds the `config` encryption key):
+   `$K exec deploy/n8n -c n8n -- tar czf - -C /home/node/.n8n --exclude='n8nEventLog*' . > dot-n8n.tgz` → check it with `tar tzf`.
+7. Stop main, drain the queue, stop the worker. **Downtime starts here.**
+   ```bash
+   $K scale deploy/n8n --replicas=0
+   $K exec deploy/n8n-application-redis -- sh -c \
+     'for q in active wait paused; do redis-cli llen bull:jobs:$q; done; redis-cli zcard bull:jobs:delayed'   # all 0
+   $K scale deploy/n8n-application-worker --replicas=0
+   ```
+   Do **not** gate on `execution_entity."stoppedAt" IS NULL`: sub-workflows that don't save successful runs leave `running` rows that never clear.
+8. Rollback copy, then a dump. The exporter sidecar holds a session on `n8n`, so block connections first:
+   ```bash
+   $K exec -i n8n-application-postgres-0 -c postgres -- psql -U postgres -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+   ALTER DATABASE n8n ALLOW_CONNECTIONS false;
+   SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'n8n' AND pid <> pg_backend_pid();
+   CREATE DATABASE n8n_pre_<ver> TEMPLATE n8n;
+   ALTER DATABASE n8n ALLOW_CONNECTIONS true;
+   SQL
+   $K create job --from=cronjob/n8n-application-db-backup pre-<ver>      # then copy the .sql.gz off the node
+   ```
+   Check the copy's row counts match live, and that the dump ends with "PostgreSQL database dump complete".
+9. Sync **only** the main Deployment at the merged SHA (§4 sync + the `resources` line). Main runs the migrations — don't interrupt it, even if it looks stuck for several minutes.
+   `/healthz/readiness` keeps it out of the Service until migrations finish, so **downtime ends when the pod is Ready**.
+10. Full sync → the worker starts on the new version.
+
+**Verify** — both pods' `imageID` digest, `n8n --version`, the newest `migrations` row, published workflows and `webhook_entity` against the baseline,
+`$K exec deploy/n8n -c n8n -- n8n export:credentials --all --decrypted --output=/dev/null` exits 0, and the next scheduled runs succeed.
+
+**Rollback** — §4 "Roll back an n8n version upgrade". Drop `n8n_pre_<ver>` about a week after the upgrade sticks.
 
 ---
 
