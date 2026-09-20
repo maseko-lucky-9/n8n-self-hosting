@@ -31,8 +31,11 @@ We provide a deployment script to handle path resolution and release naming auto
 
     ```bash
     ./scripts/deploy.sh          # deploys to n8n-local
-    ./scripts/deploy.sh live     # deploys to n8n-live
     ```
+
+    `n8n-live` is **not** deployed with this script (it refuses). It is deployed by ArgoCD:
+    merge to `main`, then sync the `n8n-live` Application — see [`docs/runbook.md`](./docs/runbook.md) §4,
+    and §13 for version upgrades.
 
 3.  **Verify Status**:
     ```bash

@@ -1,6 +1,16 @@
 #!/bin/bash
 set -e
 
+# OBSOLETE — kept for reference only.
+# On the homelab cluster ArgoCD is already installed (v3.x) and the n8n-live Application is owned by
+# homelab-infra's monitoring-root app. Running this would install ArgoCD v2.13.3 over it (a
+# cluster-wide downgrade), apply an n8n-root app whose auto-sync/prune fights monitoring-root and
+# deploys n8n-local onto the production node, and print the ArgoCD admin password to stdout.
+echo "Refusing: this bootstrap script is obsolete and unsafe on the homelab cluster." >&2
+echo "ArgoCD and the n8n-live Application are managed by homelab-infra (monitoring-root)." >&2
+echo "Deploy/sync -> docs/runbook.md section 4." >&2
+exit 1
+
 echo "=== Bootstrapping ArgoCD ==="
 
 # 1. Install ArgoCD

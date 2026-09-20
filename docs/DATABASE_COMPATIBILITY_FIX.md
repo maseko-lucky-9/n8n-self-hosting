@@ -1,5 +1,9 @@
 # PostgreSQL Database Compatibility Fix
 
+> **Local (`n8n-local`) only.** This document and `scripts/fix-database-compatibility.sh` assume postgres runs as a Deployment and that deleting the
+> PVC is acceptable. In `n8n-live` postgres is a StatefulSet and that PVC is the production database, so the script refuses to run there.
+> Live recovery and rollback: `runbook.md` §4 and §13.
+
 ## Problem
 
 The error "FATAL: database files are incompatible with server" occurs when PostgreSQL database files were created with a different version than the one currently running.

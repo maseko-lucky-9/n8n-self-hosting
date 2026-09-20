@@ -9,6 +9,14 @@ NAMESPACE="${1:-n8n-local}"
 POSTGRES_DEPLOYMENT="n8n-application-postgres"
 N8N_DEPLOYMENT="n8n"
 
+# Written for the old postgres Deployment and the n8n-local role layout. In n8n-live postgres is a
+# StatefulSet and the app role is n8n_app, so these grants would target the wrong role.
+if [ "$NAMESPACE" = "n8n-live" ]; then
+    echo "Refusing to run against n8n-live: written for the old Deployment/role layout." >&2
+    echo "Live roles and secret rotation -> docs/runbook.md section 11." >&2
+    exit 1
+fi
+
 echo "=== n8n Database Permissions Fix ==="
 echo "This script fixes the 'permission denied for schema public' error."
 echo ""

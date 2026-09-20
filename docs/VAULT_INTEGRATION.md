@@ -187,10 +187,14 @@ This label is required by Vault's default-deny `NetworkPolicy` to permit traffic
 
 ## Step 8 — Deploy N8N with Live Values
 
-The Helm chart's `values-live.yaml` has ESO pre-configured. Deploy:
+The Helm chart's `values-live.yaml` has ESO pre-configured. `n8n-live` is deployed by ArgoCD (never Helm — `deploy.sh live` refuses), so merge to `main` and sync the Application:
 
 ```bash
-./scripts/deploy.sh live
+# The n8n-live Application object is owned by homelab-infra (monitoring-root).
+# Sync it (see docs/runbook.md section 4 for the proof queries):
+SHA=<merge commit SHA on main>
+sudo microk8s kubectl -n argocd patch application n8n-live --type merge \
+  -p "{\"operation\":{\"initiatedBy\":{\"username\":\"$USER\"},\"sync\":{\"revision\":\"$SHA\"}}}"
 ```
 
 This creates:
