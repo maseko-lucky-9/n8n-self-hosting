@@ -208,7 +208,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://ntfy.sh/prudentia-alerts",
+        "url": "=https://ntfy.sh/{{ $env.ntfy_topic }}",
         "sendBody": true,
         "specifyBody": "string",
         "body": "=n8n-gtm: send loop complete. Check Notion for status updates.",
@@ -229,7 +229,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://ntfy.sh/prudentia-alerts",
+        "url": "=https://ntfy.sh/{{ $env.ntfy_topic }}",
         "sendBody": true,
         "specifyBody": "string",
         "body": "=n8n-gtm: nothing to send (no approved rows in Notion).",

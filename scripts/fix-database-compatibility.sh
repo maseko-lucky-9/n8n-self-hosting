@@ -9,6 +9,14 @@ NAMESPACE="${1:-n8n-local}"
 PVC_NAME="n8n-application-postgres-pvc"
 POSTGRES_DEPLOYMENT="n8n-application-postgres"
 
+# This script deletes the postgres PVC. In n8n-live that PVC is the production database, and
+# postgres there is a StatefulSet, not the Deployment this script expects.
+if [ "$NAMESPACE" = "n8n-live" ]; then
+    echo "Refusing to run against n8n-live: this script deletes $PVC_NAME (the live database)." >&2
+    echo "Live recovery/rollback -> docs/runbook.md section 4 and section 13." >&2
+    exit 1
+fi
+
 echo "=== PostgreSQL Database Compatibility Fix ==="
 echo "This script helps resolve database compatibility issues."
 echo ""

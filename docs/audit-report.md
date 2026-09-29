@@ -350,7 +350,10 @@
   ```
 - [ ] **Store extracted key in Vault** (never commit to git):
   ```bash
-  vault kv put kv/secret/n8n/live/app \
+  # -c vault (multi-container pod) and VAULT_SKIP_VERIFY (self-signed cert, no
+  # VAULT_CACERT) are both required -- without them this exits 2 with an x509 error.
+  microk8s kubectl -n vault exec vault-0 -c vault -- env VAULT_SKIP_VERIFY=true \
+    vault kv put kv/secret/n8n/live/app \
     N8N_ENCRYPTION_KEY=<extracted-key> \
     N8N_WEBHOOK_URL=https://n8n.homelab.local
   ```

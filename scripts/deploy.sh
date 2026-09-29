@@ -1,8 +1,9 @@
 #!/bin/bash
 
-# Deployment script for n8n-application
-# Usage: ./scripts/deploy.sh [local|live]
-# Defaults to 'local' if no argument provided
+# Deployment script for n8n-application (LOCAL ONLY)
+# Usage: ./scripts/deploy.sh [local]
+# Defaults to 'local' if no argument provided.
+# n8n-live is deployed by ArgoCD — see docs/runbook.md §4 (sync) and §13 (upgrade).
 
 set -euo pipefail
 
@@ -17,11 +18,16 @@ case "$ENV" in
         VALUES_FILE="$ROOT_DIR/helm/n8n-application/values-local.yaml"
         ;;
     live)
-        NAMESPACE="n8n-live"
-        VALUES_FILE="$ROOT_DIR/helm/n8n-application/values-live.yaml"
+        # n8n-live is ArgoCD-managed and has no Helm release. A helm upgrade here aborts on
+        # ownership conflicts, or — if forced — adopts live resources (including the data PVCs)
+        # into a new release that a later `helm uninstall` would delete.
+        echo "Refusing: n8n-live is deployed by ArgoCD, not Helm." >&2
+        echo "  Deploy:  merge to main, then sync  -> docs/runbook.md section 4" >&2
+        echo "  Upgrade: staged cutover            -> docs/runbook.md section 13" >&2
+        exit 1
         ;;
     *)
-        echo "Error: Unknown environment '$ENV'. Use 'local' or 'live'."
+        echo "Error: Unknown environment '$ENV'. Use 'local'."
         exit 1
         ;;
 esac

@@ -22,14 +22,23 @@ These two keys are projected into the n8n pod as `TELEGRAM_BOT_TOKEN` and
 
 ## Write commands
 
+`-c vault` is required because the pod runs more than one container, and
+`VAULT_SKIP_VERIFY=true` because `VAULT_ADDR` is `https://127.0.0.1:8200` with a self-signed
+certificate and no `VAULT_CACERT` — without it every command exits 2 with
+`x509: certificate signed by unknown authority`. There is no `vault` binary on the Mac or the
+host shell; it exists only inside the pod.
+
 ```bash
-vault kv put kv/secret/n8n/live/reelsmith-tiktok \
+microk8s kubectl -n vault exec vault-0 -c vault -- env VAULT_SKIP_VERIFY=true \
+  vault kv put kv/secret/n8n/live/reelsmith-tiktok \
   client_key=<KEY> client_secret=<SECRET>
 
-vault kv put kv/secret/n8n/live/reelsmith-youtube \
+microk8s kubectl -n vault exec vault-0 -c vault -- env VAULT_SKIP_VERIFY=true \
+  vault kv put kv/secret/n8n/live/reelsmith-youtube \
   client_id=<ID> client_secret=<SECRET>
 
-vault kv put kv/secret/n8n/live/reelsmith-telegram \
+microk8s kubectl -n vault exec vault-0 -c vault -- env VAULT_SKIP_VERIFY=true \
+  vault kv put kv/secret/n8n/live/reelsmith-telegram \
   bot_token=<TOKEN> chat_id=<CHAT_ID>
 ```
 

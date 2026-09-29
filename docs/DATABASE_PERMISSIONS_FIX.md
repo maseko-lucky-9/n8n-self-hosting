@@ -1,5 +1,8 @@
 # Database Permissions Fix for n8n
 
+> **Local (`n8n-local`) only.** This document and `scripts/fix-database-permissions.sh` assume the old postgres Deployment and the `n8n-local` role layout.
+> In `n8n-live` postgres is a StatefulSet and the app role is `n8n_app`, so the script refuses to run there. Live roles and secrets: `runbook.md` §11.
+
 ## Problem
 
 The error "permission denied for schema public" occurs when the n8n user doesn't have the necessary permissions on the PostgreSQL database schema.

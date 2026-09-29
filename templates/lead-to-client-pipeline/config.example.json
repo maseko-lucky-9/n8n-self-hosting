@@ -1,0 +1,17 @@
+{
+  "brand":            "Prudentia Digital",
+  "from_email":       "<SMTP_USERNAME>",
+  "reply_to":         "<SMTP_USERNAME>",
+  "booking_url":      "https://calendly.com/prudentiadigital/automation-sprint",
+  "site_url":         "https://prudentiadigital.co.za",
+  "webhook_base":     "<PUBLIC_WEBHOOK_BASE>",
+  "ntfy_topic":       "<NTFY_TOPIC>",
+  "timezone":         "Africa/Johannesburg",
+  "followup_days":    [3, 7, 14],
+  "daily_send_cap":   25,
+  "sla_hours_urgent": 1,
+  "urgency_rules": {
+    "urgent_timelines": ["asap"],
+    "urgent_budgets":   ["75-150k", "150k-plus"]
+  }
+}

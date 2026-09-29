@@ -68,7 +68,7 @@ Then check the sheet — you should see a new row:
 
 | client_name | email | service | phone | intake_date | docs_received | last_reminder |
 |---|---|---|---|---|---|---|
-| Nomvula Dlamini | ltmaseko7@gmail.com | Monthly Bookkeeping | +27 82 000 0001 | 2026-04-17 | FALSE | |
+| Nomvula Dlamini | nomvula@example.com | Monthly Bookkeeping | +27 82 000 0001 | 2026-04-17 | FALSE | |
 
 ---
 

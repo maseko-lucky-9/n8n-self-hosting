@@ -116,7 +116,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://ntfy.sh/prudentia-alerts",
+        "url": "=https://ntfy.sh/{{ $env.ntfy_topic }}",
         "sendBody": true,
         "specifyBody": "string",
         "body": "=Reply received: {{ $('Extract In-Reply-To').item.json.subject }} (from {{ $('Extract In-Reply-To').item.json.from }})",

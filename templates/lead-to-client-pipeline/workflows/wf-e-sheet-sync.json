@@ -1,0 +1,142 @@
+{
+  "name": "Lead Pipeline \u2014 E \u2014 Sheet Mirror",
+  "nodes": [
+    {
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -900,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/15 * * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Find Sheet",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -680,
+        300
+      ],
+      "parameters": {
+        "authentication": "serviceAccount",
+        "resource": "fileFolder",
+        "searchMethod": "query",
+        "queryString": "={{ \"name = '\" + String($env.lead_sheet_name ?? 'Prudentia Leads Mirror').replace(/['\\\\]/g, \"\\\\$&\") + \"' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false\" }}",
+        "returnAll": true,
+        "filter": {},
+        "options": {
+          "fields": [
+            "id",
+            "name",
+            "owners"
+          ]
+        }
+      },
+      "credentials": {
+        "googleApi": {
+          "id": "REPLACE_SHEETS_CRED",
+          "name": "Google Sheets account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "name": "Resolve Sheet ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -460,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Resolve the mirror spreadsheet by name so no document id is stored in the workflow\n// -- the sheet can be deleted and recreated without editing this.\n//\n// SECURITY: a name match proves uniqueness, NOT identity. Anyone can create a file\n// with this name and share it with our service account; it then appears in the\n// service account's Drive listing exactly like the real one. Both facts needed to do\n// that (the service-account address and this sheet name) are published in a PUBLIC\n// repo. So ownership is the actual authorisation check -- an attacker cannot make\n// their file owned by our account.\n//\n// Fails closed three ways: owner not configured, no owned match, or more than one.\n// `Find Sheet` sets alwaysOutputData so the zero-hit case still reaches this node;\n// without it this would not run at all and the sync would silently no-op.\nconst want = $env.lead_sheet_name ?? 'Prudentia Leads Mirror';\nconst owner = ($env.lead_sheet_owner ?? '').trim().toLowerCase();\n\nif (!owner) {\n  throw new Error(\n    'lead_sheet_owner is not set. Refusing to resolve the mirror spreadsheet by name ' +\n    'alone: name matching proves uniqueness, not identity, and anyone can share a ' +\n    'same-named file with this service account. Set it from the lead-pipeline Vault path.'\n  );\n}\n\nconst owned = $input.all().filter((i) => {\n  const o = i.json && i.json.owners;\n  return i.json && i.json.id && Array.isArray(o) &&\n    o.some((x) => String(x.emailAddress ?? '').toLowerCase() === owner);\n});\n\nif (owned.length !== 1) {\n  const seen = $input.all().filter((i) => i.json && i.json.id).length;\n  throw new Error(\n    `Sheet mirror: expected exactly 1 spreadsheet named \"${want}\" owned by ${owner}, ` +\n    `found ${owned.length} (${seen} name match(es) total). Check the name, that it is ` +\n    `not in the trash, that it is shared with the service account, and that it is owned ` +\n    `by the configured account.`\n  );\n}\n\nreturn [{ json: { sheet_id: owned[0].json.id, sheet_name: owned[0].json.name } }];"
+      }
+    },
+    {
+      "name": "Note [-900, -60]",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -900,
+        -60
+      ],
+      "parameters": {
+        "content": "## WF-E \u2014 Sheet mirror\n\nRead-only snapshot of the `leads` database into Google Sheets, every 15 minutes.\nPostgres stays the system of record; **nothing here writes back**.\n\n**This workflow never holds a lead row.** It resolves the spreadsheet, then delegates\nevery read and write to `E1 \u2014 Sheet Tabs`. That is not tidiness: on this instance\n(`EXECUTIONS_MODE=queue`) the scaling worker's save hook ignores the save settings and\nmain's cleanup only runs on success, so a **failed** inline run persists the entire\nleads table into n8n's own database -- which the daily unencrypted `pg_dump` then\ncaptures. Sub-executions use a different hook path that does honour the settings.\nMeasured with a canary lead and a deliberate failure after the read: **0** rows in\n`execution_data` via the sub-workflow, **1** for the identical failure inline.\n\n`Summarise Only` in the sub returns counts, never rows -- `Execute Workflow` hands the\nsub's final output back to this execution, so returning the written rows would put the\nPII straight back where it was removed from.\n\n**Resolution is by name, so ownership is the authorisation check.** A name match proves\nuniqueness, not identity: anyone can share a same-named file with our service account.\n`Resolve Sheet ID` requires `$env.lead_sheet_owner`, which cannot be forged, and\nrefuses to resolve when it is unset.\n\n`Find Sheet` sets `alwaysOutputData` on purpose: without it a zero-hit search would\nskip the guard entirely and the sync would silently no-op instead of failing.",
+        "width": 600,
+        "height": 340
+      }
+    },
+    {
+      "name": "Sync Tabs",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        -240,
+        300
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "REPLACE_SHEET_TABS_WF"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Find Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Sheet": {
+      "main": [
+        [
+          {
+            "node": "Resolve Sheet ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Sheet ID": {
+      "main": [
+        [
+          {
+            "node": "Sync Tabs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": false,
+    "saveDataSuccessExecution": "none",
+    "callerPolicy": "workflowsFromSameOwner",
+    "saveDataErrorExecution": "none"
+  }
+}

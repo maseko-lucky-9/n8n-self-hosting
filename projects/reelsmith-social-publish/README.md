@@ -34,8 +34,8 @@ ssh homelab "microk8s kubectl apply \
 # 3. Register ArgoCD application (picks up the manifests/ dir automatically)
 ssh homelab "microk8s kubectl apply -f -" < argocd/application.yaml
 
-# 4. Upgrade Helm chart to mount the PVC on n8n + worker pods
-cd helm && helm upgrade n8n-release n8n-application -f n8n-application/values-live.yaml
+# 4. Mount the PVC on the n8n + worker pods: edit values-live.yaml, open a PR, merge, then sync
+#    the n8n-live Application (../../docs/runbook.md section 4). Never run helm against n8n-live.
 
 # 5. Import workflow and activate (n8n UI)
 #    - Import workflow/reelsmith-social-publish.json
