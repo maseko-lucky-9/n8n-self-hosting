@@ -9,7 +9,7 @@ namespace: n8n-live
 image:
   repository: n8nio/n8n
   pullPolicy: IfNotPresent
-  tag: "2.16.1@sha256:ad20607cdd24bac004ec44804b6b8ded9a2fbf92ed46c4496bf007762c883af2"
+  tag: "2.39.8@sha256:b73045abaddb40cb4024e86eea1b1f69093501a7339f685a4cd486b7743d23ae"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -75,6 +75,64 @@ extraEnv:
   # Without this, n8n logs a deprecation warning and manual runs bypass the queue.
   - name: OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS
     value: "true"
+  # Lead pipeline config (templates/lead-to-client-pipeline). n8n Variables
+  # ($vars, Settings -> Variables) are an ENTERPRISE-LICENSED feature
+  # (VariablesService.canCreateNewVariable() throws FeatureNotLicensedError on
+  # this Community Edition instance -- confirmed live: `n8n license:info` shows
+  # isValid: false, entitlements: 0, and `SELECT count(*) FROM variables` is 0).
+  # So the workflows read config from $env instead ($vars.X -> $env.X, a 1:1
+  # rename -- see wf-a/b/c/d). Names below are lowercase to match the original
+  # $vars keys exactly, which is the only reason they deviate from this file's
+  # UPPER_SNAKE_CASE convention -- that keeps the workflow-side diff a pure
+  # string substitution, auditable in one grep, rather than a second rename.
+  - name: brand
+    value: "Prudentia Digital"
+  - name: site_url
+    value: "https://prudentiadigital.co.za"
+  - name: booking_url
+    value: "https://calendly.com/prudentiadigital/automation-sprint"
+  - name: followup_days
+    value: "[3,7,14]"
+  - name: daily_send_cap
+    value: "25"
+  - name: sla_hours_urgent
+    value: "1"
+  - name: urgent_timelines
+    value: "asap"
+  - name: urgent_budgets
+    value: "75-150k,150k-plus"
+  # from_email/ntfy_topic: same secretKeyRef shape as TELEGRAM_BOT_TOKEN
+  # below, sourced from the isolated lead-pipeline ExternalSecret rather than
+  # n8n-app-secret (a missing key here must never risk N8N_ENCRYPTION_KEY).
+  # `optional: true` -- an unpopulated Vault path leaves these unset, not a
+  # crashed pod. Previously duplicated by hand into n8n-deployment.yaml and
+  # n8n-worker-deployment.yaml; extraEnv already reaches both pods, so this
+  # one entry replaces both copies.
+  - name: from_email
+    valueFrom:
+      secretKeyRef:
+        name: n8n-lead-pipeline-secret
+        key: LEAD_FROM_EMAIL
+        optional: true
+  - name: ntfy_topic
+    valueFrom:
+      secretKeyRef:
+        name: n8n-lead-pipeline-secret
+        key: LEAD_NTFY_TOPIC
+        optional: true
+  # WF-E's authorisation check. It resolves the mirror spreadsheet by NAME, which
+  # proves uniqueness, not identity -- anyone can create a same-named file and share
+  # it with our service account, and it then appears in the same Drive listing. This
+  # is the account that must OWN the sheet; an attacker cannot forge ownership.
+  # Unset leaves WF-E refusing to resolve at all (fails closed, loudly) rather than
+  # writing lead PII somewhere unverified. Held in Vault, not here: it is a personal
+  # address and this repo is public.
+  - name: lead_sheet_owner
+    valueFrom:
+      secretKeyRef:
+        name: n8n-lead-pipeline-secret
+        key: LEAD_SHEET_OWNER
+        optional: true
   # Reelsmith social-publish: Telegram alert credentials for failure notifications.
   # Secret created by ESO from kv/secret/n8n/live/reelsmith-telegram.
   - name: TELEGRAM_BOT_TOKEN
@@ -94,8 +152,40 @@ extraEnv:
   # Manifest) require fs + path to read manifest CSVs, walk the inbox, append
   # log rows, and rename to processed/. Without these, every execution errors
   # with "Module 'fs' is disallowed".
+  # `crypto` added for the lead pipeline's WF-B `Compose Touch`: the sandbox's
+  # native-global allowlist (@n8n/task-runner's getNativeVariables()) does not
+  # include a `crypto` global -- confirmed by reading the deployed
+  # js-task-runner.js -- so `crypto.getRandomValues(...)` throws ReferenceError
+  # regardless of this setting. `require('crypto')` is the path back in, gated
+  # by exactly this var (js-runner-config.js's allowedBuiltInModules, fed to
+  # the require-resolver). Compose Touch now uses
+  # `require('crypto').randomBytes(24).toString('hex')` to match.
   - name: NODE_FUNCTION_ALLOW_BUILTIN
-    value: "fs,path"
+    value: "fs,path,crypto"
+  # n8n 2.x also blocks `$env` in every expression and Code node by default
+  # (workflow-data-proxy-env-provider.js: unset -> isEnvAccessBlocked -> every
+  # $env.X access throws ExpressionError('access to env vars denied'),
+  # verified live against this instance). The lead pipeline's config
+  # migration off the (unlicensed, Enterprise-only) $vars store onto $env
+  # depends on this being unblocked -- see the "Lead pipeline config" comment
+  # above.
+  #
+  # Cost, accepted deliberately rather than overlooked: unblocking $env does
+  # NOT scope to the lead-pipeline keys -- n8n applies no allowlist at all
+  # (workflow-data-proxy-env-provider.js and expression.js both assign
+  # `process.env` to the proxy verbatim), so every workflow on this shared
+  # instance -- including reelsmith-social-publish and gtm-email-sender --
+  # gains read access to the FULL container environment: N8N_ENCRYPTION_KEY,
+  # DB_POSTGRESDB_PASSWORD, TELEGRAM_BOT_TOKEN included. There is no per-key
+  # opt-in in n8n 2.16; the only way to avoid this would be to stop reading
+  # config through $env at all (e.g. a static Set/Code node baked into each
+  # workflow's own JSON for the non-secret values), which is a larger
+  # redesign than this fix. Accepted here because every workflow on this
+  # instance is already this operator's own code, reviewed in this same
+  # repo -- not a multi-tenant boundary. Revisit if that ever stops being
+  # true.
+  - name: N8N_BLOCK_ENV_ACCESS_IN_NODE
+    value: "false"
 
 autoscaling:
   enabled: false  # LIVE: Single-node, no autoscaling
@@ -194,6 +284,18 @@ externalSecrets:
     appSecretPath: "secret/n8n/live/app"
     # GAP-007: Off-cluster backup credentials
     backupSecretPath: "secret/n8n/live/backup-offcluster"
+    # Lead pipeline: sender mailbox + ntfy topic name (from_email, ntfy_topic).
+    # Deliberately its OWN ExternalSecret/path, not folded into appSecretPath:
+    # a missing key here must never risk the encryption-key/webhook-url sync
+    # (that Secret is load-bearing -- losing N8N_ENCRYPTION_KEY breaks every
+    # existing credential). Both env vars are wired with `optional: true`, so
+    # an unpopulated or absent path leaves them simply unset, not a failed pod.
+    # ntfy_topic in particular must be a random value generated ONLY here
+    # (openssl rand -hex 16) -- ntfy public topics are unauthenticated in both
+    # directions, so the topic name IS the access control; it must never be
+    # committed to config.example.json or any template (see
+    # templates/lead-to-client-pipeline/vault/secrets.md).
+    leadPipelineSecretPath: "secret/n8n/live/lead-pipeline"
     # CA certificate for Vault TLS verification
     # Prereq: 'vault-tls-ca' Secret with key 'ca.crt' must exist in the namespace
     caProvider:
@@ -210,12 +312,21 @@ externalSecrets:
 backup:
   enabled: true
   schedule: "0 2 * * *"  # Daily at 2 AM
-  retention: 30  # days
+  retention: 30  # days  (dump-file retention via `find -mtime`; UNAFFECTED by the GC knobs below)
   storageSize: 10Gi
+  # Job/pod GC (objects + logs only — NOT the dump files, which the script prunes
+  # at `retention` days + the off-cluster rclone copy). ttl is well above the
+  # N8nBackupFailed alert window (for: 0m) so failed Jobs are still observed.
+  ttlSecondsAfterFinished: 86400  # delete finished backup Job pods after 24h
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
   # GAP-007: Off-cluster backup via rclone to S3-compatible target.
   # Prerequisites before enabling:
-  #   1. Populate Vault: vault kv put kv/secret/n8n/live/backup-offcluster \
-  #        RCLONE_S3_ACCESS_KEY_ID=<key> RCLONE_S3_SECRET_ACCESS_KEY=<secret>
+  #   1. Populate Vault (-c vault and VAULT_SKIP_VERIFY are both required; without
+  #      them this exits 2 with an x509 error -- see docs/VAULT_INTEGRATION.md):
+  #        microk8s kubectl -n vault exec vault-0 -c vault -- env VAULT_SKIP_VERIFY=true \
+  #          vault kv put kv/secret/n8n/live/backup-offcluster \
+  #          RCLONE_S3_ACCESS_KEY_ID=<key> RCLONE_S3_SECRET_ACCESS_KEY=<secret>
   #   2. Set endpoint, bucket, path below
   #   3. Set enabled: true and helm upgrade
   offCluster:

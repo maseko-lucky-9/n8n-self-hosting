@@ -3,4 +3,4 @@ name: n8n-application
 description: A Helm chart for deploying the n8n workflow automation tool
 type: application
 version: 1.2.0
-appVersion: "2.16.1"
+appVersion: "2.39.8"

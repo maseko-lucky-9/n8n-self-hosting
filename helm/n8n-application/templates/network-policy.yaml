@@ -49,6 +49,31 @@ spec:
           port: 443
         - protocol: TCP
           port: 80
+    # SMTPS to the GoDaddy relay (smtpout.secureserver.net:465, implicit TLS, cert
+    # verified by nodemailer). Hosts geo-rotate (CNAME chain, AS21499) so there is no
+    # CIDR to pin: the control is the single port plus excluding every private range,
+    # so *this rule* can never become a path into the cluster, LAN, tailnet or
+    # link-local. That guarantee is scoped to port 465 only -- the pre-existing
+    # `to: []` rules on 80/443 above already reach all of those ranges, so this list
+    # does not by itself provide LAN/tailnet isolation for the policy as a whole.
+    # 587 (STARTTLS) and 25 stay closed. Same shape as homelab-infra
+    # apps/pfp/base/networkpolicy.yaml.
+    # NOTE: the `except` list below is IPv4-only. If this policy is ever made
+    # dual-stack, adding `::/0` without the matching excepts (fc00::/7, fe80::/10,
+    # and fd7a:115c:a1e0::/48 for Tailscale) would reopen exactly the hole this list
+    # closes.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 465
     {{- if .Values.queue.enabled }}
     # GAP-012: Allow egress to in-namespace Redis for queue mode
     - to:
@@ -239,5 +264,30 @@ spec:
           port: 443
         - protocol: TCP
           port: 80
+    # SMTPS to the GoDaddy relay (smtpout.secureserver.net:465, implicit TLS, cert
+    # verified by nodemailer). Hosts geo-rotate (CNAME chain, AS21499) so there is no
+    # CIDR to pin: the control is the single port plus excluding every private range,
+    # so *this rule* can never become a path into the cluster, LAN, tailnet or
+    # link-local. That guarantee is scoped to port 465 only -- the pre-existing
+    # `to: []` rules on 80/443 above already reach all of those ranges, so this list
+    # does not by itself provide LAN/tailnet isolation for the policy as a whole.
+    # 587 (STARTTLS) and 25 stay closed. Same shape as homelab-infra
+    # apps/pfp/base/networkpolicy.yaml.
+    # NOTE: the `except` list below is IPv4-only. If this policy is ever made
+    # dual-stack, adding `::/0` without the matching excepts (fc00::/7, fe80::/10,
+    # and fd7a:115c:a1e0::/48 for Tailscale) would reopen exactly the hole this list
+    # closes.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 465
 {{- end }}
 {{- end }}

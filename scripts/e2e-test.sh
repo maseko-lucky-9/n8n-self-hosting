@@ -3,9 +3,9 @@
 # Run from Mac (LAN or Tailscale). Requires curl and jq.
 #
 # Usage:
-#   ./scripts/e2e-test.sh              # run all tests
-#   ./scripts/e2e-test.sh w1           # run only W1
-#   ./scripts/e2e-test.sh w3           # run only W3
+#   TEST_EMAIL=you@example.com ./scripts/e2e-test.sh          # run all tests
+#   TEST_EMAIL=you@example.com ./scripts/e2e-test.sh w1       # run only W1
+#   TEST_EMAIL=you@example.com ./scripts/e2e-test.sh w3       # run only W3
 #
 # Prerequisites:
 #   - n8n reachable at N8N_URL
@@ -17,7 +17,14 @@
 set -euo pipefail
 
 N8N_URL="${N8N_URL:-https://n8n.homelab.local}"
-TEST_EMAIL="${TEST_EMAIL:-ltmaseko7@gmail.com}"
+TEST_EMAIL="${TEST_EMAIL:-}"
+if [ -z "$TEST_EMAIL" ]; then
+  echo "TEST_EMAIL is not set." >&2
+  echo "This script posts real payloads to the live intake webhook, so it needs a" >&2
+  echo "mailbox you control -- there is deliberately no default:" >&2
+  echo "  TEST_EMAIL=you@example.com ./scripts/e2e-test.sh" >&2
+  exit 1
+fi
 PASS=0
 FAIL=0
 
@@ -149,7 +156,7 @@ EOF
   echo "  Manual checks required:"
   echo "  → Quote email received at ${TEST_EMAIL} (subject: 'Your Quotation from Prudentia Digital')"
   echo "    NOTE: SMTP blocked from pod network — email will fail until Brevo/port fix applied"
-  echo "  → Consultant alert received (to: thulani@prudentiadigital.co.za, subject: '[ACTION] Quote sent')"
+  echo "  → Consultant alert received at the address configured on W3's alert node (subject: '[ACTION] Quote sent')"
 }
 
 # ── Summary ─────────────────────────────────────────────────────────────────

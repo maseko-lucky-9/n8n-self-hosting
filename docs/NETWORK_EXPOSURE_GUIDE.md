@@ -56,11 +56,12 @@ If it is missing, copy it from the source namespace or re-provision via your cer
 
 ### 3. Deploy the Application
 
-````bash
+This section covers `n8n-local` only. For `n8n-live`, merge to `main` and sync the ArgoCD Application — see `runbook.md` §4; never run Helm against it.
+
 ```bash
 # Run the deployment script from the repository root
 scripts/deploy.sh
-````
+```
 
 Alternatively, if running manually from root:
 
