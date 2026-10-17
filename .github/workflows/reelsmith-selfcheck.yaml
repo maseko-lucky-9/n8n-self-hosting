@@ -1,0 +1,51 @@
+name: Reelsmith dispatcher selfchecks
+
+# GitHub-hosted runner ONLY, never self-hosted: this repo is public and its
+# self-hosted runner holds cluster credentials, so a fork PR must never reach it.
+# No secrets are used; the token is read-only.
+on:
+  pull_request:
+    paths:
+      - 'projects/reelsmith-social-publish/**'
+      - '.github/workflows/reelsmith-selfcheck.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  selfcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: projects/reelsmith-social-publish/scripts
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
+      - name: Install pinned luxon
+        run: npm ci --ignore-scripts
+
+      - name: Ensure PyYAML (manifest checks and watchdog selftest)
+        run: python3 -c 'import yaml' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-yaml; }
+
+      - name: Run every selfcheck
+        run: |
+          set -e
+          for f in *.selfcheck.js; do
+            echo "== $f"
+            node "$f"
+          done
+
+      - name: Watchdog selftest (stubbed psql/wget/date)
+        run: bash watchdog.selftest.sh
+
+      - name: Shellcheck deploy-workflow.sh
+        run: shellcheck deploy-workflow.sh
