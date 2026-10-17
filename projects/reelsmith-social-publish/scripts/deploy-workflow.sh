@@ -93,8 +93,9 @@ case "$SIMULATE" in
   *) die "--simulate must be auth_invalid or busy" ;;
 esac
 # Both values reach a remote command line or ssh's argv: validate before any use.
-[[ "$FORWARD_PORT" =~ ^[0-9]{4,5}$ ]] && [ "$FORWARD_PORT" -ge 1024 ] && [ "$FORWARD_PORT" -le 65535 ] \
-  || die "N8N_FORWARD_PORT must be a port number from 1024 to 65535"
+if ! [[ "$FORWARD_PORT" =~ ^[0-9]{4,5}$ ]] || [ "$FORWARD_PORT" -lt 1024 ] || [ "$FORWARD_PORT" -gt 65535 ]; then
+  die "N8N_FORWARD_PORT must be a port number from 1024 to 65535"
+fi
 [[ "$SSH_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] || die "N8N_SSH_HOST must be a plain host alias"
 for bin in node curl ssh; do command -v "$bin" >/dev/null || die "$bin not found"; done
 [ -f "$WORKFLOW_FILE" ] || die "missing $WORKFLOW_FILE"
