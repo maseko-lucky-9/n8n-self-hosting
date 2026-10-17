@@ -69,6 +69,8 @@ for f in "$@"; do
   if [ ! -f "$f" ]; then echo "$f: NOT FOUND (wrong directory? deleted file?)" >&2; rc=1; continue; fi
   # Skip only this script at its own repo path -- a same-named file elsewhere must still be scanned.
   case "$f" in scripts/disclosure-sweep.sh|./scripts/disclosure-sweep.sh|*/n8n-self-hosting/scripts/disclosure-sweep.sh) continue ;; esac
+  # npm sha512 integrity hashes (base64), not secrets: skip exactly this one lockfile, nothing else.
+  case "$f" in projects/reelsmith-social-publish/scripts/package-lock.json|./projects/reelsmith-social-publish/scripts/package-lock.json|*/n8n-self-hosting/projects/reelsmith-social-publish/scripts/package-lock.json) continue ;; esac
   while IFS= read -r pat; do
     [ -n "$pat" ] || continue
     while IFS= read -r hit; do

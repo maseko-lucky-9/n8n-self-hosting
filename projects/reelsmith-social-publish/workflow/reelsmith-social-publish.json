@@ -3,97 +3,89 @@
   "active": false,
   "settings": {
     "executionOrder": "v1",
-    "maxConcurrency": 1,
-    "saveExecutionProgress": true,
-    "saveManualExecutions": true,
+    "timezone": "Africa/Johannesburg",
+    "executionTimeout": 900,
+    "saveDataSuccessExecution": "all",
     "saveDataErrorExecution": "all",
-    "saveDataSuccessExecution": "all"
+    "saveManualExecutions": true,
+    "saveExecutionProgress": false
   },
   "nodes": [
     {
       "parameters": {
-        "language": "javaScript",
-        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst manifestPath = $json.path;\nconst raw = fs.readFileSync(manifestPath, 'utf8');\nconst lines = raw.split(/\\r?\\n/).filter(l => l.trim().length > 0);\n\nif (lines.length < 2) {\n  throw new Error('Manifest has no clip rows: ' + manifestPath);\n}\n\nfunction parseCsvLine(line) {\n  const cols = [];\n  let cur = '';\n  let inQuote = false;\n  for (let i = 0; i < line.length; i++) {\n    const ch = line[i];\n    if (ch === '\"') {\n      if (inQuote && line[i + 1] === '\"') { cur += '\"'; i++; }\n      else { inQuote = !inQuote; }\n    } else if (ch === ',' && !inQuote) {\n      cols.push(cur); cur = '';\n    } else {\n      cur += ch;\n    }\n  }\n  cols.push(cur);\n  return cols.map(s => s.trim());\n}\n\nconst header = parseCsvLine(lines[0]);\nconst jobDir = path.dirname(manifestPath);\n\nconst items = [];\nfor (let i = 1; i < lines.length; i++) {\n  const vals = parseCsvLine(lines[i]);\n  const row = {};\n  header.forEach((h, idx) => { row[h] = vals[idx] !== undefined ? vals[idx] : ''; });\n  row.clipIndex = i - 1;\n  row.jobDir = jobDir;\n  row.manifestPath = manifestPath;\n  // Resolve relative export_path against jobDir\n  if (row.export_path && !path.isAbsolute(row.export_path)) {\n    row.export_path = path.join(jobDir, row.export_path);\n  }\n  items.push({ json: row });\n}\n\nreturn items;"
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/15 12-20 * * *"
+            }
+          ]
+        }
       },
-      "id": "22222222-2222-4222-8222-222222222222",
-      "name": "Index Clips",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        450,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "language": "javaScript",
-        "jsCode": "\nconst REGIONS = [\n  { tz: 'Africa/Johannesburg', hours: [12, 18, 20] },\n  { tz: 'America/New_York',    hours: [12, 18, 20] },\n  { tz: 'America/Los_Angeles', hours: [12, 18, 20] },\n  { tz: 'Europe/London',       hours: [12, 19, 21] }\n];\nconst MIN_LEAD_MIN = 10;\nconst DEDUP_MIN = 30;\n\nconst now = DateTime.utc();\nconst raw = [];\n\nfor (let day = 0; day < 7; day++) {\n  for (const r of REGIONS) {\n    for (const h of r.hours) {\n      const utc = DateTime.now().setZone(r.tz)\n        .startOf('day').plus({ days: day, hours: h }).toUTC();\n      if (utc.diff(now, 'minutes').minutes >= MIN_LEAD_MIN) {\n        raw.push(utc);\n      }\n    }\n  }\n}\n\nraw.sort((a, b) => a.toMillis() - b.toMillis());\n\nconst windows = [];\nfor (const w of raw) {\n  const last = windows[windows.length - 1];\n  if (!last || w.diff(last, 'minutes').minutes >= DEDUP_MIN) {\n    windows.push(w);\n  }\n}\n\nif (windows.length === 0) {\n  throw new Error('No peak windows available in 7-day lookahead');\n}\n\nreturn $input.all().map(item => ({\n  json: {\n    ...item.json,\n    scheduledAt: windows[item.json.clipIndex % windows.length].toISO()\n  }\n}));"
-      },
-      "id": "33333333-3333-4333-8333-333333333333",
-      "name": "Assign Peak Window",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        650,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "resume": "specificTime",
-        "dateTime": "={{ $json.scheduledAt }}"
-      },
-      "id": "44444444-4444-4444-8444-444444444444",
-      "name": "Wait",
-      "type": "n8n-nodes-base.wait",
+      "name": "Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1,
       "position": [
-        850,
+        0,
         300
       ],
-      "webhookId": "reelsmith-social-publish-wait"
+      "notesInFlow": true,
+      "notes": "Every 15 min, 12:00-20:45 in the workflow time zone (Africa/Johannesburg). Pick Due Clip decides whether a slot is due."
     },
     {
       "parameters": {
-        "filePath": "={{ $json.export_path }}",
-        "dataPropertyName": "clipBinary"
+        "jsCode": "// Pick Due Clip: chooses and claims AT MOST ONE clip per execution.\n// Schedule: every 15 min, 12:00-20:45 SAST. One clip per slot (12:00, 15:00,\n// 18:00), newest manifest first, YouTube-sourced jobs only. Returning []\n// stops the run. Canonical source: scripts/pick-due-clip.jsCode.js; the\n// workflow JSON is generated from it (scripts/build-workflow.js).\n//\n// n8n 2.x Code-node sandbox: luxon is the global `DateTime` (requiring the\n// luxon package aborts the runner) and only fs/path/crypto may be required.\nconst fs = require('fs');\nconst path = require('path');\n\nconst DRY_RUN = true; // deploy-workflow.sh --live flips this in memory, never in git\n\nconst TZ = 'Africa/Johannesburg';\nconst DATA_ROOT = '/data/reelsmith-inbox';             // PVC root, outside the Syncthing folder\nconst INBOX = path.join(DATA_ROOT, 'reelsmith-inbox'); // Syncthing folder; the sidecar's /inbox\nconst SLOT_DIR = path.join(DATA_ROOT, '.slots');\nconst SLOTS = ['12:00', '15:00', '18:00'];\nconst MIN_GAP_MIN = 170;    // since the newest slot marker's claimedAt\nconst LAST_CALL = '21:00';  // no catch-up at or after this time\nconst STALE_CLAIM_MIN = 30; // a claim with no outcome after this is released\nconst CUTOFF = '2026-10-11';  // manifests modified before this day (SAST) are ignored\nconst MIN_BYTES = 1024;       // a clip of 1 KB or less is junk\nconst TIMEOUT_BASE_S = 240;   // sidecar: timeout_s = 240 + ceil(1.5 * size_MiB)\nconst TIMEOUT_PER_MIB_S = 1.5;\nconst HTTP_MARGIN_S = 60;\n// Jobs exported before manifest.csv had a `source` column, confirmed YouTube-sourced.\nconst YOUTUBE_LEGACY_JOBS = [\n  '1979f8a4a33643b5a43d8f0fb4337d3e',\n  '851cbce7386b47959c6136cc3fa9758e',\n  'd7a54c8aa4454fc38949927c0e5c9505',\n  '32508a2a96a14ce38cd087bfb1fdeb22',\n  '48ac096bd9db4976a06f63be654a2900',\n];\nconst JOB_RE = /^[A-Za-z0-9_-]+$/;\n\nconst now = DateTime.now().setZone(TZ);\nconst today = now.toISODate();\nconst execId = (typeof $execution !== 'undefined' && $execution && $execution.id) ? String($execution.id) : 'manual';\n\nfunction lstatOrNull(p) {\n  try {\n    return fs.lstatSync(p);\n  } catch (e) {\n    if (e && e.code === 'ENOENT') return null;\n    throw e;\n  }\n}\n\n// lstat, never stat: a symlinked .claims/.slots would redirect writes elsewhere.\nfunction ensureRealDir(p) {\n  try {\n    fs.mkdirSync(p);\n  } catch (e) {\n    if (!e || e.code !== 'EEXIST') throw e;\n  }\n  const st = fs.lstatSync(p);\n  if (!st.isDirectory()) throw new Error('Pick Due Clip: not a real directory: ' + p);\n}\n\nfunction at(hhmm) {\n  const [hour, minute] = hhmm.split(':').map(Number);\n  return now.startOf('day').set({ hour, minute });\n}\n\nfunction readClaimedAt(file) {\n  try {\n    const parsed = DateTime.fromISO(String(JSON.parse(fs.readFileSync(file, 'utf8')).claimedAt || ''));\n    if (parsed.isValid) return parsed;\n  } catch (e) {\n    // unreadable or half-written: fall back to the file's mtime below\n  }\n  const st = lstatOrNull(file);\n  return st ? DateTime.fromMillis(st.mtimeMs) : null;\n}\n\nfunction listJobs() {\n  let names;\n  try {\n    names = fs.readdirSync(INBOX);\n  } catch (e) {\n    if (e && e.code === 'ENOENT') return [];\n    throw e;\n  }\n  return names.filter((n) => {\n    if (!JOB_RE.test(n)) return false;\n    const st = lstatOrNull(path.join(INBOX, n));\n    return Boolean(st && st.isDirectory());\n  });\n}\n\n// RFC 4180: quoted fields may hold commas, doubled quotes and newlines.\nfunction parseCsv(text) {\n  const records = [];\n  let row = [];\n  let cell = '';\n  let quoted = false;\n  let i = text.charCodeAt(0) === 0xfeff ? 1 : 0;\n  for (; i < text.length; i++) {\n    const ch = text[i];\n    if (quoted) {\n      if (ch === '\"') {\n        if (text[i + 1] === '\"') { cell += '\"'; i++; } else quoted = false;\n      } else cell += ch;\n    } else if (ch === '\"') quoted = true;\n    else if (ch === ',') { row.push(cell); cell = ''; }\n    else if (ch === '\\r' || ch === '\\n') {\n      if (ch === '\\r' && text[i + 1] === '\\n') i++;\n      row.push(cell); records.push(row); row = []; cell = '';\n    } else cell += ch;\n  }\n  if (quoted) throw new Error('unterminated quoted field');\n  if (cell !== '' || row.length) { row.push(cell); records.push(row); }\n  const nonBlank = records.filter((r) => !(r.length === 1 && r[0].trim() === ''));\n  if (!nonBlank.length) throw new Error('empty manifest');\n  const header = nonBlank[0].map((h) => h.trim());\n  if (!header.includes('filename')) throw new Error('manifest has no filename column');\n  const rows = nonBlank.slice(1).map((cells) => {\n    const o = {};\n    header.forEach((h, idx) => { o[h] = cells[idx] === undefined ? '' : cells[idx]; });\n    return o;\n  });\n  return { header, rows };\n}\n\n// -> {kind: 'junk'|'missing'|'claimed'|'ready', ...}. Names are NFC; the on-disk\n// name may be NFD (copied from macOS), so NFC is tried first, then NFD.\nfunction inspectClip(jobDir, rawName) {\n  const name = String(rawName == null ? '' : rawName);\n  if (!name.trim()) return { kind: 'junk', reason: 'empty filename' };\n  const nfc = name.normalize('NFC');\n  if (!nfc.endsWith('.mp4')) return { kind: 'junk', reason: 'not .mp4' };\n  if (nfc !== path.basename(nfc) || nfc.startsWith('.') || /[\\\\/\\0]/.test(nfc)) {\n    return { kind: 'junk', reason: 'unsafe filename' };\n  }\n  let diskName = null;\n  let st = null;\n  for (const candidate of [...new Set([nfc, name.normalize('NFD'), name])]) {\n    st = lstatOrNull(path.join(jobDir, candidate));\n    if (st) { diskName = candidate; break; }\n  }\n  if (!st) return { kind: 'missing', nfc };\n  if (!st.isFile()) return { kind: 'junk', reason: 'not a regular file' };\n  if (st.size <= MIN_BYTES) return { kind: 'junk', reason: '1 KB or less' };\n  const claimPath = path.join(jobDir, '.claims', nfc + '.json');\n  if (lstatOrNull(claimPath)) return { kind: 'claimed', nfc };\n  return { kind: 'ready', nfc, diskName, size: st.size, claimPath };\n}\n\nfunction hashtagsField(raw) {\n  const s = String(raw == null ? '' : raw).trim();\n  if (!s) return '[]';\n  try {\n    const parsed = JSON.parse(s);\n    if (Array.isArray(parsed)) return JSON.stringify(parsed.map(String));\n  } catch (e) {\n    // not JSON: Contract v1 also accepts whitespace/comma separated tags\n  }\n  return s;\n}\n\n// 1. Stale-claim sweep. Only our own unresolved claims (status 'claimed') are\n// released; outcomes and the pre-2026-10 workflow's markers (no status) stay.\n// A released clip that did reach TikTok gets a 409 from the sidecar ledger.\n// ponytail: the crashed run's slot marker is NOT released, so a crash costs\n//   that slot (at most 3 a day); the safe direction for an upload that may\n//   have posted.\nfor (const job of listJobs()) {\n  const claimDir = path.join(INBOX, job, '.claims');\n  const dirSt = lstatOrNull(claimDir);\n  if (!dirSt || !dirSt.isDirectory()) continue;\n  for (const name of fs.readdirSync(claimDir)) {\n    if (!name.endsWith('.json')) continue;\n    const file = path.join(claimDir, name);\n    let claim;\n    try {\n      claim = JSON.parse(fs.readFileSync(file, 'utf8'));\n    } catch (e) {\n      continue; // being written right now, or not ours\n    }\n    if (!claim || claim.status !== 'claimed') continue;\n    const claimedAt = readClaimedAt(file);\n    if (claimedAt && now.diff(claimedAt, 'minutes').minutes > STALE_CLAIM_MIN) {\n      fs.rmSync(file, { force: true });\n    }\n  }\n}\n\n// 2. Slot gate (real runs only). A dry run may run at any time and takes no slot.\nlet slot = null;\nif (!DRY_RUN) {\n  if (now >= at(LAST_CALL)) return [];\n  ensureRealDir(SLOT_DIR);\n  const markerPath = (day, i) => path.join(SLOT_DIR, `${day}-${i}.json`);\n  const due = SLOTS.findIndex((s, i) => at(s) <= now && !lstatOrNull(markerPath(today, i)));\n  if (due < 0) return [];\n  // ponytail: markers are never pruned (3 small files a day); only today's and\n  // yesterday's are read, since the gap is far shorter than a day.\n  const recentDays = [today, now.minus({ days: 1 }).toISODate()];\n  let newest = null;\n  for (const name of fs.readdirSync(SLOT_DIR)) {\n    if (!name.endsWith('.json') || !recentDays.some((d) => name.startsWith(d + '-'))) continue;\n    const claimedAt = readClaimedAt(path.join(SLOT_DIR, name));\n    if (claimedAt && (!newest || claimedAt > newest)) newest = claimedAt;\n  }\n  if (newest && now.diff(newest, 'minutes').minutes < MIN_GAP_MIN) return [];\n  slot = { index: due, date: today, marker: markerPath(today, due) };\n}\n\n// 3. Candidates: every non-archived manifest.csv modified on/after CUTOFF,\n// newest first, rows in file order.\nconst cutoffMs = DateTime.fromISO(CUTOFF, { zone: TZ }).toMillis();\nconst manifests = [];\nfor (const job of listJobs()) {\n  const manifestPath = path.join(INBOX, job, 'manifest.csv');\n  const st = lstatOrNull(manifestPath);\n  if (!st || !st.isFile() || st.mtimeMs < cutoffMs) continue;\n  manifests.push({ job, jobDir: path.join(INBOX, job), manifestPath, mtimeMs: st.mtimeMs });\n}\nmanifests.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (a.job < b.job ? -1 : a.job > b.job ? 1 : 0));\n\nconst manifestErrors = [];\nfor (const m of manifests) {\n  let parsed;\n  try {\n    parsed = parseCsv(fs.readFileSync(m.manifestPath, 'utf8'));\n  } catch (e) {\n    manifestErrors.push(m.job + ': ' + String((e && e.message) || e).slice(0, 120));\n    continue;\n  }\n  // YouTube only: with a `source` column every row must say youtube (an empty\n  // cell counts only for a confirmed legacy job: its DB source is NULL); without\n  // the column, the job must be on the confirmed legacy list. Everything else\n  // is skipped and therefore never archived.\n  const hasSource = parsed.header.includes('source');\n  const legacyJob = YOUTUBE_LEGACY_JOBS.includes(m.job);\n  if (!hasSource && !legacyJob) continue;\n\n  for (let rowIndex = 0; rowIndex < parsed.rows.length; rowIndex++) {\n    const row = parsed.rows[rowIndex];\n    const source = String(row.source).trim();\n    if (hasSource && source !== 'youtube' && !(source === '' && legacyJob)) continue;\n    const clip = inspectClip(m.jobDir, row.filename);\n    if (clip.kind !== 'ready') continue; // junk: skip; missing: wait for Syncthing; claimed: skip\n\n    // Claim = <jobDir>/.claims/<NFC filename>.json; it is never removed for a\n    // posted, needs_you or failed clip. Recover a stuck clip by deleting its\n    // claim (unpublished-inventory.js lists them).\n    // ponytail: O_EXCL is atomic on this single-node local PVC; on NFS or a\n    //   multi-node volume, move claims to a Postgres UNIQUE row.\n    ensureRealDir(path.join(m.jobDir, '.claims'));\n    const clipKey = `${m.job}/${clip.nfc}`;\n    try {\n      fs.writeFileSync(clip.claimPath, JSON.stringify({\n        status: 'claimed',\n        claimedAt: now.toISO(),\n        execId,\n        clip_key: clipKey,\n        dryRun: DRY_RUN,\n        slot: slot ? { date: slot.date, index: slot.index } : null,\n      }) + '\\n', { flag: 'wx' }); // O_EXCL: a concurrent run that got here first wins\n    } catch (e) {\n      if (e && e.code === 'EEXIST') continue;\n      throw e;\n    }\n    if (slot) {\n      try {\n        fs.writeFileSync(slot.marker, JSON.stringify({\n          claimedAt: now.toISO(),\n          execId,\n          clip_key: clipKey,\n        }) + '\\n', { flag: 'wx' });\n      } catch (e) {\n        fs.rmSync(clip.claimPath, { force: true });\n        if (e && e.code === 'EEXIST') return []; // another run took this slot: stand down\n        throw e;\n      }\n    }\n\n    const title = String(row.title || '').trim();\n    const sizeMiB = clip.size / 1048576;\n    return [{\n      json: {\n        clip_path: clipKey,\n        clip_key: clipKey,\n        caption: String(row.description || '').trim() || title,\n        hashtags: hashtagsField(row.hashtags),\n        dryRun: DRY_RUN,\n        timeoutMs: (TIMEOUT_BASE_S + Math.ceil(TIMEOUT_PER_MIB_S * sizeMiB) + HTTP_MARGIN_S) * 1000,\n        manifestPath: m.manifestPath,\n        jobDir: m.jobDir,\n        rowIndex,\n        filename: clip.nfc,\n        title,\n        sizeBytes: clip.size,\n        claimPath: clip.claimPath,\n        slotMarker: slot ? slot.marker : null,\n        claimedAt: now.toISO(),\n        manifestErrors,\n      },\n    }];\n  }\n}\n\n// Nothing to post. A manifest that cannot be parsed fails the run so the\n// watchdog reports it; otherwise it would be skipped silently forever.\nif (manifestErrors.length) {\n  throw new Error('Pick Due Clip: unreadable manifest(s): ' + manifestErrors.join('; '));\n}\nreturn [];\n"
       },
-      "id": "55555555-5555-4555-8555-555555555555",
-      "name": "Read Clip File",
-      "type": "n8n-nodes-base.readBinaryFile",
-      "typeVersion": 1,
+      "name": "Pick Due Clip",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
-        1050,
+        220,
         300
       ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "oAuth2Api",
-        "sendHeaders": true,
-        "headerParameters": {
+        "url": "http://tiktok-sidecar.n8n-live.svc:8000/api/upload",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
           "parameters": [
             {
-              "name": "Content-Type",
-              "value": "application/json; charset=UTF-8"
+              "parameterType": "formData",
+              "name": "clip_path",
+              "value": "={{ $json.clip_path }}"
             },
             {
-              "name": "X-Upload-Content-Type",
-              "value": "video/mp4"
+              "parameterType": "formData",
+              "name": "caption",
+              "value": "={{ $json.caption }}"
             },
             {
-              "name": "X-Upload-Content-Length",
-              "value": "={{ $binary.clipBinary.fileSize }}"
+              "parameterType": "formData",
+              "name": "hashtags",
+              "value": "={{ $json.hashtags }}"
+            },
+            {
+              "parameterType": "formData",
+              "name": "account",
+              "value": "reelsmith"
+            },
+            {
+              "parameterType": "formData",
+              "name": "source",
+              "value": "n8n"
+            },
+            {
+              "parameterType": "formData",
+              "name": "dry_run",
+              "value": "={{ $json.dryRun === false ? 'false' : 'true' }}"
             }
           ]
         },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ snippet: { title: ($json.title || '').substring(0, 100), description: ($json.description || '') + '\\n\\n#Shorts', tags: (() => { try { return JSON.parse($json.hashtags || '[]').map(h => String(h).replace('#', '')); } catch(e) { return []; } })() }, status: { privacyStatus: 'private' } }) }}",
         "options": {
+          "timeout": "={{ $json.timeoutMs }}",
           "response": {
             "response": {
               "fullResponse": true,
@@ -102,312 +94,67 @@
           }
         }
       },
-      "id": "99999999-9999-4999-8999-999999999999",
-      "name": "YouTube Init",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
-      "position": [
-        1250,
-        420
-      ],
-      "credentials": {
-        "oAuth2Api": {
-          "id": "reelsmith-youtube",
-          "name": "reelsmith-youtube"
-        }
-      },
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "language": "javaScript",
-        "jsCode": "// Extract Location header from full-response YouTube Init output\nconst resp = $json;\nconst out = { ...$('Read Clip File').item.json };\ntry {\n  const headers = (resp && resp.headers) || {};\n  const sessionUrl = headers.location || headers.Location;\n  if (!sessionUrl) {\n    throw new Error('YouTube init missing Location header: ' + JSON.stringify(resp).substring(0, 300));\n  }\n  out.youtube_session_url = sessionUrl;\n} catch (err) {\n  out.youtube_error = String(err.message || err);\n}\nreturn [{ json: out, binary: $binary }];"
-      },
-      "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      "name": "YouTube Capture Session",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1450,
-        420
-      ]
-    },
-    {
-      "parameters": {
-        "method": "PUT",
-        "url": "={{ $json.youtube_session_url }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "video/mp4"
-            }
-          ]
-        },
-        "sendBody": true,
-        "contentType": "binaryData",
-        "inputDataFieldName": "clipBinary",
-        "options": {
-          "response": {
-            "response": {
-              "neverError": true
-            }
-          }
-        }
-      },
-      "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-      "name": "YouTube Upload",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
-      "position": [
-        1650,
-        420
-      ],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "mode": "combine",
-        "combinationMode": "mergeByFields",
-        "options": {},
-        "mergeByFields": {
-          "values": [
-            {
-              "field1": "filename",
-              "field2": "filename"
-            }
-          ]
-        }
-      },
-      "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-      "name": "Merge Results",
-      "type": "n8n-nodes-base.merge",
-      "typeVersion": 2,
-      "position": [
-        1850,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "language": "javaScript",
-        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst HEADER = 'timestamp,filename,title,tiktok_post_id,tiktok_post_url,youtube_video_id,youtube_status,error\\n';\n\nfunction csvEscape(v) {\n  const s = String(v == null ? '' : v);\n  return (s.includes(',') || s.includes('\"') || s.includes('\\n'))\n    ? '\"' + s.replace(/\"/g, '\"\"') + '\"'\n    : s;\n}\n\nconst out = [];\nfor (const item of $input.all()) {\n  const j = item.json;\n  const logPath = path.join(j.jobDir, 'results.log.csv');\n\n  const tiktokStatus = j.post_url || '';\n  const youtubeId    = (j.id) || (j.body && j.body.id) || '';\n  const youtubeStatus = j.youtube_error ? 'failed' : (youtubeId ? 'uploaded' : 'unknown');\n  const errors = [j.tiktok_error, j.youtube_error].filter(Boolean).join(' | ');\n\n  const row = [\n    new Date().toISOString(),\n    j.filename || path.basename(j.export_path || ''),\n    j.title || '',\n    j.post_id || '',\n    tiktokStatus,\n    youtubeId,\n    youtubeStatus,\n    errors\n  ].map(csvEscape).join(',') + '\\n';\n\n  if (!fs.existsSync(logPath)) fs.writeFileSync(logPath, HEADER);\n  fs.appendFileSync(logPath, row);\n\n  if (errors) {\n    try {\n      const token = process.env.TELEGRAM_BOT_TOKEN;\n      const chatId = process.env.TELEGRAM_CHAT_ID;\n      if (token && chatId) {\n        await this.helpers.httpRequest({\n          method: 'POST',\n          url: `https://api.telegram.org/bot${token}/sendMessage`,\n          json: true,\n          body: {\n            chat_id: chatId,\n            text: `Reelsmith publish FAILED\\nfile: ${j.filename || j.export_path}\\nerror: ${errors}`\n          }\n        });\n      }\n    } catch (_) { /* swallow alert errors */ }\n  }\n\n  out.push({ json: { ...j, logged: true } });\n}\nreturn out;"
-      },
-      "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-      "name": "Log Results",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        2050,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "language": "javaScript",
-        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst items = $input.all();\nconst out = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const j = items[i].json;\n  // Archive on last item only — one manifest per execution\n  if (i === items.length - 1) {\n    const src = j.manifestPath;\n    if (src && fs.existsSync(src)) {\n      const processedDir = path.join(j.jobDir, 'processed');\n      fs.mkdirSync(processedDir, { recursive: true });\n      const stamp = new Date().toISOString().replace(/[:.]/g, '-');\n      const dest = path.join(processedDir, `manifest-${stamp}.csv`);\n      fs.renameSync(src, dest);\n      out.push({ json: { ...j, archived_to: dest } });\n      continue;\n    }\n  }\n  out.push({ json: j });\n}\nreturn out;"
-      },
-      "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
-      "name": "Archive Manifest",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        2250,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "rule": {
-          "interval": [
-            {
-              "field": "cronExpression",
-              "expression": "0 */8 * * *"
-            }
-          ]
-        }
-      },
-      "id": "f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0",
-      "name": "Scanner Trigger",
-      "type": "n8n-nodes-base.scheduleTrigger",
-      "typeVersion": 1,
-      "position": [
-        250,
-        500
-      ],
-      "notesInFlow": true,
-      "notes": "Layer-1 ToS coarse poll: every 8h. Layer-2 cap (<=3/day) lives in 'TikTok Rate Limit' Code node."
-    },
-    {
-      "parameters": {
-        "language": "javaScript",
-        "jsCode": "const fs = require('fs');\nconst path = require('path');\n\nconst inbox = '/data/reelsmith-inbox';\nconst found = [];\n\nfunction walk(dir) {\n  let entries;\n  try { entries = fs.readdirSync(dir, { withFileTypes: true }); }\n  catch (e) { return; }\n  for (const e of entries) {\n    const full = path.join(dir, e.name);\n    if (e.isDirectory()) {\n      if (e.name !== 'processed') walk(full);\n    } else if (e.name === 'manifest.csv') {\n      found.push(full);\n    }\n  }\n}\n\nwalk(inbox);\n\n// Return empty array to stop execution gracefully when nothing to process\nif (found.length === 0) return [];\nreturn found.map(p => ({ json: { path: p } }));"
-      },
-      "id": "e1e1e1e1-e1e1-4e1e-8e1e-e1e1e1e1e1e1",
-      "name": "Scan Manifests",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        450,
-        500
-      ]
-    },
-    {
-      "parameters": {
-        "language": "javaScript",
-        "jsCode": "// Layer-2 ToS-mitigation rate cap. The Scanner Trigger cron (Layer-1) is\n// every 8h; this code enforces the actual <=3 posts/day cap by counting\n// successful TikTok dispatches in workflow static data, keyed by UTC date.\nconst today = new Date().toISOString().slice(0, 10);\nconst sd = $getWorkflowStaticData('global');\nif (sd.postsDate !== today) {\n  sd.postsDate = today;\n  sd.postsToday = 0;\n}\nif ((sd.postsToday || 0) >= 3) {\n  // Skip this branch — daily cap hit. Return empty array so downstream stops.\n  return [];\n}\nsd.postsToday = (sd.postsToday || 0) + 1;\n// Pass-through; the increment is best-effort optimistic (decremented on failure\n// would require a follow-up node — deferred).\nreturn $input.all();"
-      },
-      "id": "99aabbcc-1111-4111-8111-111111111111",
-      "name": "TikTok Rate Limit",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1230,
-        180
-      ],
-      "notesInFlow": true,
-      "notes": "Layer-2 ToS cap: <=3 posts/day, UTC-day-scoped via workflow static data. Layer-1 is the Scanner Trigger cron (0 */8 * * *)."
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "http://tiktok-sidecar.n8n-live.svc.cluster.local:8000/api/upload",
-        "sendBody": true,
-        "contentType": "multipart-form-data",
-        "bodyParameters": {
-          "parameters": [
-            {
-              "parameterType": "formBinaryData",
-              "name": "video",
-              "inputDataFieldName": "clipBinary"
-            },
-            {
-              "name": "caption",
-              "value": "={{ ($json.title || '').substring(0, 150) }}"
-            },
-            {
-              "name": "hashtags",
-              "value": "={{ ($json.hashtags || []).join(' ') }}"
-            },
-            {
-              "name": "account",
-              "value": "reelsmith"
-            }
-          ]
-        },
-        "options": {
-          "timeout": 300000,
-          "redirect": {
-            "redirect": {}
-          },
-          "response": {
-            "response": {
-              "responseFormat": "json"
-            }
-          }
-        }
-      },
-      "id": "99aabbcc-2222-4222-8222-222222222222",
       "name": "TikTok Sidecar Upload",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1450,
-        180
+        440,
+        300
       ],
       "notesInFlow": true,
-      "notes": "POSTs the clip + caption + hashtags to the in-cluster FastAPI sidecar (wraps makiisthenes/TiktokAutoUploader, cookie-auth). Replaces the 3 deleted TikTok Open API nodes (Init/Upload/Poll). Service URL: tiktok-sidecar.n8n-live.svc.cluster.local:8000",
+      "notes": "tiktok-sidecar Contract v1. No retries here: the next 15-min run retries, and the sidecar ledger refuses duplicates.",
       "continueOnFail": true,
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 5000
+      "retryOnFail": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log Results: turns the sidecar's answer into ONE outcome for the picked clip.\n// Order matters: the claim (and slot) are settled on disk BEFORE any alert, so\n// a failed Telegram send can never leave a clip half-recorded; the send\n// failure then fails the run so the watchdog sees it. Canonical source:\n// scripts/log-results.jsCode.js.\nconst fs = require('fs');\nconst path = require('path');\n\nconst TZ = 'Africa/Johannesburg';\nconst DATA_ROOT = '/data/reelsmith-inbox';\nconst STATE_DIR = path.join(DATA_ROOT, '.state');\nconst RETRY_STATE = path.join(STATE_DIR, 'retryable-failures.json');\nconst RETRY_ALERT_AFTER = 3;    // consecutive retryable failures before the first alert\nconst AUTH_ALERT_AFTER = 1;     // consecutive auth_invalid answers before the first alert\nconst REALERT_EVERY = 12;       // then one more alert per 12 in a row (about 3h at */15)\nconst NEEDS_SLOT_RELEASES = 2;  // needs_you frees the slot only for the first 2 in a row\nconst ALERT_MAX_CHARS = 800;\nconst HEADER = 'timestamp,filename,title,tiktok_post_id,tiktok_post_url,youtube_video_id,youtube_status,error,tiktok_status\\n';\nconst RETRYABLE_NET = ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT'];\n\nconst pick = $('Pick Due Clip').first().json;\nconst res = $input.first().json || {};\nconst now = DateTime.now().setZone(TZ);\nconst helpers = this.helpers;\nconst execId = (typeof $execution !== 'undefined' && $execution && $execution.id) ? String($execution.id) : 'manual';\n\nconst safeCode = (v) => (typeof v === 'string' && /^[a-z0-9_]{1,40}$/.test(v) ? v : '');\nconst safeErrorId = (v) => (typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v) ? v : '');\n\nfunction parseBody(body) {\n  if (body && typeof body === 'object') return body;\n  if (typeof body === 'string') {\n    try {\n      const parsed = JSON.parse(body);\n      if (parsed && typeof parsed === 'object') return parsed;\n    } catch (e) {\n      // not JSON: classified by HTTP status alone\n    }\n  }\n  return {};\n}\n\n// continueOnFail turns a transport failure into {error: <AxiosError JSON>}:\n// `code` carries the errno; axios's own timeout is ECONNABORTED with the\n// message \"timeout of <n>ms exceeded\" (n8n does not set clarifyTimeoutError).\nfunction transportFailure(err) {\n  const e = (err && typeof err === 'object') ? err : { message: String(err) };\n  const code = String(e.code || (e.cause && e.cause.code) || '').toUpperCase();\n  const message = String(e.message || e.description || '');\n  if (code === 'ECONNABORTED' || /timeout of \\d+ms exceeded/i.test(message)) {\n    return { kind: 'ambiguous', code: 'timeout' };\n  }\n  const errno = RETRYABLE_NET.find((c) => c === code || message.includes(c));\n  if (errno) return { kind: 'retryable', code: errno.toLowerCase() };\n  if (code === 'ECONNRESET' || message.includes('ECONNRESET')) return { kind: 'ambiguous', code: 'econnreset' };\n  return { kind: 'ambiguous', code: 'request_error' };\n}\n\n// -> {kind, status?, code, errorId, httpStatus}\n//    kind: posted | posted_elsewhere | dry_run | daily_cap | retryable | auth_invalid\n//          | needs_you (definitely not uploaded, this clip is set aside) | ambiguous (may have posted)\nfunction classify(r) {\n  if (r.statusCode === undefined && r.error !== undefined) {\n    return { ...transportFailure(r.error), errorId: '', httpStatus: null };\n  }\n  const httpStatus = Number(r.statusCode);\n  const body = parseBody(r.body);\n  const code = safeCode(body.code);\n  const errorId = safeErrorId(body.error_id);\n  const out = (kind, fallback) => ({ kind, code: code || fallback, errorId, httpStatus });\n  if (httpStatus === 200) {\n    if (body.status === 'success' && body.code === 'posted') return out('posted', 'posted');\n    if (body.status === 'dry_run') return out('dry_run', 'dry_run');\n    return out('ambiguous', 'unexpected_200');\n  }\n  if (httpStatus === 409) return code === 'duplicate' ? out('posted_elsewhere', 'duplicate') : out('needs_you', 'ambiguous');\n  if (httpStatus === 401) return out('auth_invalid', 'auth_invalid');\n  if (httpStatus === 400) return out('needs_you', 'bad_input');\n  if (httpStatus === 413) return out('needs_you', 'too_large');\n  if (httpStatus === 429) return out('daily_cap', 'daily_cap');\n  if (httpStatus === 503) return out('retryable', 'unavailable');\n  // 500 internal, 502 publish_rejected/signature_failed, 504 timeout, anything unexpected\n  return out('ambiguous', 'http_' + (Number.isFinite(httpStatus) ? httpStatus : 'unknown'));\n}\n\nfunction lstatOrNull(p) {\n  try {\n    return fs.lstatSync(p);\n  } catch (e) {\n    if (e && e.code === 'ENOENT') return null;\n    throw e;\n  }\n}\n\nfunction assertRealDir(dir) {\n  const st = lstatOrNull(dir);\n  if (!st || !st.isDirectory()) throw new Error('Log Results: not a real directory: ' + dir);\n}\n\n// lstat the directory, write a fresh tmp (O_EXCL, so a planted symlink is\n// never followed), then rename over the target: readers see old or new, never half.\nfunction writeJsonAtomic(file, obj) {\n  const dir = path.dirname(file);\n  assertRealDir(dir);\n  const tmp = path.join(dir, `.${path.basename(file)}.${execId.replace(/[^A-Za-z0-9_-]/g, '')}.${now.toMillis()}.tmp`);\n  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\\n', { flag: 'wx' });\n  fs.renameSync(tmp, file);\n}\n\nfunction csvEscape(v) {\n  const s = String(v == null ? '' : v);\n  return /[\",\\r\\n]/.test(s) ? '\"' + s.replace(/\"/g, '\"\"') + '\"' : s;\n}\n\nfunction appendResultRow(jobDir, cells) {\n  assertRealDir(jobDir);\n  const logPath = path.join(jobDir, 'results.log.csv');\n  try {\n    fs.writeFileSync(logPath, HEADER, { flag: 'wx' });\n  } catch (e) {\n    if (!e || e.code !== 'EEXIST') throw e;\n  }\n  const st = fs.lstatSync(logPath);\n  if (!st.isFile()) throw new Error('Log Results: results.log.csv is not a regular file');\n  fs.appendFileSync(logPath, cells.map(csvEscape).join(',') + '\\n');\n}\n\nasync function sendAlert(text) {\n  const token = $env.TELEGRAM_BOT_TOKEN;\n  const chatId = $env.TELEGRAM_CHAT_ID;\n  if (!token || !chatId) throw new Error('Log Results: alert not sent, TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID unset');\n  try {\n    await helpers.httpRequest({\n      method: 'POST',\n      url: `https://api.telegram.org/bot${token}/sendMessage`,\n      json: true,\n      timeout: 10000,\n      body: { chat_id: chatId, text: text.slice(0, ALERT_MAX_CHARS), disable_web_page_preview: true },\n    });\n  } catch (e) {\n    // Never echo e.message: it can carry the request URL, and with it the bot token.\n    const why = safeCode(String((e && (e.code || e.httpCode)) || '').toLowerCase()) || 'send_failed';\n    throw new Error('Log Results: Telegram alert failed (' + why + '); the outcome is already recorded');\n  }\n}\n\nconst outcome = classify(res);\n\n// Consecutive-outcome counters: sidecar unavailable (count), TikTok session\n// invalid (authCount), clip refused as needs_you (needsCount). Any other\n// outcome resets each to 0.\nfs.mkdirSync(STATE_DIR, { recursive: true });\nlet state = {};\ntry {\n  state = JSON.parse(fs.readFileSync(RETRY_STATE, 'utf8')) || {};\n} catch (e) {\n  state = {};\n}\nconst retryCount = outcome.kind === 'retryable' ? (Number(state.count) || 0) + 1 : 0;\nconst authCount = outcome.kind === 'auth_invalid' ? (Number(state.authCount) || 0) + 1 : 0;\nconst needsCount = outcome.kind === 'needs_you' ? (Number(state.needsCount) || 0) + 1 : 0;\n\n// Released clips are retried by a later run: nothing reached TikTok (retryable,\n// auth_invalid, dry run) or today's cap was hit. A dry run never uploads, so even\n// a \"needs you\" answer (e.g. simulate=auth_invalid) releases the clip there. A\n// real \"posted\" is always kept, whatever the mode.\nconst releaseClip = ['retryable', 'auth_invalid', 'dry_run', 'daily_cap'].includes(outcome.kind)\n  || (pick.dryRun === true && ['needs_you', 'ambiguous'].includes(outcome.kind));\n// The slot stays used when an upload may have reached TikTok (posted,\n// ambiguous) or the daily cap is hit; a definite \"not uploaded\" frees it for\n// the next 15-minute run. needs_you frees it only for the first 2 in a row, so\n// a systematic refusal sets aside at most 5 clips a day (2 + the 3 slots).\nconst releaseSlot = ['retryable', 'auth_invalid', 'dry_run', 'posted_elsewhere'].includes(outcome.kind)\n  || (outcome.kind === 'needs_you' && needsCount <= NEEDS_SLOT_RELEASES)\n  || (pick.dryRun === true && outcome.kind !== 'posted');\nconst claimStatus = {\n  posted: 'posted', posted_elsewhere: 'posted_elsewhere', needs_you: 'needs_you', ambiguous: 'failed',\n}[outcome.kind];\nconst rowStatus = releaseClip ? outcome.kind : claimStatus;\n\n// 1. Settle the claim and the slot on disk.\nif (releaseClip) {\n  assertRealDir(path.dirname(pick.claimPath));\n  fs.rmSync(pick.claimPath, { force: true });\n} else {\n  writeJsonAtomic(pick.claimPath, {\n    status: claimStatus,\n    claimedAt: pick.claimedAt,\n    decidedAt: now.toISO(),\n    execId,\n    clip_key: pick.clip_key,\n    code: outcome.code,\n    error_id: outcome.errorId,\n    http_status: outcome.httpStatus,\n    dryRun: pick.dryRun === true,\n  });\n}\nif (releaseSlot && pick.slotMarker) {\n  assertRealDir(path.dirname(pick.slotMarker));\n  fs.rmSync(pick.slotMarker, { force: true });\n}\n\n// 2. Persist the consecutive-outcome counters computed above.\nwriteJsonAtomic(RETRY_STATE, { count: retryCount, authCount, needsCount, lastCode: outcome.code, updatedAt: now.toISO() });\n\n// 3. One row per outcome in the job's results.log.csv (live column order; the\n// TikTok outcome goes in the trailing tiktok_status column). A file that still\n// has the old 8-column header keeps it; unpublished-inventory.js reads the 9th cell.\nappendResultRow(pick.jobDir, [\n  now.toISO(),\n  pick.filename,\n  pick.title,\n  '',\n  '',\n  '',\n  '',\n  [outcome.code, outcome.errorId].filter(Boolean).join(' '),\n  rowStatus,\n]);\n\n// 4. Alert last. Fixed strings + code + error_id + filename only: never the\n// caption or sidecar output.\nconst line = (label, v) => (v ? `\\n${label}: ${v}` : '');\nconst detail = `${line('code', outcome.code)}${line('error_id', outcome.errorId)}${line('file', pick.filename)}`;\nconst due = (n, first) => n >= first && (n - first) % REALERT_EVERY === 0;\nlet alertText = null;\nif (outcome.kind === 'auth_invalid' && due(authCount, AUTH_ALERT_AFTER)) {\n  alertText = `🔑 Reelsmith: TikTok session invalid (${authCount} in a row). Run \\`make refresh-cookies\\` in tiktok-sidecar; clips wait and retry every 15 min.` + detail;\n} else if (outcome.kind === 'needs_you') {\n  alertText = 'Reelsmith: a clip needs you (not posted, will not be retried).'\n    + (needsCount > NEEDS_SLOT_RELEASES ? '\\n3+ clips refused in a row: check the sidecar contract.' : '') + detail;\n} else if (outcome.kind === 'ambiguous') {\n  alertText = 'Reelsmith: upload outcome unknown; check TikTok before resolving it in the sidecar ledger.' + detail;\n} else if (outcome.kind === 'retryable' && due(retryCount, RETRY_ALERT_AFTER)) {\n  alertText = `Reelsmith: sidecar unavailable ${retryCount} times in a row; clips are waiting.` + detail;\n}\nif (pick.dryRun === true && alertText) alertText = '[dry run] ' + alertText;\nif (alertText) await sendAlert(alertText);\n\nreturn [{\n  json: {\n    clip_key: pick.clip_key,\n    filename: pick.filename,\n    manifestPath: pick.manifestPath,\n    jobDir: pick.jobDir,\n    dryRun: pick.dryRun === true,\n    outcome: outcome.kind,\n    status: rowStatus,\n    code: outcome.code,\n    error_id: outcome.errorId,\n    httpStatus: outcome.httpStatus,\n    clipReleased: releaseClip,\n    slotReleased: Boolean(releaseSlot && pick.slotMarker),\n    retryCount,\n    authCount,\n    needsCount,\n    alerted: Boolean(alertText),\n  },\n}];\n"
+      },
+      "name": "Log Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Archive Manifest: moves the picked clip's manifest.csv into processed/ once\n// EVERY row is done: posted, posted_elsewhere or junk. A missing clip (Syncthing\n// still copying), a failed or needs-you clip, or a row from a non-YouTube\n// source keeps the manifest where it is. Canonical source:\n// scripts/archive-manifest.jsCode.js.\nconst fs = require('fs');\nconst path = require('path');\n\nconst TZ = 'Africa/Johannesburg';\nconst MIN_BYTES = 1024;\nconst DONE = ['posted', 'posted_elsewhere'];\n\nconst pick = $('Pick Due Clip').first().json;\nconst items = $input.all();\nconst now = DateTime.now().setZone(TZ);\n\nfunction lstatOrNull(p) {\n  try {\n    return fs.lstatSync(p);\n  } catch (e) {\n    if (e && e.code === 'ENOENT') return null;\n    throw e;\n  }\n}\n\n// Same RFC 4180 reader as Pick Due Clip (quoted commas, quotes and newlines).\nfunction parseCsv(text) {\n  const records = [];\n  let row = [];\n  let cell = '';\n  let quoted = false;\n  let i = text.charCodeAt(0) === 0xfeff ? 1 : 0;\n  for (; i < text.length; i++) {\n    const ch = text[i];\n    if (quoted) {\n      if (ch === '\"') {\n        if (text[i + 1] === '\"') { cell += '\"'; i++; } else quoted = false;\n      } else cell += ch;\n    } else if (ch === '\"') quoted = true;\n    else if (ch === ',') { row.push(cell); cell = ''; }\n    else if (ch === '\\r' || ch === '\\n') {\n      if (ch === '\\r' && text[i + 1] === '\\n') i++;\n      row.push(cell); records.push(row); row = []; cell = '';\n    } else cell += ch;\n  }\n  if (quoted) throw new Error('unterminated quoted field');\n  if (cell !== '' || row.length) { row.push(cell); records.push(row); }\n  const nonBlank = records.filter((r) => !(r.length === 1 && r[0].trim() === ''));\n  if (!nonBlank.length) throw new Error('empty manifest');\n  const header = nonBlank[0].map((h) => h.trim());\n  if (!header.includes('filename')) throw new Error('manifest has no filename column');\n  const rows = nonBlank.slice(1).map((cells) => {\n    const o = {};\n    header.forEach((h, idx) => { o[h] = cells[idx] === undefined ? '' : cells[idx]; });\n    return o;\n  });\n  return { header, rows };\n}\n\n// Junk exactly as Pick Due Clip defines it; otherwise done only if the claim\n// records a posted outcome.\nfunction rowDone(jobDir, rawName) {\n  const name = String(rawName == null ? '' : rawName);\n  if (!name.trim()) return true;\n  const nfc = name.normalize('NFC');\n  if (!nfc.endsWith('.mp4')) return true;\n  if (nfc !== path.basename(nfc) || nfc.startsWith('.') || /[\\\\/\\0]/.test(nfc)) return true;\n  let st = null;\n  for (const candidate of [...new Set([nfc, name.normalize('NFD'), name])]) {\n    st = lstatOrNull(path.join(jobDir, candidate));\n    if (st) break;\n  }\n  if (!st) return false; // missing: wait, never archive\n  if (!st.isFile() || st.size <= MIN_BYTES) return true;\n  try {\n    const claim = JSON.parse(fs.readFileSync(path.join(jobDir, '.claims', nfc + '.json'), 'utf8'));\n    return Boolean(claim && DONE.includes(claim.status));\n  } catch (e) {\n    return false; // no claim yet, or unreadable\n  }\n}\n\nconst passthrough = items.map((it) => ({ json: it.json }));\nconst manifestPath = pick.manifestPath;\nconst jobDir = pick.jobDir;\nif (!manifestPath || !jobDir || path.dirname(manifestPath) !== jobDir) return passthrough;\nconst st = lstatOrNull(manifestPath);\nif (!st || !st.isFile()) return passthrough;\n\nconst { rows } = parseCsv(fs.readFileSync(manifestPath, 'utf8'));\nif (!rows.every((r) => rowDone(jobDir, r.filename))) return passthrough;\n\nconst processed = path.join(jobDir, 'processed');\ntry {\n  fs.mkdirSync(processed);\n} catch (e) {\n  if (!e || e.code !== 'EEXIST') throw e;\n}\nif (!fs.lstatSync(processed).isDirectory()) throw new Error('Archive Manifest: processed/ is not a real directory');\nconst dest = path.join(processed, `manifest-${now.toUTC().toISO().replace(/[:.]/g, '-')}.csv`);\nfs.renameSync(manifestPath, dest);\nreturn items.map((it) => ({ json: { ...it.json, archived_to: dest } }));\n"
+      },
+      "name": "Archive Manifest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ]
     }
   ],
   "connections": {
-    "Index Clips": {
+    "Schedule": {
       "main": [
         [
           {
-            "node": "Assign Peak Window",
+            "node": "Pick Due Clip",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Assign Peak Window": {
+    "Pick Due Clip": {
       "main": [
         [
           {
-            "node": "Wait",
+            "node": "TikTok Sidecar Upload",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Wait": {
-      "main": [
-        [
-          {
-            "node": "Read Clip File",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Read Clip File": {
-      "main": [
-        [
-          {
-            "node": "TikTok Rate Limit",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "YouTube Init",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "YouTube Init": {
-      "main": [
-        [
-          {
-            "node": "YouTube Capture Session",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "YouTube Capture Session": {
-      "main": [
-        [
-          {
-            "node": "YouTube Upload",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "YouTube Upload": {
-      "main": [
-        [
-          {
-            "node": "Merge Results",
-            "type": "main",
-            "index": 1
-          }
-        ]
-      ]
-    },
-    "Merge Results": {
+    "TikTok Sidecar Upload": {
       "main": [
         [
           {
@@ -428,53 +175,8 @@
           }
         ]
       ]
-    },
-    "Scanner Trigger": {
-      "main": [
-        [
-          {
-            "node": "Scan Manifests",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Scan Manifests": {
-      "main": [
-        [
-          {
-            "node": "Index Clips",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "TikTok Rate Limit": {
-      "main": [
-        [
-          {
-            "node": "TikTok Sidecar Upload",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "TikTok Sidecar Upload": {
-      "main": [
-        [
-          {
-            "node": "Merge Results",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
     }
   },
-  "pinData": {},
   "tags": [
     {
       "name": "reelsmith"

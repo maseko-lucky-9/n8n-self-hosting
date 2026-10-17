@@ -1,0 +1,310 @@
+// Pick Due Clip: chooses and claims AT MOST ONE clip per execution.
+// Schedule: every 15 min, 12:00-20:45 SAST. One clip per slot (12:00, 15:00,
+// 18:00), newest manifest first, YouTube-sourced jobs only. Returning []
+// stops the run. Canonical source: scripts/pick-due-clip.jsCode.js; the
+// workflow JSON is generated from it (scripts/build-workflow.js).
+//
+// n8n 2.x Code-node sandbox: luxon is the global `DateTime` (requiring the
+// luxon package aborts the runner) and only fs/path/crypto may be required.
+const fs = require('fs');
+const path = require('path');
+
+const DRY_RUN = true; // deploy-workflow.sh --live flips this in memory, never in git
+
+const TZ = 'Africa/Johannesburg';
+const DATA_ROOT = '/data/reelsmith-inbox';             // PVC root, outside the Syncthing folder
+const INBOX = path.join(DATA_ROOT, 'reelsmith-inbox'); // Syncthing folder; the sidecar's /inbox
+const SLOT_DIR = path.join(DATA_ROOT, '.slots');
+const SLOTS = ['12:00', '15:00', '18:00'];
+const MIN_GAP_MIN = 170;    // since the newest slot marker's claimedAt
+const LAST_CALL = '21:00';  // no catch-up at or after this time
+const STALE_CLAIM_MIN = 30; // a claim with no outcome after this is released
+const CUTOFF = '2026-10-11';  // manifests modified before this day (SAST) are ignored
+const MIN_BYTES = 1024;       // a clip of 1 KB or less is junk
+const TIMEOUT_BASE_S = 240;   // sidecar: timeout_s = 240 + ceil(1.5 * size_MiB)
+const TIMEOUT_PER_MIB_S = 1.5;
+const HTTP_MARGIN_S = 60;
+// Jobs exported before manifest.csv had a `source` column, confirmed YouTube-sourced.
+const YOUTUBE_LEGACY_JOBS = [
+  '1979f8a4a33643b5a43d8f0fb4337d3e',
+  '851cbce7386b47959c6136cc3fa9758e',
+  'd7a54c8aa4454fc38949927c0e5c9505',
+  '32508a2a96a14ce38cd087bfb1fdeb22',
+  '48ac096bd9db4976a06f63be654a2900',
+];
+const JOB_RE = /^[A-Za-z0-9_-]+$/;
+
+const now = DateTime.now().setZone(TZ);
+const today = now.toISODate();
+const execId = (typeof $execution !== 'undefined' && $execution && $execution.id) ? String($execution.id) : 'manual';
+
+function lstatOrNull(p) {
+  try {
+    return fs.lstatSync(p);
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return null;
+    throw e;
+  }
+}
+
+// lstat, never stat: a symlinked .claims/.slots would redirect writes elsewhere.
+function ensureRealDir(p) {
+  try {
+    fs.mkdirSync(p);
+  } catch (e) {
+    if (!e || e.code !== 'EEXIST') throw e;
+  }
+  const st = fs.lstatSync(p);
+  if (!st.isDirectory()) throw new Error('Pick Due Clip: not a real directory: ' + p);
+}
+
+function at(hhmm) {
+  const [hour, minute] = hhmm.split(':').map(Number);
+  return now.startOf('day').set({ hour, minute });
+}
+
+function readClaimedAt(file) {
+  try {
+    const parsed = DateTime.fromISO(String(JSON.parse(fs.readFileSync(file, 'utf8')).claimedAt || ''));
+    if (parsed.isValid) return parsed;
+  } catch (e) {
+    // unreadable or half-written: fall back to the file's mtime below
+  }
+  const st = lstatOrNull(file);
+  return st ? DateTime.fromMillis(st.mtimeMs) : null;
+}
+
+function listJobs() {
+  let names;
+  try {
+    names = fs.readdirSync(INBOX);
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return [];
+    throw e;
+  }
+  return names.filter((n) => {
+    if (!JOB_RE.test(n)) return false;
+    const st = lstatOrNull(path.join(INBOX, n));
+    return Boolean(st && st.isDirectory());
+  });
+}
+
+// RFC 4180: quoted fields may hold commas, doubled quotes and newlines.
+function parseCsv(text) {
+  const records = [];
+  let row = [];
+  let cell = '';
+  let quoted = false;
+  let i = text.charCodeAt(0) === 0xfeff ? 1 : 0;
+  for (; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { cell += '"'; i++; } else quoted = false;
+      } else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',') { row.push(cell); cell = ''; }
+    else if (ch === '\r' || ch === '\n') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell); records.push(row); row = []; cell = '';
+    } else cell += ch;
+  }
+  if (quoted) throw new Error('unterminated quoted field');
+  if (cell !== '' || row.length) { row.push(cell); records.push(row); }
+  const nonBlank = records.filter((r) => !(r.length === 1 && r[0].trim() === ''));
+  if (!nonBlank.length) throw new Error('empty manifest');
+  const header = nonBlank[0].map((h) => h.trim());
+  if (!header.includes('filename')) throw new Error('manifest has no filename column');
+  const rows = nonBlank.slice(1).map((cells) => {
+    const o = {};
+    header.forEach((h, idx) => { o[h] = cells[idx] === undefined ? '' : cells[idx]; });
+    return o;
+  });
+  return { header, rows };
+}
+
+// -> {kind: 'junk'|'missing'|'claimed'|'ready', ...}. Names are NFC; the on-disk
+// name may be NFD (copied from macOS), so NFC is tried first, then NFD.
+function inspectClip(jobDir, rawName) {
+  const name = String(rawName == null ? '' : rawName);
+  if (!name.trim()) return { kind: 'junk', reason: 'empty filename' };
+  const nfc = name.normalize('NFC');
+  if (!nfc.endsWith('.mp4')) return { kind: 'junk', reason: 'not .mp4' };
+  if (nfc !== path.basename(nfc) || nfc.startsWith('.') || /[\\/\0]/.test(nfc)) {
+    return { kind: 'junk', reason: 'unsafe filename' };
+  }
+  let diskName = null;
+  let st = null;
+  for (const candidate of [...new Set([nfc, name.normalize('NFD'), name])]) {
+    st = lstatOrNull(path.join(jobDir, candidate));
+    if (st) { diskName = candidate; break; }
+  }
+  if (!st) return { kind: 'missing', nfc };
+  if (!st.isFile()) return { kind: 'junk', reason: 'not a regular file' };
+  if (st.size <= MIN_BYTES) return { kind: 'junk', reason: '1 KB or less' };
+  const claimPath = path.join(jobDir, '.claims', nfc + '.json');
+  if (lstatOrNull(claimPath)) return { kind: 'claimed', nfc };
+  return { kind: 'ready', nfc, diskName, size: st.size, claimPath };
+}
+
+function hashtagsField(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return '[]';
+  try {
+    const parsed = JSON.parse(s);
+    if (Array.isArray(parsed)) return JSON.stringify(parsed.map(String));
+  } catch (e) {
+    // not JSON: Contract v1 also accepts whitespace/comma separated tags
+  }
+  return s;
+}
+
+// 1. Stale-claim sweep. Only our own unresolved claims (status 'claimed') are
+// released; outcomes and the pre-2026-10 workflow's markers (no status) stay.
+// A released clip that did reach TikTok gets a 409 from the sidecar ledger.
+// ponytail: the crashed run's slot marker is NOT released, so a crash costs
+//   that slot (at most 3 a day); the safe direction for an upload that may
+//   have posted.
+for (const job of listJobs()) {
+  const claimDir = path.join(INBOX, job, '.claims');
+  const dirSt = lstatOrNull(claimDir);
+  if (!dirSt || !dirSt.isDirectory()) continue;
+  for (const name of fs.readdirSync(claimDir)) {
+    if (!name.endsWith('.json')) continue;
+    const file = path.join(claimDir, name);
+    let claim;
+    try {
+      claim = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (e) {
+      continue; // being written right now, or not ours
+    }
+    if (!claim || claim.status !== 'claimed') continue;
+    const claimedAt = readClaimedAt(file);
+    if (claimedAt && now.diff(claimedAt, 'minutes').minutes > STALE_CLAIM_MIN) {
+      fs.rmSync(file, { force: true });
+    }
+  }
+}
+
+// 2. Slot gate (real runs only). A dry run may run at any time and takes no slot.
+let slot = null;
+if (!DRY_RUN) {
+  if (now >= at(LAST_CALL)) return [];
+  ensureRealDir(SLOT_DIR);
+  const markerPath = (day, i) => path.join(SLOT_DIR, `${day}-${i}.json`);
+  const due = SLOTS.findIndex((s, i) => at(s) <= now && !lstatOrNull(markerPath(today, i)));
+  if (due < 0) return [];
+  // ponytail: markers are never pruned (3 small files a day); only today's and
+  // yesterday's are read, since the gap is far shorter than a day.
+  const recentDays = [today, now.minus({ days: 1 }).toISODate()];
+  let newest = null;
+  for (const name of fs.readdirSync(SLOT_DIR)) {
+    if (!name.endsWith('.json') || !recentDays.some((d) => name.startsWith(d + '-'))) continue;
+    const claimedAt = readClaimedAt(path.join(SLOT_DIR, name));
+    if (claimedAt && (!newest || claimedAt > newest)) newest = claimedAt;
+  }
+  if (newest && now.diff(newest, 'minutes').minutes < MIN_GAP_MIN) return [];
+  slot = { index: due, date: today, marker: markerPath(today, due) };
+}
+
+// 3. Candidates: every non-archived manifest.csv modified on/after CUTOFF,
+// newest first, rows in file order.
+const cutoffMs = DateTime.fromISO(CUTOFF, { zone: TZ }).toMillis();
+const manifests = [];
+for (const job of listJobs()) {
+  const manifestPath = path.join(INBOX, job, 'manifest.csv');
+  const st = lstatOrNull(manifestPath);
+  if (!st || !st.isFile() || st.mtimeMs < cutoffMs) continue;
+  manifests.push({ job, jobDir: path.join(INBOX, job), manifestPath, mtimeMs: st.mtimeMs });
+}
+manifests.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (a.job < b.job ? -1 : a.job > b.job ? 1 : 0));
+
+const manifestErrors = [];
+for (const m of manifests) {
+  let parsed;
+  try {
+    parsed = parseCsv(fs.readFileSync(m.manifestPath, 'utf8'));
+  } catch (e) {
+    manifestErrors.push(m.job + ': ' + String((e && e.message) || e).slice(0, 120));
+    continue;
+  }
+  // YouTube only: with a `source` column every row must say youtube (an empty
+  // cell counts only for a confirmed legacy job: its DB source is NULL); without
+  // the column, the job must be on the confirmed legacy list. Everything else
+  // is skipped and therefore never archived.
+  const hasSource = parsed.header.includes('source');
+  const legacyJob = YOUTUBE_LEGACY_JOBS.includes(m.job);
+  if (!hasSource && !legacyJob) continue;
+
+  for (let rowIndex = 0; rowIndex < parsed.rows.length; rowIndex++) {
+    const row = parsed.rows[rowIndex];
+    const source = String(row.source).trim();
+    if (hasSource && source !== 'youtube' && !(source === '' && legacyJob)) continue;
+    const clip = inspectClip(m.jobDir, row.filename);
+    if (clip.kind !== 'ready') continue; // junk: skip; missing: wait for Syncthing; claimed: skip
+
+    // Claim = <jobDir>/.claims/<NFC filename>.json; it is never removed for a
+    // posted, needs_you or failed clip. Recover a stuck clip by deleting its
+    // claim (unpublished-inventory.js lists them).
+    // ponytail: O_EXCL is atomic on this single-node local PVC; on NFS or a
+    //   multi-node volume, move claims to a Postgres UNIQUE row.
+    ensureRealDir(path.join(m.jobDir, '.claims'));
+    const clipKey = `${m.job}/${clip.nfc}`;
+    try {
+      fs.writeFileSync(clip.claimPath, JSON.stringify({
+        status: 'claimed',
+        claimedAt: now.toISO(),
+        execId,
+        clip_key: clipKey,
+        dryRun: DRY_RUN,
+        slot: slot ? { date: slot.date, index: slot.index } : null,
+      }) + '\n', { flag: 'wx' }); // O_EXCL: a concurrent run that got here first wins
+    } catch (e) {
+      if (e && e.code === 'EEXIST') continue;
+      throw e;
+    }
+    if (slot) {
+      try {
+        fs.writeFileSync(slot.marker, JSON.stringify({
+          claimedAt: now.toISO(),
+          execId,
+          clip_key: clipKey,
+        }) + '\n', { flag: 'wx' });
+      } catch (e) {
+        fs.rmSync(clip.claimPath, { force: true });
+        if (e && e.code === 'EEXIST') return []; // another run took this slot: stand down
+        throw e;
+      }
+    }
+
+    const title = String(row.title || '').trim();
+    const sizeMiB = clip.size / 1048576;
+    return [{
+      json: {
+        clip_path: clipKey,
+        clip_key: clipKey,
+        caption: String(row.description || '').trim() || title,
+        hashtags: hashtagsField(row.hashtags),
+        dryRun: DRY_RUN,
+        timeoutMs: (TIMEOUT_BASE_S + Math.ceil(TIMEOUT_PER_MIB_S * sizeMiB) + HTTP_MARGIN_S) * 1000,
+        manifestPath: m.manifestPath,
+        jobDir: m.jobDir,
+        rowIndex,
+        filename: clip.nfc,
+        title,
+        sizeBytes: clip.size,
+        claimPath: clip.claimPath,
+        slotMarker: slot ? slot.marker : null,
+        claimedAt: now.toISO(),
+        manifestErrors,
+      },
+    }];
+  }
+}
+
+// Nothing to post. A manifest that cannot be parsed fails the run so the
+// watchdog reports it; otherwise it would be skipped silently forever.
+if (manifestErrors.length) {
+  throw new Error('Pick Due Clip: unreadable manifest(s): ' + manifestErrors.join('; '));
+}
+return [];
