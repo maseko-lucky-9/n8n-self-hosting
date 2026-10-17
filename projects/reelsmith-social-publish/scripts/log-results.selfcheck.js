@@ -25,14 +25,14 @@ async function picked({ live = true, filename = '00_clip.mp4' } = {}) {
   return { root, pick: item.json };
 }
 
-async function log(root, pick, response, { env = ENV, httpRequest, sast = '2026-10-17T12:05:00' } = {}) {
+async function log(root, pick, response, { env = ENV, httpRequest, sast = '2026-10-17T12:05:00', logs } = {}) {
   const sent = [];
   h.setNow(sast);
   const helpers = {
     httpRequest: httpRequest || (async (opts) => { sent.push(opts); return { ok: true }; }),
   };
   const [out] = await h.runNode(h.loadNode('log-results.jsCode.js', { root }), {
-    input: [{ json: response }], nodes: { 'Pick Due Clip': [{ json: pick }] }, env, helpers, execId: '77',
+    input: [{ json: response }], nodes: { 'Pick Due Clip': [{ json: pick }] }, env, helpers, execId: '77', logs,
   });
   return { out: out.json, sent };
 }
@@ -55,10 +55,10 @@ function resultRows(pick) {
 const TABLE = [
   ['200 posted', sidecar(200, 'posted'), { kind: 'posted', claim: 'posted', slot: true, alert: null, row: 'posted' }],
   ['409 duplicate', sidecar(409, 'duplicate'), { kind: 'posted_elsewhere', claim: 'posted_elsewhere', slot: false, alert: null, row: 'posted_elsewhere' }],
-  ['409 ambiguous', sidecar(409, 'ambiguous'), { kind: 'needs_you', claim: 'needs_you', slot: false, alert: /needs you[\s\S]*code: ambiguous/, row: 'needs_you' }],
+  ['409 ambiguous', sidecar(409, 'ambiguous'), { kind: 'needs_you', claim: 'needs_you', slot: false, alert: /^Reelsmith: a clip is blocked by an earlier upload that may have posted[\s\S]*code: ambiguous/, row: 'needs_you' }],
   ['401 auth_invalid', sidecar(401, 'auth_invalid'), { kind: 'auth_invalid', claim: null, slot: false, alert: /^🔑[\s\S]*make refresh-cookies[\s\S]*code: auth_invalid/, row: 'auth_invalid' }],
-  ['400 bad_input', sidecar(400, 'bad_input'), { kind: 'needs_you', claim: 'needs_you', slot: false, alert: /needs you[\s\S]*code: bad_input/, row: 'needs_you' }],
-  ['413 too_large', sidecar(413, 'too_large'), { kind: 'needs_you', claim: 'needs_you', slot: false, alert: /needs you[\s\S]*code: too_large/, row: 'needs_you' }],
+  ['400 bad_input', sidecar(400, 'bad_input'), { kind: 'needs_you', claim: 'needs_you', slot: false, alert: /^Reelsmith: a clip was refused \(not posted[\s\S]*code: bad_input/, row: 'needs_you' }],
+  ['413 too_large', sidecar(413, 'too_large'), { kind: 'needs_you', claim: 'needs_you', slot: false, alert: /^Reelsmith: a clip was refused \(not posted[\s\S]*code: too_large/, row: 'needs_you' }],
   ['429 daily_cap', sidecar(429, 'daily_cap'), { kind: 'daily_cap', claim: null, slot: true, alert: null, row: 'daily_cap' }],
   ['503 busy', sidecar(503, 'busy'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
   ['503 clock_unsynced', sidecar(503, 'clock_unsynced'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
@@ -78,7 +78,9 @@ const TABLE = [
   ['502 signature_failed', sidecar(502, 'signature_failed'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: signature_failed/, row: 'failed' }],
   ['500 internal', sidecar(500, 'internal'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: internal/, row: 'failed' }],
   ['504 timeout', sidecar(504, 'timeout'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: timeout/, row: 'failed' }],
-  ['200 posting_disabled (real run, kill switch off)', http(200, { status: 'dry_run', code: 'posting_disabled' }), { kind: 'dry_run', claim: null, slot: false, alert: null, row: 'dry_run' }],
+  ['200 posting_disabled (real run, kill switch off)', http(200, { status: 'dry_run', code: 'posting_disabled' }), { kind: 'dry_run', claim: null, slot: false, alert: /^Reelsmith: the sidecar has POSTING_ENABLED=false while the workflow is live/, row: 'dry_run' }],
+  ['read EHOSTUNREACH (established socket)', transport('EHOSTUNREACH', 'read EHOSTUNREACH'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: ehostunreach/, row: 'failed' }],
+  ['EHOSTUNREACH (code only)', transport('EHOSTUNREACH', ''), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
 ];
 
 for (const [name, response, want] of TABLE) {
@@ -105,12 +107,12 @@ for (const [name, response, want] of TABLE) {
   });
 }
 
-s.check('alerts: fixed text + code + error_id + filename only, <= 1200 chars, plain text', async () => {
+s.check('alerts: fixed text + code + error_id + filename only, <= 2000 chars, plain text', async () => {
   const { root, pick } = await picked();
-  const long = { ...pick, filename: 'x'.repeat(2000) + '.mp4' };
+  const long = { ...pick, filename: 'x'.repeat(2500) + '.mp4' };
   const { sent } = await log(root, long, sidecar(502, 'publish_rejected', { caption: CAPTION }));
   const { text } = sent[0].body;
-  assert.ok(text.length <= 1200, `alert is ${text.length} chars`);
+  assert.ok(text.length <= 2000, `alert is ${text.length} chars`);
   // a name the rules refuse (here a shell-quote breaker) never reaches the copy-paste command
   const hostile = { ...pick, filename: "x'; touch pwned; '.mp4" };
   const quoted = (await log(root, hostile, sidecar(502, 'publish_rejected'))).sent[0].body.text;
@@ -130,19 +132,41 @@ s.check('needs_you / ambiguous alerts carry the exact claim-release command', as
   const cmd = `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "${h.inboxOf(root)}/jobA/.claims/00_clip.mp4.json"'`;
   const amb = (await log(root, pick, sidecar(504, 'timeout'))).sent[0].body.text;
   assert.ok(amb.endsWith('\n' + cmd), amb);
-  assert.ok(amb.includes('make ledger-resolve KEY=jobA/00_clip.mp4 OUTCOME=posted|not_posted'));
+  for (const outcome of ['posted', 'not_posted']) {
+    assert.ok(amb.includes(`\nmake ledger-resolve KEY='jobA/00_clip.mp4' OUTCOME=${outcome}\n`), outcome);
+  }
+  assert.equal(/OUTCOME=posted\|/.test(amb), false, 'a | in a command line pipes make into nothing');
+  assert.match(amb, /refused with "no ledger rows" or "it is free", the upload never reached TikTok: go to 2\./);
   const blocked = (await log(root, pick, sidecar(409, 'ambiguous'))).sent[0].body.text;
-  assert.ok(blocked.includes('make ledger-resolve KEY=jobA/00_clip.mp4') && blocked.endsWith(cmd));
+  assert.ok(blocked.includes("make ledger-resolve KEY='jobA/00_clip.mp4' OUTCOME=not_posted") && blocked.endsWith(cmd));
   const bad = (await log(root, pick, sidecar(400, 'bad_input'))).sent[0].body.text;
   assert.ok(bad.includes('Fix the clip') && !bad.includes('ledger-resolve') && bad.endsWith(cmd));
 });
 
-s.check('the longest allowed name (200 bytes) keeps the whole command inside the cap', async () => {
-  const name = 'a'.repeat(196) + '.mp4';
+s.check('the longest allowed name (200 bytes, with spaces) keeps every command whole inside the cap', async () => {
+  const name = 'a b'.repeat(65) + 'a.mp4';
+  assert.equal(Buffer.byteLength(name), 200);
   const { root, pick } = await picked({ filename: name });
   const { text } = (await log(root, pick, sidecar(504, 'timeout'))).sent[0].body;
-  assert.ok(text.length <= 1200, `${text.length} chars`);
+  assert.ok(text.length <= 2000, `${text.length} chars`);
+  assert.ok(text.includes(`KEY='jobA/${name}' OUTCOME=not_posted`), 'a name with spaces must stay one KEY');
   assert.ok(text.endsWith(`/jobA/.claims/${name}.json"'`), 'command cut off');
+});
+
+s.check('no command is built from a job id or a name the rules refuse', async () => {
+  const { root, pick } = await picked();
+  const hostileDir = path.join(path.dirname(pick.jobDir), "jobA';touch pwned;'");
+  fs.mkdirSync(hostileDir);
+  const cases = [
+    { ...pick, jobDir: hostileDir },
+    { ...pick, filename: 'a'.repeat(250) + '.mp4' }, // NAME_RE allows it, but it is over 200 bytes
+  ];
+  for (const hostile of cases) {
+    const { text } = (await log(root, hostile, sidecar(504, 'timeout'))).sent[0].body;
+    assert.equal(text.includes('ssh homelab'), false, text);
+    assert.equal(text.includes('ledger-resolve'), false, text);
+    assert.equal(text.includes('pwned'), false, text);
+  }
 });
 
 s.check('a 200-byte CJK name is recorded (short tmp name, no ENAMETOOLONG)', async () => {
@@ -178,11 +202,15 @@ s.check('manifest problems alert once per SAST day, as a count, and only once se
   const withErrors = { ...pick, manifestErrors: ['jobX: unterminated quoted field', 'jobA row 3: name too long'] };
   const reset = () => fs.writeFileSync(pick.claimPath, JSON.stringify({ status: 'claimed' }));
   const fail = async () => { const e = new Error('x'); e.code = 'ECONNRESET'; throw e; };
-  await assert.rejects(log(root, withErrors, sidecar(200, 'posted'), { httpRequest: fail }), /Telegram alert failed/);
+  const logs = [];
+  await log(root, withErrors, sidecar(200, 'posted'), { httpRequest: fail, logs }); // informational: no throw
+  assert.match(logs.join('\n'), /informational alert not sent; the next run retries it/);
+  assert.equal(h.readJson(pick.claimPath).status, 'posted');
   reset();
   const first = await log(root, withErrors, sidecar(200, 'posted'), { sast: '2026-10-17T15:05:00' });
   assert.equal(first.sent.length, 1, 'not retried after a failed send');
   assert.match(first.sent[0].body.text, /^Reelsmith: 2 manifest problem\(s\)/);
+  assert.match(first.sent[0].body.text, /see \.state\/notices\.json/);
   assert.equal(/jobX|row 3|unterminated/.test(first.sent[0].body.text), false, 'manifest details leaked');
   reset();
   assert.equal((await log(root, withErrors, sidecar(200, 'posted'), { sast: '2026-10-17T18:05:00' })).sent.length, 0, 'twice in a day');
@@ -190,6 +218,38 @@ s.check('manifest problems alert once per SAST day, as a count, and only once se
   assert.equal((await log(root, withErrors, sidecar(200, 'posted'), { sast: '2026-10-18T12:05:00' })).sent.length, 1, 'next day');
   reset();
   assert.equal((await log(root, pick, sidecar(200, 'posted'), { sast: '2026-10-19T12:05:00' })).sent.length, 0, 'no problems');
+});
+
+s.check('a live workflow hitting the kill switch: released as before, told once a SAST day, never fails the run', async () => {
+  const disabled = http(200, { status: 'dry_run', code: 'posting_disabled', caption: CAPTION, timeout_s: 250 });
+  const { root, pick } = await picked();
+  const run = async (sast, opts = {}) => {
+    fs.writeFileSync(pick.claimPath, JSON.stringify({ status: 'claimed' }));
+    fs.writeFileSync(pick.slotMarker, JSON.stringify({ claimedAt: pick.claimedAt }));
+    return log(root, pick, disabled, { sast, ...opts });
+  };
+  const fail = async () => { const e = new Error('x'); e.code = 'ETIMEDOUT'; throw e; };
+  const logs = [];
+  const failed = await run('2026-10-17T12:05:00', { httpRequest: fail, logs });
+  assert.equal(failed.out.outcome, 'dry_run');
+  assert.equal(h.exists(pick.claimPath), false, 'clip not released');
+  assert.equal(h.exists(pick.slotMarker), false, 'slot not released');
+  assert.equal(logs.length, 1);
+  const sentAt = [];
+  for (const t of ['2026-10-17T12:20:00', '2026-10-17T12:35:00', '2026-10-18T12:05:00']) {
+    if ((await run(t)).sent.length) sentAt.push(t);
+  }
+  assert.deepEqual(sentAt, ['2026-10-17T12:20:00', '2026-10-18T12:05:00']);
+  const dry = await picked({ live: false });
+  assert.equal((await log(dry.root, dry.pick, disabled)).sent.length, 0, 'a dry-run deploy is not a live workflow');
+});
+
+s.check('a safety alert still fails the run when it cannot be sent, and leaves the daily notices unmarked', async () => {
+  const { root, pick } = await picked();
+  const withErrors = { ...pick, manifestErrors: ['jobX: unterminated quoted field'] };
+  const fail = async () => { const e = new Error('x'); e.code = 'ECONNRESET'; throw e; };
+  await assert.rejects(log(root, withErrors, sidecar(504, 'timeout'), { httpRequest: fail }), /Telegram alert failed/);
+  assert.equal(h.readJson(path.join(root, '.state', 'retryable-failures.json')).manifestAlertDay, undefined);
 });
 
 s.check('needsCount restarts each SAST day and after a post', async () => {

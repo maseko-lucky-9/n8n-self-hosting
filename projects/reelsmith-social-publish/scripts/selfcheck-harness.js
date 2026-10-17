@@ -50,7 +50,7 @@ function itemsAccessor(items) {
   };
 }
 
-async function runNode(code, { input = [], nodes = {}, env = {}, execId = 'test-exec', helpers = {}, fsImpl } = {}) {
+async function runNode(code, { input = [], nodes = {}, env = {}, execId = 'test-exec', helpers = {}, fsImpl, logs = [] } = {}) {
   const $ = (name) => {
     if (!(name in nodes)) throw new Error(`harness: no output for node "${name}"`);
     return itemsAccessor(nodes[name]);
@@ -60,7 +60,9 @@ async function runNode(code, { input = [], nodes = {}, env = {}, execId = 'test-
     if (m === 'fs' && fsImpl) return fsImpl;
     return require(m);
   };
-  const fn = new AsyncFunction('$input', '$json', '$env', '$execution', '$', 'DateTime', 'require', code);
+  // n8n's Code-node console only forwards log(); capture it instead of printing.
+  const consoleShim = { log: (...args) => logs.push(args.map(String).join(' ')) };
+  const fn = new AsyncFunction('$input', '$json', '$env', '$execution', '$', 'DateTime', 'require', 'console', code);
   return fn.call(
     { helpers },
     itemsAccessor(input),
@@ -70,6 +72,7 @@ async function runNode(code, { input = [], nodes = {}, env = {}, execId = 'test-
     $,
     DateTime,
     requireShim,
+    consoleShim,
   );
 }
 

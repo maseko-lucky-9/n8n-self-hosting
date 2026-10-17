@@ -15,6 +15,9 @@ const TZ = 'Africa/Johannesburg';
 const DATA_ROOT = '/data/reelsmith-inbox';             // PVC root, outside the Syncthing folder
 const INBOX = path.join(DATA_ROOT, 'reelsmith-inbox'); // Syncthing folder; the sidecar's /inbox
 const SLOT_DIR = path.join(DATA_ROOT, '.slots');
+const STATE_DIR = path.join(DATA_ROOT, '.state');
+const STATE_FILE = path.join(STATE_DIR, 'retryable-failures.json'); // shared with Log Results
+const NOTICES_FILE = path.join(STATE_DIR, 'notices.json');           // details for a human
 const SLOTS = ['12:00', '15:00', '18:00'];
 const MIN_GAP_MIN = 170;    // since the newest slot marker's claimedAt
 const LAST_CALL = '21:00';  // no catch-up at or after this time
@@ -32,6 +35,7 @@ const MAX_TIMEOUT_MS = 780000; // must stay under the workflow's executionTimeou
 // derived path stay far below NAME_MAX.
 const NAME_RE = /^(?!\.)[\p{L}\p{N}_. -]{1,251}\.mp4$/u;
 const MAX_NAME_BYTES = 200;
+const NAME_MAX = 255; // a longer spelling (an NFD name grows) cannot exist on disk: never lstat it
 // Jobs exported before manifest.csv had a `source` column, confirmed YouTube-sourced.
 const YOUTUBE_LEGACY_JOBS = [
   '1979f8a4a33643b5a43d8f0fb4337d3e',
@@ -149,7 +153,8 @@ function captionUsable(text) {
 
 // -> {kind: 'junk'|'missing'|'claimed'|'ready', ...}. Names are NFC; the on-disk
 // name may be NFD (copied from macOS), so NFC is tried first, then NFD.
-// junk.notice: a real clip that can never be posted (reported in manifestErrors).
+// junk.notice: a real clip that can never be posted as it is. It is reported
+// (manifestErrors, a daily alert) and pins its manifest until a human acts.
 function inspectClip(jobDir, rawName) {
   const name = String(rawName == null ? '' : rawName);
   if (!name.trim()) return { kind: 'junk', reason: 'empty filename' };
@@ -164,6 +169,7 @@ function inspectClip(jobDir, rawName) {
   let diskName = null;
   let st = null;
   for (const candidate of [...new Set([nfc, name.normalize('NFD'), name])]) {
+    if (Buffer.byteLength(candidate, 'utf8') > NAME_MAX) continue;
     st = lstatOrNull(path.join(jobDir, candidate));
     if (st) { diskName = candidate; break; }
   }
@@ -250,18 +256,34 @@ for (const job of listJobs()) {
 }
 manifests.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (a.job < b.job ? -1 : a.job > b.job ? 1 : 0));
 
-// manifestErrors: every problem a human should see (Log Results alerts the
-// count once a day). hardErrors: the unexpected ones (unreadable manifest, a row
-// that threw); with nothing to post, those fail the run so the watchdog sees them.
-const manifestErrors = [];
-let hardErrors = 0;
+function writeStateAtomic(file, obj) {
+  ensureRealDir(STATE_DIR);
+  const tmp = path.join(STATE_DIR, `.tmp-pick-${execId.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32)}-${now.toMillis()}`);
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', { flag: 'wx' });
+  fs.renameSync(tmp, file);
+}
+
+function readState() {
+  try {
+    return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+// 4. Scan EVERY row of every candidate manifest first, so problems anywhere are
+// reported even when an earlier row gets posted. errors: the unexpected ones
+// (unreadable manifest, a row that threw). notices: clips that can never be
+// posted as they are. manifestErrors (both) goes to Log Results' daily alert.
+const errors = [];
+const notices = [];
+const candidates = [];
 for (const m of manifests) {
   let parsed;
   try {
     parsed = parseCsv(fs.readFileSync(m.manifestPath, 'utf8'));
   } catch (e) {
-    manifestErrors.push(m.job + ': ' + String((e && e.message) || e).slice(0, 120));
-    hardErrors += 1;
+    errors.push(m.job + ': ' + String((e && e.message) || e).slice(0, 120));
     continue;
   }
   // YouTube only: with a `source` column every row must say youtube (an empty
@@ -277,89 +299,106 @@ for (const m of manifests) {
     const source = String(row.source).trim();
     if (hasSource && source !== 'youtube' && !(source === '' && legacyJob)) continue;
     const where = `${m.job} row ${rowIndex + 1}`;
-    // One bad row never stops the others: any error (ENAMETOOLONG, EACCES, ...)
-    // makes that row junk for this run.
+    // One bad row never stops the others: an unexpected error (EACCES, EIO, ...)
+    // skips that row for this run.
     let clip;
     try {
       clip = inspectClip(m.jobDir, row.filename);
     } catch (e) {
-      manifestErrors.push(`${where}: ${(e && e.code) || 'error'}`);
-      hardErrors += 1;
+      errors.push(`${where}: ${(e && e.code) || 'error'}`);
       continue;
     }
-    if (clip.kind === 'junk' && clip.notice) manifestErrors.push(`${where}: ${clip.reason}`);
+    if (clip.kind === 'junk' && clip.notice) notices.push(`${where}: ${clip.reason}`);
     if (clip.kind !== 'ready') continue; // junk: skip; missing: wait for Syncthing; claimed: skip
     const title = trimBlank(row.title);
     const caption = captionUsable(row.description) ? trimBlank(row.description) : title;
     if (!captionUsable(caption)) {
-      manifestErrors.push(`${where}: no usable caption`);
+      notices.push(`${where}: no usable caption`);
       continue;
     }
-    const timeoutMs = (TIMEOUT_BASE_S + Math.ceil(TIMEOUT_PER_MIB_S * clip.size / 1048576) + HTTP_MARGIN_S) * 1000;
-    if (timeoutMs > MAX_TIMEOUT_MS) {
-      throw new Error(`Pick Due Clip: timeout ${timeoutMs} ms exceeds ${MAX_TIMEOUT_MS} ms; lower MAX_CLIP_MB or raise executionTimeout`);
-    }
+    candidates.push({ m, rowIndex, row, clip, title, caption });
+  }
+}
+const manifestErrors = [...errors, ...notices];
+if (notices.length || lstatOrNull(NOTICES_FILE)) {
+  writeStateAtomic(NOTICES_FILE, { updatedAt: now.toISO(), notices });
+}
 
-    // Claim = <jobDir>/.claims/<NFC filename>.json; it is never removed for a
-    // posted, needs_you or failed clip. Recover a stuck clip by deleting its
-    // claim (unpublished-inventory.js lists them).
-    // ponytail: O_EXCL is atomic on this single-node local PVC; on NFS or a
-    //   multi-node volume, move claims to a Postgres UNIQUE row.
-    ensureRealDir(path.join(m.jobDir, '.claims'));
-    const clipKey = `${m.job}/${clip.nfc}`;
+// 5. Claim the first candidate nobody else holds.
+for (const { m, rowIndex, row, clip, title, caption } of candidates) {
+  const timeoutMs = (TIMEOUT_BASE_S + Math.ceil(TIMEOUT_PER_MIB_S * clip.size / 1048576) + HTTP_MARGIN_S) * 1000;
+  if (timeoutMs > MAX_TIMEOUT_MS) {
+    throw new Error(`Pick Due Clip: timeout ${timeoutMs} ms exceeds ${MAX_TIMEOUT_MS} ms; lower MAX_CLIP_MB or raise executionTimeout`);
+  }
+
+  // Claim = <jobDir>/.claims/<NFC filename>.json; it is never removed for a
+  // posted, needs_you or failed clip. Recover a stuck clip by deleting its
+  // claim (unpublished-inventory.js lists them).
+  // ponytail: O_EXCL is atomic on this single-node local PVC; on NFS or a
+  //   multi-node volume, move claims to a Postgres UNIQUE row.
+  ensureRealDir(path.join(m.jobDir, '.claims'));
+  const clipKey = `${m.job}/${clip.nfc}`;
+  try {
+    fs.writeFileSync(clip.claimPath, JSON.stringify({
+      status: 'claimed',
+      claimedAt: now.toISO(),
+      execId,
+      clip_key: clipKey,
+      dryRun: DRY_RUN,
+      slot: slot ? { date: slot.date, index: slot.index } : null,
+    }) + '\n', { flag: 'wx' }); // O_EXCL: a concurrent run that got here first wins
+  } catch (e) {
+    if (e && e.code === 'EEXIST') continue;
+    throw e;
+  }
+  if (slot) {
     try {
-      fs.writeFileSync(clip.claimPath, JSON.stringify({
-        status: 'claimed',
+      fs.writeFileSync(slot.marker, JSON.stringify({
         claimedAt: now.toISO(),
         execId,
         clip_key: clipKey,
-        dryRun: DRY_RUN,
-        slot: slot ? { date: slot.date, index: slot.index } : null,
-      }) + '\n', { flag: 'wx' }); // O_EXCL: a concurrent run that got here first wins
+      }) + '\n', { flag: 'wx' });
     } catch (e) {
-      if (e && e.code === 'EEXIST') continue;
+      fs.rmSync(clip.claimPath, { force: true });
+      if (e && e.code === 'EEXIST') return []; // another run took this slot: stand down
       throw e;
     }
-    if (slot) {
-      try {
-        fs.writeFileSync(slot.marker, JSON.stringify({
-          claimedAt: now.toISO(),
-          execId,
-          clip_key: clipKey,
-        }) + '\n', { flag: 'wx' });
-      } catch (e) {
-        fs.rmSync(clip.claimPath, { force: true });
-        if (e && e.code === 'EEXIST') return []; // another run took this slot: stand down
-        throw e;
-      }
-    }
-
-    return [{
-      json: {
-        clip_path: clipKey,
-        clip_key: clipKey,
-        caption,
-        hashtags: hashtagsField(row.hashtags),
-        dryRun: DRY_RUN,
-        timeoutMs,
-        manifestPath: m.manifestPath,
-        jobDir: m.jobDir,
-        rowIndex,
-        filename: clip.nfc,
-        title,
-        sizeBytes: clip.size,
-        claimPath: clip.claimPath,
-        slotMarker: slot ? slot.marker : null,
-        claimedAt: now.toISO(),
-        manifestErrors,
-      },
-    }];
   }
+
+  return [{
+    json: {
+      clip_path: clipKey,
+      clip_key: clipKey,
+      caption,
+      hashtags: hashtagsField(row.hashtags),
+      dryRun: DRY_RUN,
+      timeoutMs,
+      manifestPath: m.manifestPath,
+      jobDir: m.jobDir,
+      rowIndex,
+      filename: clip.nfc,
+      title,
+      sizeBytes: clip.size,
+      claimPath: clip.claimPath,
+      slotMarker: slot ? slot.marker : null,
+      claimedAt: now.toISO(),
+      manifestErrors,
+    },
+  }];
 }
 
-// Nothing to post. An unreadable manifest or a row that threw fails the run so
-// the watchdog reports it; otherwise it would be skipped silently forever.
-if (hardErrors) {
-  throw new Error('Pick Due Clip: unreadable manifest(s) or row(s): ' + manifestErrors.join('; '));
+// 6. Nothing to post. An unexpected error fails every run so the watchdog
+// reports it. Clips that can never be posted fail ONE run a SAST day (the day
+// is recorded first), so an idle dispatcher is not silent about them either;
+// the list is in .state/notices.json.
+if (errors.length) {
+  throw new Error('Pick Due Clip: unreadable manifest(s) or row(s): ' + errors.join('; '));
+}
+if (notices.length) {
+  const state = readState();
+  if (state.idleNoticeDay !== today) {
+    writeStateAtomic(STATE_FILE, { ...state, idleNoticeDay: today });
+    throw new Error(`Pick Due Clip: ${notices.length} clip(s) can never be posted as they are; see .state/notices.json (reported once a day)`);
+  }
 }
 return [];

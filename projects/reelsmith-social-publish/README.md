@@ -25,8 +25,19 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
   `youtube` (an empty cell is accepted only for an allowlisted job; any other value is skipped). A manifest without one (the backlog) qualifies only if its job id is in the legacy
   allowlist `YOUTUBE_LEGACY_JOBS` in `scripts/pick-due-clip.jsCode.js` (5 jobs). Everything else,
   TikTok-sourced jobs included, is skipped and never archived.
-- **Missing file = wait** (Syncthing may still be copying it). **Junk** (empty filename, not
-  `.mp4`, 1 KB or less) is skipped.
+- **Missing file = wait** (Syncthing may still be copying it). **Ordinary junk** (empty
+  filename, not `.mp4`, 1 KB or less) is skipped and does not hold up archiving.
+- **A clip that can never be posted as it is** is skipped too, but reported and never archived
+  away: a name over 200 bytes or one the sidecar refuses (only letters, digits, `_`, `.`, `-` and
+  space, ending in `.mp4`), a file over 300 MiB, no usable caption (nothing left of the
+  description or the title once URLs, `@`, `#` and emoji are stripped), or not a regular file.
+  - Reported three ways: listed (job, row, reason) in `/data/reelsmith-inbox/.state/notices.json`;
+    counted in a once-a-day Telegram notice from a run that posts; and, when nothing else can be
+    posted, by one failed execution a day, which the watchdog reports. Read the list with
+    `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- cat /data/reelsmith-inbox/.state/notices.json'`.
+  - It pins its manifest: Archive Manifest keeps the manifest until you fix the clip (re-export
+    it so it passes) or archive the manifest by hand, which also skips its remaining clips:
+    `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- sh -c "cd /data/reelsmith-inbox/reelsmith-inbox/<job> && mkdir -p processed && mv manifest.csv processed/manifest-by-hand.csv"'`.
 - **No video bytes pass through n8n.** n8n sends `clip_path` = `<job>/<filename>`. The sidecar
   mounts the PVC's `reelsmith-inbox` folder read-only at `/inbox` (subPath, so Syncthing's keys
   and config at the PVC root stay invisible) and reads `/inbox/<job>/<filename>` itself.
@@ -41,7 +52,9 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
     While it is off, every request is a dry run.
 - **Log Results** records each outcome in `results.log.csv` and the claim files, then alerts on
   Telegram when you are needed (cookie expired: clips wait and retry every 15 min; bad input: that clip is set aside and the next takes its slot; an upload that may or may not have
-  posted). **Archive Manifest** moves a manifest once every row is posted or junk.
+  posted). If the workflow is live while the sidecar's `POSTING_ENABLED` is `false`, every clip
+  is released and retried, and a once-a-day Telegram notice says so. **Archive Manifest** moves a
+  manifest once every row is posted or ordinary junk.
 
 ## Where things live
 
@@ -234,18 +247,24 @@ Paste the evidence at each step; nothing moves to the next step without your go.
 A clip with an unclear or refused outcome keeps its n8n claim, so it is never retried and its
 manifest is never archived. The Telegram alert prints the exact commands for that clip.
 
-- **Ambiguous upload** (it may or may not have posted):
-  1. check the account, then run
-     `make ledger-resolve KEY=<job>/<filename> OUTCOME=posted|not_posted` in `tiktok-sidecar`;
-  2. then, **in both cases**, release the n8n claim:
+- **Ambiguous upload** (it may or may not have posted), or a clip **blocked** by an earlier
+  unresolved upload (409 `ambiguous`):
+  1. check the account, then in `tiktok-sidecar` run the line that matches:
+     `make ledger-resolve KEY='<job>/<filename>' OUTCOME=posted`
+     `make ledger-resolve KEY='<job>/<filename>' OUTCOME=not_posted`
+     Keep the single quotes: clip names contain spaces, and an unquoted `KEY` splits at the first
+     one. Here `<filename>` is the clip's file name including `.mp4`.
+     - If it is refused with "no ledger rows for that clip_key" or "...; it is free", the upload
+       never reached TikTok (a 502 rejection, a failed 500, or a reset or timeout before the
+       sidecar wrote its row). There is nothing to resolve: go to step 2.
+  2. then, **in every case**, release the n8n claim:
      `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "/data/reelsmith-inbox/reelsmith-inbox/<job>/.claims/<filename>.json"'`.
-     Here `<filename>` is the clip's file name including `.mp4`.
-     - After `not_posted`, the clip is posted at a later slot.
+     - After `not_posted`, or when the key was free, the clip is uploaded again at a later slot.
      - After `posted`, the retry gets a 409 `duplicate` from the sidecar and is logged as
        `posted_elsewhere`. That frees the slot, posts nothing, and lets the manifest archive.
      - A claim left in place keeps its `failed` status, so the manifest never archives.
-     - Resolve the ledger first: releasing the claim alone only produces another
-       ambiguous 409.
+     - If the ledger says ambiguous, resolve it first: releasing the claim alone only produces
+       another ambiguous 409.
 - **Refused clip** (400 bad input or 413 too large): fix or re-export the clip, then release the
   claim with the same command. Or leave it set aside.
 

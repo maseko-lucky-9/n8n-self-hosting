@@ -330,6 +330,67 @@ s.check('not a regular file (a folder or a symlink named .mp4) is junk', async (
   assert.deepEqual(item.json.manifestErrors, ['jobA row 1: not a regular file', 'jobA row 2: not a regular file']);
 });
 
+s.check('a missing clip whose NFD spelling is over 255 bytes waits: no lstat of it, no failed runs', async () => {
+  const name = '01_' + '한'.repeat(60) + '.mp4';
+  assert.equal(Buffer.byteLength(name), 187);
+  assert.ok(Buffer.byteLength(name.normalize('NFD')) > 255);
+  const root = h.makeRoot();
+  h.addJob(root, 'jobA', { rows: [{ filename: name, size: null }], mtime: '2026-10-15T10:00:00' });
+  const looked = [];
+  const fsShim = Object.create(fs);
+  fsShim.lstatSync = (p, ...rest) => { looked.push(String(p)); return fs.lstatSync(p, ...rest); };
+  for (const t of ['12:00', '12:15', '15:00']) {
+    assert.deepEqual(await pick(root, `2026-10-17T${t}:00`, { fsImpl: fsShim }), [], t);
+  }
+  assert.deepEqual(looked.filter((p) => Buffer.byteLength(path.basename(p)) > 255), [], 'lstat of a name longer than NAME_MAX');
+  assert.equal(h.exists(path.join(root, '.state', 'notices.json')), false, 'a waiting clip is not a notice');
+});
+
+s.check('notices come from EVERY row, even after the picked one; idle runs fail once a SAST day', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'jobA', {
+    rows: [{ filename: '00_good.mp4' }, { filename: '01_huge.mp4', size: 300 * 1048576 + 1 }, { filename: "02_bad'name.mp4" }],
+    mtime: '2026-10-15T10:00:00',
+  });
+  const alerts = [];
+  const first = await dispatchRun(root, '2026-10-17T12:00:00', posted, alerts);
+  assert.equal(first.clip_key, 'jobA/00_good.mp4');
+  assert.deepEqual(first.manifestErrors, ['jobA row 2: over 300 MiB', 'jobA row 3: name the sidecar refuses']);
+  assert.deepEqual(alerts.map((a) => (a.match(/(\d+) manifest problem/) || [])[1]), ['2'], 'daily Telegram notice');
+  assert.equal(h.exists(path.join(h.inboxOf(root), 'jobA', 'manifest.csv')), true, 'pinned manifest archived away');
+  assert.deepEqual(h.readJson(path.join(root, '.state', 'notices.json')).notices, first.manifestErrors);
+  // nothing left to post: the idle run fails ONCE that day, with a count only
+  await assert.rejects(pick(root, '2026-10-17T15:00:00'), (e) => {
+    assert.equal(e.message, 'Pick Due Clip: 2 clip(s) can never be posted as they are; see .state/notices.json (reported once a day)');
+    return true;
+  });
+  assert.deepEqual(await pick(root, '2026-10-17T18:00:00'), [], 'failed twice in one day');
+  await assert.rejects(pick(root, '2026-10-18T12:00:00'), /2 clip\(s\) can never be posted/);
+  assert.deepEqual(await pick(root, '2026-10-18T12:15:00'), []);
+  assert.equal(h.readJson(path.join(root, '.state', 'retryable-failures.json')).idleNoticeDay, '2026-10-18');
+});
+
+s.check('notices.json is cleared once the problem is gone', async () => {
+  const root = h.makeRoot();
+  const { jobDir } = h.addJob(root, 'jobA', {
+    rows: [{ filename: 'huge.mp4', size: 300 * 1048576 + 1 }, { filename: 'ok.mp4' }], mtime: '2026-10-15T10:00:00',
+  });
+  const [a] = await pick(root, '2026-10-17T09:00:00', { live: false });
+  assert.equal(h.readJson(path.join(root, '.state', 'notices.json')).notices.length, 1);
+  fs.rmSync(a.json.claimPath);
+  fs.truncateSync(path.join(jobDir, 'huge.mp4'), 2048); // re-exported smaller
+  await pick(root, '2026-10-17T09:05:00', { live: false });
+  assert.deepEqual(h.readJson(path.join(root, '.state', 'notices.json')).notices, []);
+});
+
+s.check('a URL cut at a Python-whitespace control char leaves a usable caption', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'jobA', { rows: [{ filename: '00.mp4', title: '', description: 'https://x\x1cHello' }], mtime: '2026-10-15T10:00:00' });
+  const [item] = await pick(root, '2026-10-17T09:00:00', { live: false });
+  assert.ok(item, 'junked a caption the sidecar would post as "Hello"');
+  assert.deepEqual(item.json.manifestErrors, []);
+});
+
 s.check('Unicode: NFC name in the manifest, NFD name on disk (and back)', async () => {
   const nfc = '13_Alizé Umbrella.mp4'.normalize('NFC');
   const nfd = nfc.normalize('NFD');

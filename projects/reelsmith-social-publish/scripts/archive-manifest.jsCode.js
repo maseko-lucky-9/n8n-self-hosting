@@ -1,8 +1,10 @@
 // Archive Manifest: moves the picked clip's manifest.csv into processed/ once
-// EVERY row is done: posted, posted_elsewhere or junk. A missing clip (Syncthing
-// still copying), a failed or needs-you clip, or a row from a non-YouTube
-// source keeps the manifest where it is. Canonical source:
-// scripts/archive-manifest.jsCode.js.
+// EVERY row is done: posted, posted_elsewhere or ordinary junk (empty filename,
+// not .mp4, 1 KB or less). A missing clip (Syncthing still copying), a failed
+// or needs-you clip, a clip Pick Due Clip reports as never postable (refused
+// name, over 300 MiB, no usable caption, not a regular file), a row that
+// cannot be checked, or a row from a non-YouTube source keeps the manifest
+// where it is. Canonical source: scripts/archive-manifest.jsCode.js.
 const fs = require('fs');
 const path = require('path');
 
@@ -13,6 +15,7 @@ const MIN_BYTES = 1024;       // a clip of 1 KB or less is junk
 const MAX_CLIP_MB = 300;      // the sidecar's MAX_CLIP_MB: anything larger gets a 413
 const NAME_RE = /^(?!\.)[\p{L}\p{N}_. -]{1,251}\.mp4$/u;
 const MAX_NAME_BYTES = 200;
+const NAME_MAX = 255; // a longer spelling (an NFD name grows) cannot exist on disk: never lstat it
 
 const pick = $('Pick Due Clip').first().json;
 const items = $input.all();
@@ -80,23 +83,27 @@ function captionUsable(text) {
   return !BLANK_RE.test(body);
 }
 
-// Junk exactly as Pick Due Clip defines it; otherwise done only if the claim
-// records a posted outcome.
+// The same rules as Pick Due Clip. Ordinary junk is done; a clip Pick reports
+// (a notice) is NOT: it pins the manifest until a human fixes the clip or
+// archives the manifest by hand. Otherwise done only if the claim records a
+// posted outcome.
 function rowDone(jobDir, row) {
   const name = String(row.filename == null ? '' : row.filename);
   if (!name.trim()) return true;
   const nfc = name.normalize('NFC');
   if (!nfc.endsWith('.mp4')) return true;
-  if (nfc !== path.basename(nfc) || nfc.startsWith('.') || /[\\/\0]/.test(nfc)) return true;
-  if (Buffer.byteLength(nfc, 'utf8') > MAX_NAME_BYTES || !NAME_RE.test(nfc)) return true;
+  if (nfc !== path.basename(nfc) || nfc.startsWith('.') || /[\\/\0]/.test(nfc)) return false;
+  if (Buffer.byteLength(nfc, 'utf8') > MAX_NAME_BYTES || !NAME_RE.test(nfc)) return false;
   let st = null;
   for (const candidate of [...new Set([nfc, name.normalize('NFD'), name])]) {
+    if (Buffer.byteLength(candidate, 'utf8') > NAME_MAX) continue;
     st = lstatOrNull(path.join(jobDir, candidate));
     if (st) break;
   }
   if (!st) return false; // missing: wait, never archive
-  if (!st.isFile() || st.size <= MIN_BYTES || st.size > MAX_CLIP_MB * 1048576) return true;
-  if (!captionUsable(row.description) && !captionUsable(row.title)) return true;
+  if (!st.isFile() || st.size > MAX_CLIP_MB * 1048576) return false;
+  if (st.size <= MIN_BYTES) return true;
+  if (!captionUsable(row.description) && !captionUsable(row.title)) return false;
   try {
     const claim = JSON.parse(fs.readFileSync(path.join(jobDir, '.claims', nfc + '.json'), 'utf8'));
     return Boolean(claim && DONE.includes(claim.status));
@@ -105,13 +112,13 @@ function rowDone(jobDir, row) {
   }
 }
 
-// One bad row never pins a manifest: a row that throws counts as junk, as it
-// does in Pick Due Clip.
+// A row that cannot be checked (EIO, EACCES, ...) keeps the manifest: keeping
+// it costs one rescan, archiving it would drop a clip nobody was told about.
 function rowDoneSafe(jobDir, row) {
   try {
     return rowDone(jobDir, row);
   } catch (e) {
-    return true;
+    return false;
   }
 }
 

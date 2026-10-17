@@ -64,19 +64,30 @@ for (const [name, mutate] of [
   });
 }
 
-s.check('rows Pick refuses (long or refused name, over 300 MiB, no caption) count as junk', async () => {
-  const ctx = setup([
-    { filename: 'a.mp4' },
-    { filename: 'a'.repeat(17) + '字'.repeat(60) + '.mp4' }, // 201 bytes
-    { filename: "Don't.mp4" },
-    { filename: 'huge.mp4', size: 300 * 1048576 + 1 },
-    { filename: 'mute.mp4', title: '', description: '@ # https://x.example' },
-  ]);
+for (const [name, row, prep] of [
+  ['a name over 200 bytes', { filename: 'a'.repeat(17) + '字'.repeat(60) + '.mp4' }],
+  ['a name the sidecar refuses', { filename: "Don't.mp4" }],
+  ['an unsafe name', { filename: 'sub/x.mp4', size: null }],
+  ['a clip over 300 MiB', { filename: 'huge.mp4', size: 300 * 1048576 + 1 }],
+  ['a clip with no usable caption', { filename: 'mute.mp4', title: '', description: '@ # https://x.example' }],
+  ['a folder named .mp4', { filename: 'dir.mp4', size: null }, (ctx) => fs.mkdirSync(path.join(ctx.jobDir, 'dir.mp4'))],
+]) {
+  s.check(`keeps (pins) the manifest with ${name}: Pick reports it, a human decides`, async () => {
+    const ctx = setup([{ filename: 'a.mp4' }, row, ...JUNK_ROWS]);
+    claim(ctx.jobDir, 'a.mp4', 'posted');
+    if (prep) prep(ctx);
+    assert.equal((await archive(ctx)).archived_to, undefined, 'a reported clip was archived away');
+    assert.equal(h.exists(ctx.manifestPath), true);
+  });
+}
+
+s.check('a URL cut at a Python-whitespace control char leaves a usable caption (archived)', async () => {
+  const ctx = setup([{ filename: 'a.mp4', title: '', description: 'https://x\x1cHello' }]);
   claim(ctx.jobDir, 'a.mp4', 'posted');
-  assert.ok((await archive(ctx)).archived_to, 'a refused row pinned the manifest');
+  assert.ok((await archive(ctx)).archived_to, 'the sidecar would post "Hello"; the row is not junk');
 });
 
-s.check('a row that throws counts as junk and never pins the manifest', async () => {
+s.check('a row that cannot be checked keeps the manifest (never archived away unannounced)', async () => {
   const ctx = setup([{ filename: 'a.mp4' }, { filename: 'b.mp4' }]);
   claim(ctx.jobDir, 'a.mp4', 'posted');
   const fsShim = Object.create(fs);
@@ -84,7 +95,21 @@ s.check('a row that throws counts as junk and never pins the manifest', async ()
     if (String(p).endsWith(`${path.sep}b.mp4`)) { const e = new Error('EIO'); e.code = 'EIO'; throw e; }
     return fs.lstatSync(p, ...rest);
   };
-  assert.ok((await archive(ctx, fsShim)).archived_to);
+  assert.equal((await archive(ctx, fsShim)).archived_to, undefined);
+  assert.equal(h.exists(ctx.manifestPath), true);
+});
+
+s.check('a missing clip whose NFD spelling is over 255 bytes waits (kept, no ENAMETOOLONG)', async () => {
+  const name = '01_' + '한'.repeat(60) + '.mp4';
+  assert.equal(Buffer.byteLength(name.normalize('NFC')), 187);
+  assert.ok(Buffer.byteLength(name.normalize('NFD')) > 255);
+  const ctx = setup([{ filename: 'a.mp4' }, { filename: name, size: null }]);
+  claim(ctx.jobDir, 'a.mp4', 'posted');
+  const looked = [];
+  const fsShim = Object.create(fs);
+  fsShim.lstatSync = (p, ...rest) => { looked.push(String(p)); return fs.lstatSync(p, ...rest); };
+  assert.equal((await archive(ctx, fsShim)).archived_to, undefined);
+  assert.deepEqual(looked.filter((p) => Buffer.byteLength(path.basename(p)) > 255), [], 'lstat of a name longer than NAME_MAX');
 });
 
 s.check('NFD clip on disk with an NFC claim counts as posted', async () => {

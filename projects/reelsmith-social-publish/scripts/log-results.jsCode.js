@@ -16,11 +16,13 @@ const AUTH_ALERT_AFTER = 1;     // consecutive auth_invalid answers before the f
 const REALERT_EVERY = 12;       // then one more alert per 12 in a row (about 3h at */15)
 const NEEDS_SLOT_RELEASES = 2;  // needs_you frees the slot only for the first 2 in a row
 // Names are at most 200 UTF-8 bytes (Pick Due Clip), so even the longest alert,
-// which repeats the name in the claim-release command, stays under this cap.
-const ALERT_MAX_CHARS = 1200;
+// which repeats the name in two ledger commands and the claim-release command,
+// stays under this cap (Telegram's own limit is 4096).
+const ALERT_MAX_CHARS = 2000;
 const HEADER = 'timestamp,filename,title,tiktok_post_id,tiktok_post_url,youtube_video_id,youtube_status,error,tiktok_status\n';
 // Failures before the request left n8n: connect and DNS errors. Anything later
-// (read ETIMEDOUT, ECONNRESET, EPIPE, the HTTP timeout) may have posted.
+// (read ETIMEDOUT, read EHOSTUNREACH, ECONNRESET, EPIPE, the HTTP timeout) may
+// have posted. These codes count on their own only when there is no message.
 const RETRYABLE_CODES = ['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EHOSTDOWN', 'ENOTFOUND', 'EAI_AGAIN'];
 const JOB_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const NAME_RE = /^(?!\.)[\p{L}\p{N}_. -]{1,251}\.mp4$/u; // as Pick Due Clip
@@ -60,7 +62,7 @@ function transportFailure(err) {
   const e = (err && typeof err === 'object') ? err : { message: String(err) };
   const code = String(e.code || (e.cause && e.cause.code) || '').toUpperCase();
   const message = String(e.message || e.description || '');
-  if (/^(connect|getaddrinfo) /.test(message) || RETRYABLE_CODES.includes(code)) {
+  if (/^(connect|getaddrinfo) /.test(message) || (!message && RETRYABLE_CODES.includes(code))) {
     return { kind: 'retryable', code: safeCode(code.toLowerCase()) || 'connect_error' };
   }
   if (code === 'ECONNABORTED' || /timeout of \d+ms exceeded/i.test(message)) {
@@ -217,11 +219,11 @@ if (releaseSlot && pick.slotMarker) {
 
 // 2. Persist the consecutive-outcome counters computed above.
 const counters = {
+  ...state, // keeps the once-a-day markers (Pick Due Clip writes idleNoticeDay here)
   count: retryCount,
   authCount,
   needsCount,
   needsDay: today,
-  manifestAlertDay: state.manifestAlertDay || null,
   lastCode: outcome.code,
   updatedAt: now.toISO(),
 };
@@ -256,34 +258,64 @@ function releaseSteps(withLedger) {
   if (!JOB_RE.test(job) || !NAME_RE.test(file) || Buffer.byteLength(file, 'utf8') > MAX_NAME_BYTES) {
     return '\nThen delete the clip\'s claim file under .claims/ in its job folder to let n8n retry it.';
   }
-  const ledger = withLedger
-    ? `\n1. Check TikTok, then in tiktok-sidecar: make ledger-resolve KEY=${job}/${file} OUTCOME=posted|not_posted`
-    : '\n1. Fix the clip (re-export it), or leave it set aside.';
-  return `${ledger}\n2. To let n8n retry it, release the n8n claim:\n${SSH_EXEC} rm "${INBOX}/${job}/.claims/${file}.json"'`;
+  // NAME_RE allows no quote, so single quotes keep a name with spaces one KEY.
+  const key = `'${job}/${file}'`;
+  const release = `${SSH_EXEC} rm "${INBOX}/${job}/.claims/${file}.json"'`;
+  if (!withLedger) {
+    return `\n1. Fix the clip (re-export it), or leave it set aside.\n2. To let n8n retry it, release the n8n claim:\n${release}`;
+  }
+  return '\n1. Check TikTok, then in tiktok-sidecar run the line that matches:'
+    + `\nmake ledger-resolve KEY=${key} OUTCOME=posted`
+    + `\nmake ledger-resolve KEY=${key} OUTCOME=not_posted`
+    + '\nIf it is refused with "no ledger rows" or "it is free", the upload never reached TikTok: go to 2.'
+    + '\n2. Release the n8n claim (the clip is retried; one resolved as posted comes back as a 409 duplicate and its manifest archives):'
+    + `\n${release}`;
 }
 
-const parts = [];
+// safety: the run fails if these cannot be sent. info: once-a-day notices; a
+// failed send is logged and retried by the next run (its day stays unmarked).
+const safety = [];
+const info = [];
+const infoDays = {};
 if (outcome.kind === 'auth_invalid' && due(authCount, AUTH_ALERT_AFTER)) {
-  parts.push(`🔑 Reelsmith: TikTok session invalid (${authCount} in a row). Run \`make refresh-cookies\` in tiktok-sidecar; clips wait and retry every 15 min.` + detail);
+  safety.push(`🔑 Reelsmith: TikTok session invalid (${authCount} in a row). Run \`make refresh-cookies\` in tiktok-sidecar; clips wait and retry every 15 min.` + detail);
 } else if (outcome.kind === 'needs_you') {
-  parts.push('Reelsmith: a clip needs you (not posted, will not be retried).'
+  safety.push((outcome.code === 'ambiguous'
+    ? 'Reelsmith: a clip is blocked by an earlier upload that may have posted (it will not be retried).'
+    : 'Reelsmith: a clip was refused (not posted, will not be retried).')
     + (needsCount > NEEDS_SLOT_RELEASES ? '\n3+ clips refused in a row: check the sidecar contract.' : '')
     + detail + releaseSteps(outcome.code === 'ambiguous'));
 } else if (outcome.kind === 'ambiguous') {
-  parts.push('Reelsmith: upload outcome unknown (it may have posted).' + detail + releaseSteps(true));
+  safety.push('Reelsmith: upload outcome unknown (it may have posted).' + detail + releaseSteps(true));
 } else if (outcome.kind === 'retryable' && due(retryCount, RETRY_ALERT_AFTER)) {
-  parts.push(`Reelsmith: sidecar unavailable ${retryCount} times in a row; clips are waiting.` + detail);
+  safety.push(`Reelsmith: sidecar unavailable ${retryCount} times in a row; clips are waiting.` + detail);
 }
-// Unusable manifests or rows Pick Due Clip skipped: once per SAST day, a count only.
+// Unusable manifests or clips Pick Due Clip reported: once per SAST day, a count only.
 const manifestIssues = Array.isArray(pick.manifestErrors) ? pick.manifestErrors.length : 0;
-const manifestNotice = manifestIssues > 0 && counters.manifestAlertDay !== today;
-if (manifestNotice) {
-  parts.push(`Reelsmith: ${manifestIssues} manifest problem(s) (an unreadable manifest, or clips that can never be posted); see the Pick Due Clip output in today's n8n executions.`);
+if (manifestIssues > 0 && counters.manifestAlertDay !== today) {
+  info.push(`Reelsmith: ${manifestIssues} manifest problem(s) (an unreadable manifest, or clips that can never be posted as they are); see .state/notices.json or the Pick Due Clip output in today's n8n executions.`);
+  infoDays.manifestAlertDay = today;
 }
-let alertText = parts.length ? parts.join('\n\n') : null;
-if (pick.dryRun === true && alertText) alertText = '[dry run] ' + alertText;
-if (alertText) await sendAlert(alertText);
-if (manifestNotice) writeJsonAtomic(RETRY_STATE, { ...counters, manifestAlertDay: today });
+// The kill switch is off while the workflow runs live: every clip is released
+// and retried every 15 min, so say so once a day.
+if (outcome.kind === 'dry_run' && outcome.code === 'posting_disabled' && pick.dryRun !== true
+  && counters.postingDisabledAlertDay !== today) {
+  info.push('Reelsmith: the sidecar has POSTING_ENABLED=false while the workflow is live; clips are released and retried every 15 min.');
+  infoDays.postingDisabledAlertDay = today;
+}
+const parts = [...safety, ...info];
+const alertText = parts.length ? (pick.dryRun === true ? '[dry run] ' : '') + parts.join('\n\n') : null;
+if (alertText) {
+  let sent = false;
+  try {
+    await sendAlert(alertText);
+    sent = true;
+  } catch (e) {
+    if (safety.length) throw e;
+    console.log('Log Results: informational alert not sent; the next run retries it. ' + e.message);
+  }
+  if (sent && info.length) writeJsonAtomic(RETRY_STATE, { ...counters, ...infoDays });
+}
 
 return [{
   json: {
