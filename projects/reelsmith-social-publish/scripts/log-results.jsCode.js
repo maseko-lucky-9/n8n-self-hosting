@@ -8,19 +8,29 @@ const path = require('path');
 
 const TZ = 'Africa/Johannesburg';
 const DATA_ROOT = '/data/reelsmith-inbox';
+const INBOX = path.join(DATA_ROOT, 'reelsmith-inbox');
 const STATE_DIR = path.join(DATA_ROOT, '.state');
 const RETRY_STATE = path.join(STATE_DIR, 'retryable-failures.json');
 const RETRY_ALERT_AFTER = 3;    // consecutive retryable failures before the first alert
 const AUTH_ALERT_AFTER = 1;     // consecutive auth_invalid answers before the first alert
 const REALERT_EVERY = 12;       // then one more alert per 12 in a row (about 3h at */15)
 const NEEDS_SLOT_RELEASES = 2;  // needs_you frees the slot only for the first 2 in a row
-const ALERT_MAX_CHARS = 800;
+// Names are at most 200 UTF-8 bytes (Pick Due Clip), so even the longest alert,
+// which repeats the name in the claim-release command, stays under this cap.
+const ALERT_MAX_CHARS = 1200;
 const HEADER = 'timestamp,filename,title,tiktok_post_id,tiktok_post_url,youtube_video_id,youtube_status,error,tiktok_status\n';
-const RETRYABLE_NET = ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT'];
+// Failures before the request left n8n: connect and DNS errors. Anything later
+// (read ETIMEDOUT, ECONNRESET, EPIPE, the HTTP timeout) may have posted.
+const RETRYABLE_CODES = ['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EHOSTDOWN', 'ENOTFOUND', 'EAI_AGAIN'];
+const JOB_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const NAME_RE = /^(?!\.)[\p{L}\p{N}_. -]{1,251}\.mp4$/u; // as Pick Due Clip
+const MAX_NAME_BYTES = 200;
+const SSH_EXEC = "ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker --";
 
 const pick = $('Pick Due Clip').first().json;
 const res = $input.first().json || {};
 const now = DateTime.now().setZone(TZ);
+const today = now.toISODate();
 const helpers = this.helpers;
 const execId = (typeof $execution !== 'undefined' && $execution && $execution.id) ? String($execution.id) : 'manual';
 
@@ -40,20 +50,23 @@ function parseBody(body) {
   return {};
 }
 
-// continueOnFail turns a transport failure into {error: <AxiosError JSON>}:
-// `code` carries the errno; axios's own timeout is ECONNABORTED with the
-// message "timeout of <n>ms exceeded" (n8n does not set clarifyTimeoutError).
+// continueOnFail turns a transport failure into {error: <AxiosError JSON>}.
+// Classified by PHASE: Node's connect/DNS errors read "connect <ERRNO> ..." or
+// "getaddrinfo <ERRNO> ..." and never sent the request, so they are retried.
+// Everything after that may have reached the sidecar: ambiguous. axios's own
+// timeout is ECONNABORTED, "timeout of <n>ms exceeded" (n8n does not set
+// clarifyTimeoutError).
 function transportFailure(err) {
   const e = (err && typeof err === 'object') ? err : { message: String(err) };
   const code = String(e.code || (e.cause && e.cause.code) || '').toUpperCase();
   const message = String(e.message || e.description || '');
+  if (/^(connect|getaddrinfo) /.test(message) || RETRYABLE_CODES.includes(code)) {
+    return { kind: 'retryable', code: safeCode(code.toLowerCase()) || 'connect_error' };
+  }
   if (code === 'ECONNABORTED' || /timeout of \d+ms exceeded/i.test(message)) {
     return { kind: 'ambiguous', code: 'timeout' };
   }
-  const errno = RETRYABLE_NET.find((c) => c === code || message.includes(c));
-  if (errno) return { kind: 'retryable', code: errno.toLowerCase() };
-  if (code === 'ECONNRESET' || message.includes('ECONNRESET')) return { kind: 'ambiguous', code: 'econnreset' };
-  return { kind: 'ambiguous', code: 'request_error' };
+  return { kind: 'ambiguous', code: safeCode(code.toLowerCase()) || 'request_error' };
 }
 
 // -> {kind, status?, code, errorId, httpStatus}
@@ -102,7 +115,8 @@ function assertRealDir(dir) {
 function writeJsonAtomic(file, obj) {
   const dir = path.dirname(file);
   assertRealDir(dir);
-  const tmp = path.join(dir, `.${path.basename(file)}.${execId.replace(/[^A-Za-z0-9_-]/g, '')}.${now.toMillis()}.tmp`);
+  // Short on purpose: a name derived from the clip's would exceed NAME_MAX.
+  const tmp = path.join(dir, `.tmp-${execId.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32)}-${now.toMillis()}`);
   fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', { flag: 'wx' });
   fs.renameSync(tmp, file);
 }
@@ -147,8 +161,8 @@ async function sendAlert(text) {
 const outcome = classify(res);
 
 // Consecutive-outcome counters: sidecar unavailable (count), TikTok session
-// invalid (authCount), clip refused as needs_you (needsCount). Any other
-// outcome resets each to 0.
+// invalid (authCount), clip refused as needs_you (needsCount, today only, so
+// an old streak never blocks a later day). Any other outcome resets each to 0.
 fs.mkdirSync(STATE_DIR, { recursive: true });
 let state = {};
 try {
@@ -158,7 +172,8 @@ try {
 }
 const retryCount = outcome.kind === 'retryable' ? (Number(state.count) || 0) + 1 : 0;
 const authCount = outcome.kind === 'auth_invalid' ? (Number(state.authCount) || 0) + 1 : 0;
-const needsCount = outcome.kind === 'needs_you' ? (Number(state.needsCount) || 0) + 1 : 0;
+const needsCount = outcome.kind === 'needs_you'
+  ? (state.needsDay === today ? Number(state.needsCount) || 0 : 0) + 1 : 0;
 
 // Released clips are retried by a later run: nothing reached TikTok (retryable,
 // auth_invalid, dry run) or today's cap was hit. A dry run never uploads, so even
@@ -201,7 +216,16 @@ if (releaseSlot && pick.slotMarker) {
 }
 
 // 2. Persist the consecutive-outcome counters computed above.
-writeJsonAtomic(RETRY_STATE, { count: retryCount, authCount, needsCount, lastCode: outcome.code, updatedAt: now.toISO() });
+const counters = {
+  count: retryCount,
+  authCount,
+  needsCount,
+  needsDay: today,
+  manifestAlertDay: state.manifestAlertDay || null,
+  lastCode: outcome.code,
+  updatedAt: now.toISO(),
+};
+writeJsonAtomic(RETRY_STATE, counters);
 
 // 3. One row per outcome in the job's results.log.csv (live column order; the
 // TikTok outcome goes in the trailing tiktok_status column). A file that still
@@ -218,24 +242,48 @@ appendResultRow(pick.jobDir, [
   rowStatus,
 ]);
 
-// 4. Alert last. Fixed strings + code + error_id + filename only: never the
-// caption or sidecar output.
+// 4. Alert last. Fixed strings + code + error_id + filename (and the claim
+// path built from the validated job id and filename) only: never the caption
+// or any other sidecar output.
 const line = (label, v) => (v ? `\n${label}: ${v}` : '');
 const detail = `${line('code', outcome.code)}${line('error_id', outcome.errorId)}${line('file', pick.filename)}`;
 const due = (n, first) => n >= first && (n - first) % REALERT_EVERY === 0;
-let alertText = null;
-if (outcome.kind === 'auth_invalid' && due(authCount, AUTH_ALERT_AFTER)) {
-  alertText = `🔑 Reelsmith: TikTok session invalid (${authCount} in a row). Run \`make refresh-cookies\` in tiktok-sidecar; clips wait and retry every 15 min.` + detail;
-} else if (outcome.kind === 'needs_you') {
-  alertText = 'Reelsmith: a clip needs you (not posted, will not be retried).'
-    + (needsCount > NEEDS_SLOT_RELEASES ? '\n3+ clips refused in a row: check the sidecar contract.' : '') + detail;
-} else if (outcome.kind === 'ambiguous') {
-  alertText = 'Reelsmith: upload outcome unknown; check TikTok before resolving it in the sidecar ledger.' + detail;
-} else if (outcome.kind === 'retryable' && due(retryCount, RETRY_ALERT_AFTER)) {
-  alertText = `Reelsmith: sidecar unavailable ${retryCount} times in a row; clips are waiting.` + detail;
+
+function releaseSteps(withLedger) {
+  if (pick.dryRun === true) return ''; // a dry run already released its claim
+  const job = path.basename(String(pick.jobDir || ''));
+  const file = String(pick.filename || '');
+  if (!JOB_RE.test(job) || !NAME_RE.test(file) || Buffer.byteLength(file, 'utf8') > MAX_NAME_BYTES) {
+    return '\nThen delete the clip\'s claim file under .claims/ in its job folder to let n8n retry it.';
+  }
+  const ledger = withLedger
+    ? `\n1. Check TikTok, then in tiktok-sidecar: make ledger-resolve KEY=${job}/${file} OUTCOME=posted|not_posted`
+    : '\n1. Fix the clip (re-export it), or leave it set aside.';
+  return `${ledger}\n2. To let n8n retry it, release the n8n claim:\n${SSH_EXEC} rm "${INBOX}/${job}/.claims/${file}.json"'`;
 }
+
+const parts = [];
+if (outcome.kind === 'auth_invalid' && due(authCount, AUTH_ALERT_AFTER)) {
+  parts.push(`🔑 Reelsmith: TikTok session invalid (${authCount} in a row). Run \`make refresh-cookies\` in tiktok-sidecar; clips wait and retry every 15 min.` + detail);
+} else if (outcome.kind === 'needs_you') {
+  parts.push('Reelsmith: a clip needs you (not posted, will not be retried).'
+    + (needsCount > NEEDS_SLOT_RELEASES ? '\n3+ clips refused in a row: check the sidecar contract.' : '')
+    + detail + releaseSteps(outcome.code === 'ambiguous'));
+} else if (outcome.kind === 'ambiguous') {
+  parts.push('Reelsmith: upload outcome unknown (it may have posted).' + detail + releaseSteps(true));
+} else if (outcome.kind === 'retryable' && due(retryCount, RETRY_ALERT_AFTER)) {
+  parts.push(`Reelsmith: sidecar unavailable ${retryCount} times in a row; clips are waiting.` + detail);
+}
+// Unusable manifests or rows Pick Due Clip skipped: once per SAST day, a count only.
+const manifestIssues = Array.isArray(pick.manifestErrors) ? pick.manifestErrors.length : 0;
+const manifestNotice = manifestIssues > 0 && counters.manifestAlertDay !== today;
+if (manifestNotice) {
+  parts.push(`Reelsmith: ${manifestIssues} manifest problem(s) (an unreadable manifest, or clips that can never be posted); see the Pick Due Clip output in today's n8n executions.`);
+}
+let alertText = parts.length ? parts.join('\n\n') : null;
 if (pick.dryRun === true && alertText) alertText = '[dry run] ' + alertText;
 if (alertText) await sendAlert(alertText);
+if (manifestNotice) writeJsonAtomic(RETRY_STATE, { ...counters, manifestAlertDay: today });
 
 return [{
   json: {

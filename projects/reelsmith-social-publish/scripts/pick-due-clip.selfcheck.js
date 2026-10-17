@@ -191,6 +191,145 @@ s.check('missing file waits; junk (empty name, not .mp4, <=1 KB, unsafe) is skip
   assert.equal(next.json.clip_key, `${LEGACY_JOB}/01_missing.mp4`);
 });
 
+s.check('path guard: names with separators are refused before any lookup, even when the target exists', async () => {
+  const root = h.makeRoot();
+  const { jobDir } = h.addJob(root, 'jobA', {
+    rows: [{ filename: 'sub/x.mp4', size: null }, { filename: 'a/../../other/x.mp4', size: null }, { filename: 'ok.mp4' }],
+    mtime: '2026-10-15T10:00:00',
+  });
+  fs.mkdirSync(path.join(jobDir, 'sub'));
+  fs.writeFileSync(path.join(jobDir, 'sub', 'x.mp4'), Buffer.alloc(4096));
+  fs.mkdirSync(path.join(jobDir, 'a'));
+  fs.mkdirSync(path.join(h.inboxOf(root), 'other'));
+  fs.writeFileSync(path.join(h.inboxOf(root), 'other', 'x.mp4'), Buffer.alloc(4096));
+  const looked = [];
+  const fsShim = Object.create(fs);
+  fsShim.lstatSync = (p, ...rest) => { looked.push(String(p)); return fs.lstatSync(p, ...rest); };
+  const [item] = await pick(root, '2026-10-17T09:00:00', { live: false, fsImpl: fsShim });
+  assert.equal(item.json.clip_key, 'jobA/ok.mp4');
+  assert.deepEqual(item.json.manifestErrors, ['jobA row 1: unsafe filename', 'jobA row 2: unsafe filename']);
+  assert.deepEqual(looked.filter((p) => p.endsWith('x.mp4')), [], 'looked up a path outside the job folder');
+});
+
+s.check('names: 200 bytes is fine; 201, 227, 253 (CJK) and 300 bytes are junk, reported, and never jam the run', async () => {
+  const cjk = (ascii, han) => 'a'.repeat(ascii) + '字'.repeat(han) + '.mp4';
+  const names = { 200: cjk(16, 60), 201: cjk(17, 60), 227: cjk(13, 70), 253: cjk(9, 80) };
+  for (const [bytes, name] of Object.entries(names)) assert.equal(Buffer.byteLength(name), Number(bytes));
+  const root = h.makeRoot();
+  h.addJob(root, 'jobA', {
+    rows: [
+      { filename: 'b'.repeat(296) + '.mp4', size: null }, // cannot even exist on disk (ENAMETOOLONG)
+      { filename: names[253] }, { filename: names[227] }, { filename: names[201] },
+      { filename: "Don't stop.mp4" }, // the sidecar's FILENAME_RE refuses the apostrophe
+      { filename: names[200] },
+    ],
+    mtime: '2026-10-15T10:00:00',
+  });
+  const [item] = await pick(root, '2026-10-17T12:00:00');
+  assert.equal(item.json.clip_key, `jobA/${names[200]}`);
+  assert.deepEqual(item.json.manifestErrors, [
+    'jobA row 1: name over 200 bytes', 'jobA row 2: name over 200 bytes', 'jobA row 3: name over 200 bytes',
+    'jobA row 4: name over 200 bytes', 'jobA row 5: name the sidecar refuses',
+  ]);
+  assert.equal(h.readJson(item.json.claimPath).status, 'claimed');
+});
+
+s.check('a row whose lookup throws is junk for that run; the next row is still posted', async () => {
+  const root = h.makeRoot();
+  const { jobDir } = job(root, 'jobA', 2);
+  const fsShim = Object.create(fs);
+  fsShim.lstatSync = (p, ...rest) => {
+    if (String(p) === path.join(jobDir, '00_clip.mp4')) { const e = new Error('EACCES'); e.code = 'EACCES'; throw e; }
+    return fs.lstatSync(p, ...rest);
+  };
+  const [item] = await pick(root, '2026-10-17T12:00:00', { fsImpl: fsShim });
+  assert.equal(item.json.clip_key, 'jobA/01_clip.mp4');
+  assert.deepEqual(item.json.manifestErrors, ['jobA row 1: EACCES']);
+  markPosted(item.json);
+  await assert.rejects(pick(root, '2026-10-17T15:00:00', { fsImpl: fsShim }), /row\(s\): jobA row 1: EACCES/);
+});
+
+s.check('over 300 MiB is junk and reported (never sent); exactly 300 MiB is sent with 750 s', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'jobA', {
+    rows: [{ filename: 'huge.mp4', size: 300 * 1048576 + 1 }, { filename: 'max.mp4', size: 300 * 1048576 }],
+    mtime: '2026-10-15T10:00:00',
+  });
+  const [item] = await pick(root, '2026-10-17T09:00:00', { live: false });
+  assert.equal(item.json.clip_key, 'jobA/max.mp4');
+  assert.equal(item.json.timeoutMs, 750000);
+  assert.deepEqual(item.json.manifestErrors, ['jobA row 1: over 300 MiB']);
+});
+
+s.check('timeout cap: a clip whose timeout would pass 780 s fails the run before any claim', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'jobA', { rows: [{ filename: 'big.mp4', size: 350 * 1048576 }], mtime: '2026-10-15T10:00:00' });
+  h.setNow('2026-10-17T12:00:00');
+  let code = h.loadNode(PICK, { root, live: true });
+  code = code.replace('const MAX_CLIP_MB = 300;', 'const MAX_CLIP_MB = 400;'); // a future bump
+  await assert.rejects(h.runNode(code), /timeout 825000 ms exceeds 780000 ms/);
+  assert.equal(h.listClaims(root).length, 0);
+  assert.deepEqual(h.listSlots(root), []);
+});
+
+s.check('caption: cleaned like the sidecar; title fallback; nothing usable = junk, reported', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'jobA', {
+    rows: [
+      { filename: '00.mp4', title: '', description: 'https://x.example/a?b=@me @ ## \u{1F600}\u200d\ufe0f' },
+      { filename: '01.mp4', title: '\u{1F600}', description: '  ' },
+      { filename: '02.mp4', title: 'Real title', description: '#@ www.example.com/x' },
+      { filename: '03.mp4', title: '', description: '\ufeff' }, // not whitespace to Python: kept
+    ],
+    mtime: '2026-10-15T10:00:00',
+  });
+  const [first] = await pick(root, '2026-10-17T09:00:00', { live: false });
+  assert.equal(first.json.clip_key, 'jobA/02.mp4');
+  assert.equal(first.json.caption, 'Real title');
+  assert.deepEqual(first.json.manifestErrors, ['jobA row 1: no usable caption', 'jobA row 2: no usable caption']);
+  const [second] = await pick(root, '2026-10-17T09:05:00', { live: false });
+  assert.equal(second.json.clip_key, 'jobA/03.mp4');
+});
+
+s.check('hashtags that start like a JSON array but are not one are dropped, not sent', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'jobA', { rows: [{ filename: '00.mp4', hashtags: '["#a", "#b"' }], mtime: '2026-10-15T10:00:00' });
+  const [item] = await pick(root, '2026-10-17T09:00:00', { live: false });
+  assert.equal(item.json.hashtags, '[]');
+});
+
+s.check('a missing or replaced inbox fails the run instead of reporting nothing to post', async () => {
+  const root = h.makeRoot();
+  fs.rmSync(h.inboxOf(root), { recursive: true });
+  await assert.rejects(pick(root, '2026-10-17T12:00:00'), /inbox missing/);
+  await assert.rejects(pick(root, '2026-10-17T09:00:00', { live: false }), /inbox missing/);
+  fs.writeFileSync(h.inboxOf(root), 'not a folder');
+  await assert.rejects(pick(root, '2026-10-17T12:00:00'), /inbox missing or not a directory/);
+});
+
+s.check('a symlinked .slots is refused; nothing is written through it', async () => {
+  const root = h.makeRoot();
+  job(root, 'jobA', 2);
+  const elsewhere = fs.mkdtempSync(path.join(require('os').tmpdir(), 'elsewhere-'));
+  fs.symlinkSync(elsewhere, path.join(root, '.slots'));
+  await assert.rejects(pick(root, '2026-10-17T12:00:00'), /not a real directory/);
+  assert.deepEqual(fs.readdirSync(elsewhere), []);
+  assert.equal(h.listClaims(root).length, 0);
+});
+
+s.check('not a regular file (a folder or a symlink named .mp4) is junk', async () => {
+  const root = h.makeRoot();
+  const { jobDir } = h.addJob(root, 'jobA', {
+    rows: [{ filename: '00_dir.mp4', size: null }, { filename: '01_link.mp4', size: null }, { filename: '02_ok.mp4' }],
+    mtime: '2026-10-15T10:00:00',
+  });
+  fs.mkdirSync(path.join(jobDir, '00_dir.mp4'));
+  fs.symlinkSync(path.join(jobDir, '02_ok.mp4'), path.join(jobDir, '01_link.mp4'));
+  const [item] = await pick(root, '2026-10-17T09:00:00', { live: false });
+  assert.equal(item.json.clip_key, 'jobA/02_ok.mp4');
+  assert.deepEqual(item.json.manifestErrors, ['jobA row 1: not a regular file', 'jobA row 2: not a regular file']);
+});
+
 s.check('Unicode: NFC name in the manifest, NFD name on disk (and back)', async () => {
   const nfc = '13_Alizé Umbrella.mp4'.normalize('NFC');
   const nfd = nfc.normalize('NFD');
@@ -447,10 +586,10 @@ s.check('multi-day: a systematic 400 sets aside at most 5 clips a day, with at m
   }
   assert.deepEqual(perDay, {
     '2026-10-17': { setAside: 5, alerts: 5, hinted: 3 },
-    '2026-10-18': { setAside: 3, alerts: 3, hinted: 3 },
-    '2026-10-19': { setAside: 3, alerts: 3, hinted: 3 },
+    '2026-10-18': { setAside: 5, alerts: 5, hinted: 3 },
+    '2026-10-19': { setAside: 5, alerts: 5, hinted: 3 },
   });
-  assert.equal(h.listClaims(root).filter((c) => c.data.status === 'needs_you').length, 11);
+  assert.equal(h.listClaims(root).filter((c) => c.data.status === 'needs_you').length, 15);
 });
 
 s.run();

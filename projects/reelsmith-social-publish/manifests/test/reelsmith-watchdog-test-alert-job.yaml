@@ -90,8 +90,12 @@ spec:
               send() {
                 text=$(clean "$1")
                 enc=$(printf '%s' "$text" | sed -e 's/ /%20/g' -e 's/,/%2C/g' -e 's/;/%3B/g' -e 's/:/%3A/g' -e 's/(/%28/g' -e 's/)/%29/g' -e 's/\//%2F/g')
-                # busybox wget puts the token in this container's argv; it is
-                # already in this container's env, so nothing new is exposed.
+                # Accepted tradeoff: busybox wget takes the token in its argv, and
+                # /proc/<pid>/cmdline of a container process is readable by any user
+                # on the node (environ is not) for the few seconds of the call. Fine on
+                # this single-user node. The fix is an image that ships curl (token on
+                # stdin via -K -), deferred: installing curl at runtime is what made the
+                # old watchdog miss its deadline.
                 if out=$(wget -q -T 10 -O /dev/null --post-data "chat_id=${TG_CHAT}&text=${enc}" \
                     "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" 2>&1); then
                   log "alert sent: $text"
@@ -122,8 +126,8 @@ spec:
               # (a) failed executions in the lookback window, (d) all executions in 25h.
               export PGCONNECT_TIMEOUT=10 PGOPTIONS='-c statement_timeout=10000'
               RES=$(psql -X -h postgres-service -U n8n_watchdog -d n8n -tA -c \
-                "SELECT count(*) FILTER (WHERE status IN ('error','crashed') AND \"startedAt\" > now() - interval '$LOOKBACK hours') \
-                 ||'|'|| COALESCE((max(id) FILTER (WHERE status IN ('error','crashed') AND \"startedAt\" > now() - interval '$LOOKBACK hours'))::text, '0') \
+                "SELECT count(*) FILTER (WHERE status IN ('error','crashed','canceled') AND \"startedAt\" > now() - interval '$LOOKBACK hours') \
+                 ||'|'|| COALESCE((max(id) FILTER (WHERE status IN ('error','crashed','canceled') AND \"startedAt\" > now() - interval '$LOOKBACK hours'))::text, '0') \
                  ||'|'|| count(*) \
                  FROM execution_entity WHERE \"workflowId\"='$WF_ID' AND \"startedAt\" > now() - interval '25 hours';")
               if valid "$RES" '0-9|' '[0-9]{1,9}\|[0-9]{1,12}\|[0-9]{1,9}'; then
@@ -142,7 +146,10 @@ spec:
                 case $STATUS in
                   200) ;;
                   401) add_day "cookie expired - run make refresh-cookies" ;;
-                  *) add_day "sidecar down (session check HTTP $STATUS)" ;;
+                  502) add_day "sidecar cannot reach TikTok (session check HTTP 502)" ;;
+                  503) add_day "no cookie on the sidecar - run make refresh-cookies (session check HTTP 503)" ;;
+                  000) add_day "sidecar down (session check HTTP 000)" ;;
+                  *) add_day "sidecar session check failed (HTTP $STATUS)" ;;
                 esac
                 log "session=$STATUS"
                 # (c) posting state.

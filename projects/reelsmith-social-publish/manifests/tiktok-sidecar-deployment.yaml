@@ -8,6 +8,19 @@ metadata:
     app.kubernetes.io/name: tiktok-sidecar
     app.kubernetes.io/part-of: reelsmith-social-publish
 spec:
+  # ONE pod, replaced with Recreate, never RollingUpdate (watchdog.selftest.sh
+  # checks both). The sidecar is the single gatekeeper: its upload lock lives in
+  # one process. During a rolling update two pods would serve at once with
+  # separate locks, and the new pod's startup recovery would mark the old pod's
+  # in-flight upload `interrupted`. Both PVCs it mounts (cookies + ledger, and
+  # the inbox) are ReadWriteOnce. On this single node that still lets pods share
+  # them; on more than one node a surge pod could not attach them, and a
+  # rolling update would hang.
+  # Cost of Recreate: every restart (a sync, `make refresh-cookies`) is a short
+  # outage, and n8n treats it as retryable. A restart DURING an upload kills it
+  # after the 30 s grace period. That clip is then `interrupted` (ambiguous:
+  # resolve it with `make ledger-resolve`), so restart outside the ~15 minutes
+  # after a posting slot.
   replicas: 1
   strategy:
     type: Recreate
@@ -51,6 +64,18 @@ spec:
                 ls -la /app/CookiesDir || true
               fi
               chmod 0700 /app/CookiesDir
+          # Runs as root with no capabilities. That is enough because root owns
+          # CookiesDir and everything in it (hostpath provisioner, then only root
+          # writers): reading its own 0400 Secret files, replacing a 0400 cookie
+          # (cp -f unlinks and recreates) and chmod of its own dir need none.
+          # If CookiesDir were ever owned by another uid this fails closed (the
+          # pod stays in Init) and the fix is a one-off chown, not a capability:
+          # DAC_OVERRIDE alone would still fail the chmod (that needs FOWNER).
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           volumeMounts:
             - name: cookies-pvc
               mountPath: /app/CookiesDir
@@ -59,6 +84,10 @@ spec:
               readOnly: true
       containers:
         - name: tiktok-sidecar
+          # Go-live step 2 replaces this tag with the pushed digest
+          # (localhost:32000/reelsmith/tiktok-sidecar@sha256:<digest>) in a follow-up
+          # PR. The in-cluster registry has no auth, so any pod that reaches it
+          # could push a different :0.2.0.
           image: localhost:32000/reelsmith/tiktok-sidecar:0.2.0
           imagePullPolicy: IfNotPresent
           ports:

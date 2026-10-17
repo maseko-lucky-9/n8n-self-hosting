@@ -147,6 +147,31 @@ s.check('drift guard: committed JSON equals build-workflow.js output', () => {
   assert.equal(text, render(), 'run `node scripts/build-workflow.js` and commit the result');
 });
 
+s.check('junk rules are identical in Pick Due Clip, Archive Manifest and Log Results', () => {
+  const src = (name) => node(name).parameters.jsCode;
+  const constLine = (js, name) => {
+    const m = js.match(new RegExp(`^const ${name} = .*$`, 'm'));
+    assert.ok(m, `const ${name} missing`);
+    return m[0];
+  };
+  const fnBlock = (js, start, end) => {
+    const i = js.indexOf(start);
+    assert.ok(i >= 0, `${start} missing`);
+    return js.slice(i, js.indexOf(end, i) + end.length);
+  };
+  const pick = src('Pick Due Clip');
+  const archive = src('Archive Manifest');
+  const log = src('Log Results');
+  for (const name of ['NAME_RE', 'MAX_NAME_BYTES', 'MAX_CLIP_MB', 'MIN_BYTES']) {
+    assert.equal(constLine(archive, name), constLine(pick, name), `Archive ${name}`);
+  }
+  for (const name of ['NAME_RE', 'MAX_NAME_BYTES']) assert.equal(constLine(log, name).split(';')[0], constLine(pick, name).split(';')[0], `Log Results ${name}`);
+  const caption = (js) => fnBlock(js, "// The sidecar's caption cleaning", '  return !BLANK_RE.test(body);\n}\n');
+  assert.equal(caption(archive), caption(pick), 'captionUsable drifted');
+  const csv = (js) => fnBlock(js, 'function parseCsv(text) {', '  return { header, rows };\n}\n');
+  assert.equal(csv(archive), csv(pick), 'parseCsv drifted');
+});
+
 s.check('Code nodes need only fs/path and the global DateTime', () => {
   for (const file of Object.values(SCRIPTS)) {
     const js = fs.readFileSync(path.join(__dirname, file), 'utf8');

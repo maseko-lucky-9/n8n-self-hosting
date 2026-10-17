@@ -16,9 +16,9 @@ const CAPTION = 'CAPTION-SENTINEL never in alerts';
 const T = '2026-10-17T12:00:00';
 
 // Picks one real clip (live mode: claim + slot 0 marker) and returns the item.
-async function picked({ live = true } = {}) {
+async function picked({ live = true, filename = '00_clip.mp4' } = {}) {
   const root = h.makeRoot();
-  h.addJob(root, 'jobA', { rows: [{ filename: '00_clip.mp4', description: CAPTION }], mtime: '2026-10-15T10:00:00' });
+  h.addJob(root, 'jobA', { rows: [{ filename, description: CAPTION }], mtime: '2026-10-15T10:00:00' });
   h.setNow(live ? T : '2026-10-17T09:00:00');
   const [item] = await h.runNode(h.loadNode('pick-due-clip.jsCode.js', { root, live }));
   assert.ok(item, 'fixture picked nothing');
@@ -68,6 +68,10 @@ const TABLE = [
   ['ENOTFOUND', transport('ENOTFOUND', 'getaddrinfo ENOTFOUND tiktok-sidecar'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
   ['EAI_AGAIN', transport('EAI_AGAIN', 'getaddrinfo EAI_AGAIN tiktok-sidecar'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
   ['connect timeout (ETIMEDOUT)', transport('ETIMEDOUT', 'connect ETIMEDOUT 127.0.0.1:8000'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
+  ['connect EHOSTUNREACH', transport('EHOSTUNREACH', 'connect EHOSTUNREACH 127.0.0.1:8000'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
+  ['ENETUNREACH (code only)', transport('ENETUNREACH', ''), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
+  ['read ETIMEDOUT (after sending)', transport('ETIMEDOUT', 'read ETIMEDOUT'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: etimedout/, row: 'failed' }],
+  ['EPIPE', transport('EPIPE', 'write EPIPE'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: epipe/, row: 'failed' }],
   ['HTTP timeout (ECONNABORTED)', transport('ECONNABORTED', 'timeout of 673000ms exceeded'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: timeout/, row: 'failed' }],
   ['ECONNRESET', transport('ECONNRESET', 'socket hang up'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: econnreset/, row: 'failed' }],
   ['502 publish_rejected', sidecar(502, 'publish_rejected'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: publish_rejected/, row: 'failed' }],
@@ -101,18 +105,107 @@ for (const [name, response, want] of TABLE) {
   });
 }
 
-s.check('alerts: fixed text + code + error_id + filename only, <= 800 chars, plain text', async () => {
+s.check('alerts: fixed text + code + error_id + filename only, <= 1200 chars, plain text', async () => {
   const { root, pick } = await picked();
-  const long = { ...pick, filename: 'x'.repeat(900) + '.mp4' };
+  const long = { ...pick, filename: 'x'.repeat(2000) + '.mp4' };
   const { sent } = await log(root, long, sidecar(502, 'publish_rejected', { caption: CAPTION }));
   const { text } = sent[0].body;
-  assert.ok(text.length <= 800, `alert is ${text.length} chars`);
+  assert.ok(text.length <= 1200, `alert is ${text.length} chars`);
+  // a name the rules refuse (here a shell-quote breaker) never reaches the copy-paste command
+  const hostile = { ...pick, filename: "x'; touch pwned; '.mp4" };
+  const quoted = (await log(root, hostile, sidecar(502, 'publish_rejected'))).sent[0].body.text;
+  assert.equal(quoted.includes('ssh homelab'), false, 'a refused name reached a shell command');
+  for (const leak of [CAPTION, 'SIDECAR-OUTPUT-TAIL', TOKEN]) assert.ok(!quoted.includes(leak), 'alert leaks ' + leak);
   assert.equal(sent[0].body.parse_mode, undefined);
   for (const leak of [CAPTION, 'SIDECAR-OUTPUT-TAIL', TOKEN]) assert.ok(!text.includes(leak), 'alert leaks ' + leak);
   const { sent: sent2 } = await log(root, pick, sidecar(502, 'publish_rejected'));
-  assert.match(sent2[0].body.text, /code: publish_rejected\nerror_id: err-123\nfile: 00_clip\.mp4$/);
+  assert.match(sent2[0].body.text, /code: publish_rejected\nerror_id: err-123\nfile: 00_clip\.mp4\n/);
+  for (const leak of [CAPTION, 'SIDECAR-OUTPUT-TAIL', TOKEN]) assert.ok(!sent2[0].body.text.includes(leak), 'alert leaks ' + leak);
   assert.equal(sent2[0].url, `https://api.telegram.org/bot${TOKEN}/sendMessage`);
   assert.equal(sent2[0].body.chat_id, '42');
+});
+
+s.check('needs_you / ambiguous alerts carry the exact claim-release command', async () => {
+  const { root, pick } = await picked();
+  const cmd = `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "${h.inboxOf(root)}/jobA/.claims/00_clip.mp4.json"'`;
+  const amb = (await log(root, pick, sidecar(504, 'timeout'))).sent[0].body.text;
+  assert.ok(amb.endsWith('\n' + cmd), amb);
+  assert.ok(amb.includes('make ledger-resolve KEY=jobA/00_clip.mp4 OUTCOME=posted|not_posted'));
+  const blocked = (await log(root, pick, sidecar(409, 'ambiguous'))).sent[0].body.text;
+  assert.ok(blocked.includes('make ledger-resolve KEY=jobA/00_clip.mp4') && blocked.endsWith(cmd));
+  const bad = (await log(root, pick, sidecar(400, 'bad_input'))).sent[0].body.text;
+  assert.ok(bad.includes('Fix the clip') && !bad.includes('ledger-resolve') && bad.endsWith(cmd));
+});
+
+s.check('the longest allowed name (200 bytes) keeps the whole command inside the cap', async () => {
+  const name = 'a'.repeat(196) + '.mp4';
+  const { root, pick } = await picked({ filename: name });
+  const { text } = (await log(root, pick, sidecar(504, 'timeout'))).sent[0].body;
+  assert.ok(text.length <= 1200, `${text.length} chars`);
+  assert.ok(text.endsWith(`/jobA/.claims/${name}.json"'`), 'command cut off');
+});
+
+s.check('a 200-byte CJK name is recorded (short tmp name, no ENAMETOOLONG)', async () => {
+  const name = 'a'.repeat(16) + '字'.repeat(60) + '.mp4';
+  assert.equal(Buffer.byteLength(name), 200);
+  const { root, pick } = await picked({ filename: name });
+  await log(root, pick, sidecar(200, 'posted'));
+  assert.equal(h.readJson(pick.claimPath).status, 'posted');
+});
+
+s.check('releases refuse a symlinked .claims or .slots (nothing deleted through it)', async () => {
+  const os = require('os');
+  const a = await picked();
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'elsewhere-'));
+  fs.writeFileSync(path.join(elsewhere, '00_clip.mp4.json'), '{}');
+  fs.rmSync(path.dirname(a.pick.claimPath), { recursive: true });
+  fs.symlinkSync(elsewhere, path.dirname(a.pick.claimPath));
+  await assert.rejects(log(a.root, a.pick, sidecar(503, 'busy')), /not a real directory/);
+  assert.ok(h.exists(path.join(elsewhere, '00_clip.mp4.json')), 'claim deleted through the symlink');
+
+  const b = await picked();
+  const slots = path.dirname(b.pick.slotMarker);
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'elsewhere-'));
+  fs.renameSync(b.pick.slotMarker, path.join(other, path.basename(b.pick.slotMarker)));
+  fs.rmSync(slots, { recursive: true });
+  fs.symlinkSync(other, slots);
+  await assert.rejects(log(b.root, b.pick, sidecar(503, 'busy')), /not a real directory/);
+  assert.ok(h.exists(path.join(other, path.basename(b.pick.slotMarker))), 'slot marker deleted through the symlink');
+});
+
+s.check('manifest problems alert once per SAST day, as a count, and only once sent', async () => {
+  const { root, pick } = await picked();
+  const withErrors = { ...pick, manifestErrors: ['jobX: unterminated quoted field', 'jobA row 3: name too long'] };
+  const reset = () => fs.writeFileSync(pick.claimPath, JSON.stringify({ status: 'claimed' }));
+  const fail = async () => { const e = new Error('x'); e.code = 'ECONNRESET'; throw e; };
+  await assert.rejects(log(root, withErrors, sidecar(200, 'posted'), { httpRequest: fail }), /Telegram alert failed/);
+  reset();
+  const first = await log(root, withErrors, sidecar(200, 'posted'), { sast: '2026-10-17T15:05:00' });
+  assert.equal(first.sent.length, 1, 'not retried after a failed send');
+  assert.match(first.sent[0].body.text, /^Reelsmith: 2 manifest problem\(s\)/);
+  assert.equal(/jobX|row 3|unterminated/.test(first.sent[0].body.text), false, 'manifest details leaked');
+  reset();
+  assert.equal((await log(root, withErrors, sidecar(200, 'posted'), { sast: '2026-10-17T18:05:00' })).sent.length, 0, 'twice in a day');
+  reset();
+  assert.equal((await log(root, withErrors, sidecar(200, 'posted'), { sast: '2026-10-18T12:05:00' })).sent.length, 1, 'next day');
+  reset();
+  assert.equal((await log(root, pick, sidecar(200, 'posted'), { sast: '2026-10-19T12:05:00' })).sent.length, 0, 'no problems');
+});
+
+s.check('needsCount restarts each SAST day and after a post', async () => {
+  const { root, pick } = await picked();
+  const step = async (response, sast) => {
+    fs.writeFileSync(pick.claimPath, JSON.stringify({ status: 'claimed' }));
+    fs.writeFileSync(pick.slotMarker, JSON.stringify({ claimedAt: pick.claimedAt }));
+    const r = await log(root, pick, response, { sast });
+    return [r.out.needsCount, !h.exists(pick.slotMarker)];
+  };
+  assert.deepEqual(await step(sidecar(400, 'bad_input'), '2026-10-17T12:05:00'), [1, true]);
+  assert.deepEqual(await step(sidecar(400, 'bad_input'), '2026-10-17T12:20:00'), [2, true]);
+  assert.deepEqual(await step(sidecar(400, 'bad_input'), '2026-10-17T12:35:00'), [3, false]);
+  assert.deepEqual(await step(sidecar(400, 'bad_input'), '2026-10-18T12:05:00'), [1, true], 'yesterday\'s streak carried over');
+  assert.deepEqual(await step(sidecar(200, 'posted'), '2026-10-18T12:20:00'), [0, false]);
+  assert.deepEqual(await step(sidecar(400, 'bad_input'), '2026-10-18T15:05:00'), [1, true]);
 });
 
 s.check('the claim is on disk with its outcome BEFORE the alert is sent', async () => {
@@ -152,7 +245,7 @@ s.check('atomic claim write: tmp + rename, no tmp left, refuses a symlinked .cla
   } finally {
     fs.renameSync = realRename;
   }
-  assert.ok(renames.some(([a, b]) => b === '00_clip.mp4.json' && a.startsWith('.00_clip.mp4.json.') && a.endsWith('.tmp')));
+  assert.ok(renames.some(([a, b]) => b === '00_clip.mp4.json' && /^\.tmp-77-\d+$/.test(a)), JSON.stringify(renames));
   assert.deepEqual(fs.readdirSync(path.dirname(pick.claimPath)), ['00_clip.mp4.json']);
 
   const second = await picked();
@@ -248,6 +341,7 @@ s.check('dry run: released claim (no slot), dry_run row, even for simulate=auth_
     const r = await log(root, pick, response);
     assert.equal(h.exists(pick.claimPath), false, `dry-run ${response.statusCode} must not strand the clip`);
     assert.match(r.sent[0].body.text, /^\[dry run\] /);
+    assert.equal(r.sent[0].body.text.includes('ssh homelab'), false, 'asks to release a claim a dry run already released');
   }
   const { rows } = resultRows(pick);
   assert.deepEqual(rows.map((r) => r[8]), ['dry_run', 'auth_invalid', 'needs_you', 'ambiguous']);

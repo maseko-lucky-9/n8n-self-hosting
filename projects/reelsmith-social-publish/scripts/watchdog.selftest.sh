@@ -3,9 +3,10 @@
 #
 # Extracts the container script from the CronJob with python3 + PyYAML and runs
 # it against stub `psql`, `wget` and `date` placed first on PATH, asserting every
-# alert decision. Exits non-zero on any failed assertion.
+# alert decision. It also guards the sidecar Deployment's single-process shape
+# (one replica, Recreate). Exits non-zero on any failed assertion.
 #
-#   scripts/watchdog.selftest.sh [cronjob.yaml [test-alert-job.yaml]]
+#   scripts/watchdog.selftest.sh [cronjob.yaml [test-alert-job.yaml [sidecar-deployment.yaml]]]
 #   WATCHDOG_SH=dash scripts/watchdog.selftest.sh   # pick the shell that runs the script (default sh)
 #
 # The wget stub mimics busybox wget: on a non-2xx answer it exits 1 with
@@ -16,7 +17,9 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 CRON=${1:-$here/../manifests/reelsmith-watchdog-cronjob.yaml}
 JOB=${2:-$here/../manifests/test/reelsmith-watchdog-test-alert-job.yaml}
+SIDECAR=${3:-$here/../manifests/tiktok-sidecar-deployment.yaml}
 WATCHDOG_SH=${WATCHDOG_SH:-sh}
+read -r -a watchdog_sh <<< "$WATCHDOG_SH"   # a command with arguments, e.g. "bash --posix"
 export LC_ALL=C
 
 python3 -c 'import yaml' 2>/dev/null || { echo "watchdog.selftest: needs python3 with PyYAML (pip install pyyaml)"; exit 2; }
@@ -26,11 +29,12 @@ trap 'rm -rf "$work"' EXIT
 mkdir "$work/bin"
 
 # --- extract the script and the manifest's plain env; structural checks -------
-python3 - "$CRON" "$JOB" "$work" <<'PY'
+python3 - "$CRON" "$JOB" "$SIDECAR" "$work" <<'PY'
 import sys, yaml
-cron_path, job_path, out = sys.argv[1:4]
+cron_path, job_path, sidecar_path, out = sys.argv[1:5]
 cron = yaml.safe_load(open(cron_path))
 job = yaml.safe_load(open(job_path))
+sidecar = yaml.safe_load(open(sidecar_path))
 problems = []
 def check(cond, what):
     if not cond:
@@ -57,6 +61,10 @@ check({e["name"]: e.get("value") for e in jcontainer.get("env", [])}.get("TEST_A
       "test-alert Job does not set TEST_ALERT=1")
 check(jpod["metadata"]["labels"].get("app.kubernetes.io/component") == "reelsmith-watchdog",
       "test-alert Job pod label is not reelsmith-watchdog")
+# The sidecar is the single gatekeeper: one process, never two pods at once.
+check(sidecar["spec"].get("replicas") == 1, "sidecar Deployment replicas is not 1")
+check((sidecar["spec"].get("strategy") or {}).get("type") == "Recreate",
+      "sidecar Deployment strategy is not Recreate (a rolling update runs two gatekeepers)")
 if problems:
     print("\n".join("FAIL [manifest] " + p for p in problems))
     sys.exit(1)
@@ -156,7 +164,7 @@ run() {
   set +e
   OUT=$(env -i PATH="$work/bin:/usr/local/bin:/usr/bin:/bin" HOME="$work" LC_ALL=C STUB_DIR="$state" \
     "${manifest_env[@]}" TG_TOKEN="$FAKE_TOKEN" TG_CHAT=4242 PGPASSWORD=stub-db-password FAKE_HOUR=15 \
-    "$@" $WATCHDOG_SH "$work/watchdog.sh" 2>&1)
+    "$@" "${watchdog_sh[@]}" "$work/watchdog.sh" 2>&1)
   RC=$?
   set -e
   # Every run: no secret and no Telegram URL in the job log.
@@ -210,6 +218,10 @@ PY
 expect_out() { case $OUT in *"$1"*) pass ;; *) fail "output lacks '$1': $OUT" ;; esac; }
 psql_args() { cat "$state/psql.calls" 2>/dev/null || true; }
 expect_sql() { case $(psql_args) in *"$1"*) pass ;; *) fail "psql call lacks '$1'" ;; esac; }
+expect_sql_count() {
+  local n; n=$(psql_args | { grep -oF -- "$1" || true; } | wc -l | tr -d ' ')
+  if [ "$n" = "$2" ]; then pass; else fail "psql call has '$1' $n time(s), want $2"; fi
+}
 
 STATS_OK='{"posted_today":1,"cap":3,"last_success_at":"2026-10-17T12:00:09+02:00","hours_since_success":2.7,"paused_until":null,"posting_enabled":true}'
 stats_with() { printf '{"posted_today":0,"cap":3,"last_success_at":null,"hours_since_success":%s,"paused_until":%s,"posting_enabled":true}' "$1" "$2"; }
@@ -218,7 +230,10 @@ stats_with() { printf '{"posted_today":0,"cap":3,"last_success_at":null,"hours_s
 # Healthy run off the digest hour: no alert, no sidecar calls, 4h error window, timeouts set.
 run healthy_15
 expect_rc 0; expect_sends 0; expect_out "ok: no alert"; expect_count sidecar.count 0; expect_count psql.count 1
-expect_sql "interval '4 hours'"; expect_sql "status IN ('error','crashed')"; expect_sql "\"workflowId\"='SKLkX5qUDYLlWTxo'"
+expect_sql "interval '4 hours'"
+# Both aggregates (failed count, latest failed id) use the full status filter.
+expect_sql_count "status IN ('error','crashed','canceled') AND \"startedAt\" > now() - interval '4 hours')" 2
+expect_sql "\"workflowId\"='SKLkX5qUDYLlWTxo'"
 expect_sql "interval '25 hours'"; expect_sql "PGCONNECT_TIMEOUT=10"; expect_sql "statement_timeout=10000"
 case $(cat "$state/date.calls") in TZ=SAST-2) pass ;; *) fail "hour not read in SAST" ;; esac
 
@@ -247,11 +262,19 @@ expect_rc 0; expect_sends 1; expect_msg "cookie expired - run make refresh-cooki
 run cookie_401_15 STUB_SESSION=401
 expect_rc 0; expect_sends 0; expect_count sidecar.count 0
 
-# (b) sidecar down: unreachable, and 503 no_cookie.
+# (b) sidecar down (no answer), TikTok unreachable from the sidecar (502), no cookie (503),
+# any other session status; (c) any non-200 from /api/stats is "sidecar down".
 run sidecar_unreachable_12 FAKE_HOUR=12 STUB_SESSION=000 STUB_STATS=000
 expect_rc 0; expect_sends 1; expect_msg "sidecar down (session check HTTP 000)"; expect_msg "sidecar down (stats HTTP 000)"
+run session_502_12 FAKE_HOUR=12 STUB_SESSION=502
+expect_rc 0; expect_sends 1; expect_msg "sidecar cannot reach TikTok (session check HTTP 502)"; expect_no_msg "sidecar down"
 run no_cookie_503_12 FAKE_HOUR=12 STUB_SESSION=503
-expect_rc 0; expect_sends 1; expect_msg "sidecar down (session check HTTP 503)"; expect_no_msg "cookie expired"
+expect_rc 0; expect_sends 1; expect_msg "no cookie on the sidecar - run make refresh-cookies (session check HTTP 503)"
+expect_no_msg "sidecar down"; expect_no_msg "cookie expired"
+run session_404_12 FAKE_HOUR=12 STUB_SESSION=404
+expect_rc 0; expect_sends 1; expect_msg "sidecar session check failed (HTTP 404)"; expect_no_msg "sidecar down"
+run stats_500_12 FAKE_HOUR=12 STUB_STATS=500
+expect_rc 0; expect_sends 1; expect_msg_is "Reelsmith watchdog: daily: sidecar down (stats HTTP 500)"
 
 # (c) stale success (> 48h), the 48h boundary, never posted, paused.
 run stale_49_12 FAKE_HOUR=12 STUB_STATS_BODY="$(stats_with 49.2 null)"

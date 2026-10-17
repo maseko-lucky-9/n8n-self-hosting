@@ -21,9 +21,17 @@ const LAST_CALL = '21:00';  // no catch-up at or after this time
 const STALE_CLAIM_MIN = 30; // a claim with no outcome after this is released
 const CUTOFF = '2026-10-11';  // manifests modified before this day (SAST) are ignored
 const MIN_BYTES = 1024;       // a clip of 1 KB or less is junk
+const MAX_CLIP_MB = 300;      // the sidecar's MAX_CLIP_MB: anything larger gets a 413
 const TIMEOUT_BASE_S = 240;   // sidecar: timeout_s = 240 + ceil(1.5 * size_MiB)
 const TIMEOUT_PER_MIB_S = 1.5;
 const HTTP_MARGIN_S = 60;
+const MAX_TIMEOUT_MS = 780000; // must stay under the workflow's executionTimeout (900 s)
+// A subset of the sidecar's rule (tiktok-sidecar/sidecar/clip.py FILENAME_RE
+// `[\w. -]{1,251}\.mp4`, Python \w = letters, digits, underscore; no leading
+// dot; at most 255 bytes), capped at 200 bytes so `<name>.json` and every
+// derived path stay far below NAME_MAX.
+const NAME_RE = /^(?!\.)[\p{L}\p{N}_. -]{1,251}\.mp4$/u;
+const MAX_NAME_BYTES = 200;
 // Jobs exported before manifest.csv had a `source` column, confirmed YouTube-sourced.
 const YOUTUBE_LEGACY_JOBS = [
   '1979f8a4a33643b5a43d8f0fb4337d3e',
@@ -74,15 +82,12 @@ function readClaimedAt(file) {
   return st ? DateTime.fromMillis(st.mtimeMs) : null;
 }
 
+// A missing inbox means Syncthing's folder was renamed or unmounted: fail the
+// run (the watchdog sees errors) instead of reporting "nothing to post".
 function listJobs() {
-  let names;
-  try {
-    names = fs.readdirSync(INBOX);
-  } catch (e) {
-    if (e && e.code === 'ENOENT') return [];
-    throw e;
-  }
-  return names.filter((n) => {
+  const st = lstatOrNull(INBOX);
+  if (!st || !st.isDirectory()) throw new Error('Pick Due Clip: inbox missing or not a directory: ' + INBOX);
+  return fs.readdirSync(INBOX).filter((n) => {
     if (!JOB_RE.test(n)) return false;
     const st = lstatOrNull(path.join(INBOX, n));
     return Boolean(st && st.isDirectory());
@@ -123,16 +128,39 @@ function parseCsv(text) {
   return { header, rows };
 }
 
+// The sidecar's caption cleaning (tiktok-sidecar/sidecar/caption.py clean_body):
+// drop URLs, non-BMP characters, invisibles, @ and #. Conservative: "empty" only
+// when what is left is whitespace to both Python and JS, and the URL match stops
+// at any character either side calls whitespace, so n8n never junks a caption
+// the sidecar would accept (a wrong "usable" only costs a 400).
+const BLANK_RE = /^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u;
+const BLANK_EDGES_RE = /^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/gu;
+// String.prototype.trim also eats U+FEFF, which the sidecar keeps.
+const trimBlank = (text) => String(text == null ? '' : text).replace(BLANK_EDGES_RE, '');
+const URL_RE = /(?:https?:\/\/|www\.)[^\s\x1c-\x1f\x85]*/giu;
+function captionUsable(text) {
+  const body = String(text == null ? '' : text)
+    .replace(URL_RE, ' ')
+    .replace(/[\u{10000}-\u{10FFFF}]/gu, '')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f\u200d\ufe0e\ufe0f]/g, '')
+    .replace(/[@#]/g, '');
+  return !BLANK_RE.test(body);
+}
+
 // -> {kind: 'junk'|'missing'|'claimed'|'ready', ...}. Names are NFC; the on-disk
 // name may be NFD (copied from macOS), so NFC is tried first, then NFD.
+// junk.notice: a real clip that can never be posted (reported in manifestErrors).
 function inspectClip(jobDir, rawName) {
   const name = String(rawName == null ? '' : rawName);
   if (!name.trim()) return { kind: 'junk', reason: 'empty filename' };
   const nfc = name.normalize('NFC');
   if (!nfc.endsWith('.mp4')) return { kind: 'junk', reason: 'not .mp4' };
+  // Path safety first: nothing below may touch a path outside this job folder.
   if (nfc !== path.basename(nfc) || nfc.startsWith('.') || /[\\/\0]/.test(nfc)) {
-    return { kind: 'junk', reason: 'unsafe filename' };
+    return { kind: 'junk', reason: 'unsafe filename', notice: true };
   }
+  if (Buffer.byteLength(nfc, 'utf8') > MAX_NAME_BYTES) return { kind: 'junk', reason: 'name over 200 bytes', notice: true };
+  if (!NAME_RE.test(nfc)) return { kind: 'junk', reason: 'name the sidecar refuses', notice: true };
   let diskName = null;
   let st = null;
   for (const candidate of [...new Set([nfc, name.normalize('NFD'), name])]) {
@@ -140,8 +168,9 @@ function inspectClip(jobDir, rawName) {
     if (st) { diskName = candidate; break; }
   }
   if (!st) return { kind: 'missing', nfc };
-  if (!st.isFile()) return { kind: 'junk', reason: 'not a regular file' };
+  if (!st.isFile()) return { kind: 'junk', reason: 'not a regular file', notice: true };
   if (st.size <= MIN_BYTES) return { kind: 'junk', reason: '1 KB or less' };
+  if (st.size > MAX_CLIP_MB * 1048576) return { kind: 'junk', reason: `over ${MAX_CLIP_MB} MiB`, notice: true };
   const claimPath = path.join(jobDir, '.claims', nfc + '.json');
   if (lstatOrNull(claimPath)) return { kind: 'claimed', nfc };
   return { kind: 'ready', nfc, diskName, size: st.size, claimPath };
@@ -156,7 +185,9 @@ function hashtagsField(raw) {
   } catch (e) {
     // not JSON: Contract v1 also accepts whitespace/comma separated tags
   }
-  return s;
+  // The sidecar 400s anything that starts like a JSON array but is not one:
+  // post without tags rather than set the clip aside.
+  return s.startsWith('[') ? '[]' : s;
 }
 
 // 1. Stale-claim sweep. Only our own unresolved claims (status 'claimed') are
@@ -219,13 +250,18 @@ for (const job of listJobs()) {
 }
 manifests.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (a.job < b.job ? -1 : a.job > b.job ? 1 : 0));
 
+// manifestErrors: every problem a human should see (Log Results alerts the
+// count once a day). hardErrors: the unexpected ones (unreadable manifest, a row
+// that threw); with nothing to post, those fail the run so the watchdog sees them.
 const manifestErrors = [];
+let hardErrors = 0;
 for (const m of manifests) {
   let parsed;
   try {
     parsed = parseCsv(fs.readFileSync(m.manifestPath, 'utf8'));
   } catch (e) {
     manifestErrors.push(m.job + ': ' + String((e && e.message) || e).slice(0, 120));
+    hardErrors += 1;
     continue;
   }
   // YouTube only: with a `source` column every row must say youtube (an empty
@@ -240,8 +276,29 @@ for (const m of manifests) {
     const row = parsed.rows[rowIndex];
     const source = String(row.source).trim();
     if (hasSource && source !== 'youtube' && !(source === '' && legacyJob)) continue;
-    const clip = inspectClip(m.jobDir, row.filename);
+    const where = `${m.job} row ${rowIndex + 1}`;
+    // One bad row never stops the others: any error (ENAMETOOLONG, EACCES, ...)
+    // makes that row junk for this run.
+    let clip;
+    try {
+      clip = inspectClip(m.jobDir, row.filename);
+    } catch (e) {
+      manifestErrors.push(`${where}: ${(e && e.code) || 'error'}`);
+      hardErrors += 1;
+      continue;
+    }
+    if (clip.kind === 'junk' && clip.notice) manifestErrors.push(`${where}: ${clip.reason}`);
     if (clip.kind !== 'ready') continue; // junk: skip; missing: wait for Syncthing; claimed: skip
+    const title = trimBlank(row.title);
+    const caption = captionUsable(row.description) ? trimBlank(row.description) : title;
+    if (!captionUsable(caption)) {
+      manifestErrors.push(`${where}: no usable caption`);
+      continue;
+    }
+    const timeoutMs = (TIMEOUT_BASE_S + Math.ceil(TIMEOUT_PER_MIB_S * clip.size / 1048576) + HTTP_MARGIN_S) * 1000;
+    if (timeoutMs > MAX_TIMEOUT_MS) {
+      throw new Error(`Pick Due Clip: timeout ${timeoutMs} ms exceeds ${MAX_TIMEOUT_MS} ms; lower MAX_CLIP_MB or raise executionTimeout`);
+    }
 
     // Claim = <jobDir>/.claims/<NFC filename>.json; it is never removed for a
     // posted, needs_you or failed clip. Recover a stuck clip by deleting its
@@ -277,16 +334,14 @@ for (const m of manifests) {
       }
     }
 
-    const title = String(row.title || '').trim();
-    const sizeMiB = clip.size / 1048576;
     return [{
       json: {
         clip_path: clipKey,
         clip_key: clipKey,
-        caption: String(row.description || '').trim() || title,
+        caption,
         hashtags: hashtagsField(row.hashtags),
         dryRun: DRY_RUN,
-        timeoutMs: (TIMEOUT_BASE_S + Math.ceil(TIMEOUT_PER_MIB_S * sizeMiB) + HTTP_MARGIN_S) * 1000,
+        timeoutMs,
         manifestPath: m.manifestPath,
         jobDir: m.jobDir,
         rowIndex,
@@ -302,9 +357,9 @@ for (const m of manifests) {
   }
 }
 
-// Nothing to post. A manifest that cannot be parsed fails the run so the
-// watchdog reports it; otherwise it would be skipped silently forever.
-if (manifestErrors.length) {
-  throw new Error('Pick Due Clip: unreadable manifest(s): ' + manifestErrors.join('; '));
+// Nothing to post. An unreadable manifest or a row that threw fails the run so
+// the watchdog reports it; otherwise it would be skipped silently forever.
+if (hardErrors) {
+  throw new Error('Pick Due Clip: unreadable manifest(s) or row(s): ' + manifestErrors.join('; '));
 }
 return [];

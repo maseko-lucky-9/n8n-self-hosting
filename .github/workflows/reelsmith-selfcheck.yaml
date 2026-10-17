@@ -1,13 +1,20 @@
 name: Reelsmith dispatcher selfchecks
 
-# GitHub-hosted runner ONLY, never self-hosted: this repo is public and its
-# self-hosted runner holds cluster credentials, so a fork PR must never reach it.
-# No secrets are used; the token is read-only.
+# Runs on a GitHub-hosted runner with no secrets and a read-only token. That
+# choice does NOT protect the self-hosted runner (it holds cluster credentials):
+# for pull_request events GitHub runs the workflow files from the PR's own merge
+# ref, so a fork PR can add its own workflow with `runs-on: self-hosted`
+# whatever this file says. The real controls are the repo setting Actions >
+# General > "Require approval for all external contributors" and detaching the
+# self-hosted runner from this public repo; both are owner actions listed in
+# projects/reelsmith-social-publish/README.md.
 on:
   pull_request:
     paths:
       - 'projects/reelsmith-social-publish/**'
       - '.github/workflows/reelsmith-selfcheck.yaml'
+      - 'scripts/disclosure-sweep.sh'
+      - 'scripts/disclosure-sweep.selftest.sh'
 
 permissions:
   contents: read
@@ -47,5 +54,8 @@ jobs:
       - name: Watchdog selftest (stubbed psql/wget/date)
         run: bash watchdog.selftest.sh
 
-      - name: Shellcheck deploy-workflow.sh
-        run: shellcheck deploy-workflow.sh
+      - name: Shellcheck the scripts this project owns
+        run: shellcheck deploy-workflow.sh watchdog.selftest.sh ../../../scripts/disclosure-sweep.sh ../../../scripts/disclosure-sweep.selftest.sh
+
+      - name: Disclosure sweep selftest
+        run: bash ../../../scripts/disclosure-sweep.selftest.sh

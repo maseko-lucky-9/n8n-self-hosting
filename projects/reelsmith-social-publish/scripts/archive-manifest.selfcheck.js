@@ -64,10 +64,27 @@ for (const [name, mutate] of [
   });
 }
 
-s.check('keeps a manifest whose other rows are not YouTube-sourced', async () => {
-  const ctx = setup([{ filename: 'a.mp4' }, { filename: 'b.mp4', source: 'tiktok' }]);
+s.check('rows Pick refuses (long or refused name, over 300 MiB, no caption) count as junk', async () => {
+  const ctx = setup([
+    { filename: 'a.mp4' },
+    { filename: 'a'.repeat(17) + '字'.repeat(60) + '.mp4' }, // 201 bytes
+    { filename: "Don't.mp4" },
+    { filename: 'huge.mp4', size: 300 * 1048576 + 1 },
+    { filename: 'mute.mp4', title: '', description: '@ # https://x.example' },
+  ]);
   claim(ctx.jobDir, 'a.mp4', 'posted');
-  assert.equal((await archive(ctx)).archived_to, undefined);
+  assert.ok((await archive(ctx)).archived_to, 'a refused row pinned the manifest');
+});
+
+s.check('a row that throws counts as junk and never pins the manifest', async () => {
+  const ctx = setup([{ filename: 'a.mp4' }, { filename: 'b.mp4' }]);
+  claim(ctx.jobDir, 'a.mp4', 'posted');
+  const fsShim = Object.create(fs);
+  fsShim.lstatSync = (p, ...rest) => {
+    if (String(p).endsWith(`${path.sep}b.mp4`)) { const e = new Error('EIO'); e.code = 'EIO'; throw e; }
+    return fs.lstatSync(p, ...rest);
+  };
+  assert.ok((await archive(ctx, fsShim)).archived_to);
 });
 
 s.check('NFD clip on disk with an NFC claim counts as posted', async () => {
