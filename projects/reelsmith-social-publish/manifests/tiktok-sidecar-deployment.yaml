@@ -102,10 +102,11 @@ spec:
               value: /app/CookiesDir
             - name: UPLOADER_PATH
               value: /opt/uploader/cli.py
-            # Kill switch: only the go-live manifest change (runbook step 7)
-            # sets "true". Until then every upload request is a dry run.
+            # Kill switch. "true" since go-live (runbook step 7). Posting still needs the
+            # workflow to be PUBLISHED (only `deploy-workflow.sh --live` does that).
+            # Rollback: set "false" and sync; every upload request is a dry run again.
             - name: POSTING_ENABLED
-              value: "false"
+              value: "true"
             # Posts per Africa/Johannesburg calendar day.
             - name: DAILY_CAP
               value: "3"

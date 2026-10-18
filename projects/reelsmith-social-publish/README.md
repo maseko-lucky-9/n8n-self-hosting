@@ -48,7 +48,7 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
     name or by content hash (409);
   - it enforces the daily cap (429), at most 6 upload attempts a day, and a 12h pause after 2
     failures in a row;
-  - it holds the **kill switch** `POSTING_ENABLED`, which stays `false` until go-live step 7.
+  - it holds the **kill switch** `POSTING_ENABLED`, `false` until go-live step 7 and `"true"` after it.
     While it is off, every request is a dry run.
 - **Log Results** records each outcome in `results.log.csv` and the claim files, then alerts on
   Telegram when you are needed (cookie expired: clips wait and retry every 15 min; bad input: that clip is set aside and the next takes its slot; an upload that may or may not have
