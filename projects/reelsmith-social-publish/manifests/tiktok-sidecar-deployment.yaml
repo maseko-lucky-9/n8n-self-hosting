@@ -84,11 +84,12 @@ spec:
               readOnly: true
       containers:
         - name: tiktok-sidecar
-          # Go-live step 2 replaces this tag with the pushed digest
-          # (localhost:32000/reelsmith/tiktok-sidecar@sha256:<digest>) in a follow-up
-          # PR. The in-cluster registry has no auth, so any pod that reaches it
-          # could push a different :0.2.0.
-          image: localhost:32000/reelsmith/tiktok-sidecar:0.2.0
+          # Pinned by digest (go-live step 2). The in-cluster registry has no auth, so
+          # any pod that reaches it could push a different :0.2.0. This is the 0.2.0
+          # image built from tiktok-sidecar 766150c (linux/amd64 plus BuildKit's
+          # provenance entry). To ship a new version: `make remote-ship TAG=<new>` in
+          # tiktok-sidecar, read the digest from the registry, and change this line in a PR.
+          image: localhost:32000/reelsmith/tiktok-sidecar@sha256:6a2aa8f4aa66c8804698d5bf3191ef4f9c5cb7b803de0aa69dd91e88a3604540
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
