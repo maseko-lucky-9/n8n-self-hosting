@@ -142,6 +142,14 @@ decision.
    the gitignored `backups/`, then updates the workflow in place. A `--dry-run` deploy is saved
    only and never published (you execute it by hand from the editor); `--live` saves and
    publishes; `--deactivate` unpublishes.
+   - It connects as `svc-ai-agent` through the ssh alias `homelab-tunnel` (override with
+     `N8N_SSH_HOST`): sshd allows port forwarding only for that user, so the usual `homelab`
+     alias (user `dev`) fails with "administratively prohibited".
+   - The remote port-forward runs as its own process group and is killed as a group when the
+     script ends, so nothing is left holding the port. A run that stops with "address already in
+     use" means a stale port-forward from an older run still holds `127.0.0.1:15678` on the
+     homelab (this should no longer happen): stop that process, or pick another port with
+     `N8N_FORWARD_PORT`.
 3. **The inbox mount on n8n** (`/data/reelsmith-inbox` on the main and worker pods) comes from
    `values-live.yaml`. Change it through a PR and an `n8n-live` sync (`docs/runbook.md` §4),
    never with Helm.
@@ -205,8 +213,9 @@ Paste the evidence at each step; nothing moves to the next step without your go.
      prints `true`.
 4. **`make refresh-cookies`, once, regardless.** You log in; the probe says valid.
 5. **Dry run.** `scripts/deploy-workflow.sh --workflow-id <ID> --dry-run` (n8n API key on
-   stdin, shortest expiry). A dry-run deploy is saved, never published, so it does not run 36
-   times a day; execute it once by hand from the n8n editor. Check:
+   stdin, shortest expiry; it connects as `homelab-tunnel`, see Deploy step 2). A dry-run
+   deploy is saved, never published, so it does not run 36 times a day; execute it once by
+   hand from the n8n editor. Check:
    - the newest **YouTube** clip is picked (job `1979f8a4`), and no TikTok-sourced job is
      touched;
    - a `dry_run` row appears in `ledger.dryrun.jsonl`, the separate, size-capped dry-run log
@@ -214,13 +223,13 @@ Paste the evidence at each step; nothing moves to the next step without your go.
      released;
    - `fs` and `DateTime` work in the n8n 2.39.8 runner;
    - **no TikTok post** appears.
-6. **Forced-failure dry run.** `scripts/deploy-workflow.sh --workflow-id <ID> --dry-run --simulate auth_invalid`,
+6. **Forced-failure dry run.** `scripts/deploy-workflow.sh --workflow-id <ID> --dry-run --simulate auth_invalid` (via `homelab-tunnel`),
    executed by hand from the editor (`simulate` is honoured only in dry runs). Confirm the 401
    Telegram alert arrives.
 7. **Your go.** Record your Phase 0 gate answers first (account status, For You eligibility,
    clickable tags). Then a manifest PR sets `POSTING_ENABLED` to `"true"`; merge it and sync.
-   Deploy the workflow live with `scripts/deploy-workflow.sh --workflow-id <ID> --live`, the only
-   deploy that publishes.
+   Deploy the workflow live with `scripts/deploy-workflow.sh --workflow-id <ID> --live` (via
+   `homelab-tunnel`), the only deploy that publishes.
 8. **First real post** at the next slot. In an incognito window, check it's public, with the full
    caption and at most 5 clickable tags, and the ledger row says `posted`. Then:
    - a manifest PR sets the watchdog's `suspend: false` and pins its image by digest; merge it
@@ -235,7 +244,8 @@ Paste the evidence at each step; nothing moves to the next step without your go.
    - the watchdog stays quiet;
    - run the largest clip as a dry run to measure peak memory.
 10. **Rollback:**
-    - run `scripts/deploy-workflow.sh --workflow-id <ID> --deactivate` first. Never PUT the old
+    - run `scripts/deploy-workflow.sh --workflow-id <ID> --deactivate` first (it connects as
+      `homelab-tunnel`, like every deploy). Never PUT the old
       copy while it is published.
     - set `POSTING_ENABLED` back to `"false"` and sync, or `git revert` this PR and sync.
 

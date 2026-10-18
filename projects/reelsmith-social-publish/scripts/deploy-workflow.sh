@@ -19,13 +19,17 @@
 #   --deactivate   rollback: unpublish. Do this BEFORE restoring an old copy; never PUT a backup
 #                  while the workflow is published.
 #   N8N_FORWARD_PORT (default 15678): the loopback port kubectl port-forward binds on the homelab.
+#   N8N_SSH_HOST (default homelab-tunnel): the ssh alias. The deploy connects as svc-ai-agent
+#                  (alias homelab-tunnel): sshd allows TCP forwarding only for that user
+#                  (`Match User svc-ai-agent AllowTcpForwarding local`); the usual `homelab`
+#                  alias (user dev) gets "administratively prohibited" for -L.
 #
 # The n8n API key is read from stdin, never argv or env. Paste it at the prompt, or pipe it:
 #   pbpaste | scripts/deploy-workflow.sh --workflow-id ID --dry-run
 # The workflow ID is the one in the n8n editor URL (/workflow/<ID>).
 #
 # What it does:
-#   1. ssh forwards a Unix socket inside this run's 0700 temp dir to the homelab, where
+#   1. ssh (as svc-ai-agent) forwards a Unix socket inside this run's 0700 temp dir to the homelab, where
 #      `microk8s kubectl port-forward svc/n8n-application` listens on 127.0.0.1 (no ingress basic
 #      auth, and no local TCP port another process could already hold). The API key is sent only
 #      after the remote port-forward reported its own bind, n8n's /healthz/readiness answered
@@ -47,10 +51,12 @@
 #   packages/cli/src/services/api-key-auth.strategy.ts: header `x-n8n-api-key`.
 #   packages/cli/src/abstract-server.ts: GET /healthz/readiness -> {"status":"ok"} once the DB is
 #     connected and migrated.
-# [UNVERIFIED] the public API is enabled on this instance and served by svc/n8n-application:5678
-#   under /api/v1; the key carries workflow:read, workflow:update, workflow:activate and
-#   workflow:deactivate; the ssh user can run `microk8s kubectl` and `timeout` on the homelab;
-#   kubectl prints "Forwarding from 127.0.0.1:<port>" once it has bound the port.
+# Verified on the homelab (2026-10-18): svc-ai-agent can forward, and run `microk8s kubectl`,
+#   `timeout` and `setsid`; kubectl prints "Forwarding from 127.0.0.1:<port>" once bound (the
+#   readiness JSON came back through the socket); the remote /bin/sh is dash; `microk8s kubectl`
+#   is a chain of non-exec bash wrappers.
+# [UNVERIFIED] the public API is enabled on this instance under /api/v1; the key carries
+#   workflow:read, workflow:update, workflow:activate and workflow:deactivate.
 set -euo pipefail
 umask 077
 
@@ -58,7 +64,7 @@ case $- in
   *x*) echo "refusing to run under xtrace: it would print the API key" >&2; exit 2 ;;
 esac
 
-SSH_HOST="${N8N_SSH_HOST:-homelab}"
+SSH_HOST="${N8N_SSH_HOST:-homelab-tunnel}"
 NAMESPACE="n8n-live"
 SERVICE="svc/n8n-application"
 FORWARD_PORT="${N8N_FORWARD_PORT:-15678}"
@@ -138,14 +144,22 @@ if [ -t 0 ]; then printf '\n' >&2; fi
 # 3. Tunnel: $SOCK (Unix socket, 0700 dir) -> ssh -> homelab 127.0.0.1:FORWARD_PORT -> kubectl
 #    port-forward -> n8n. The WHOLE remote command runs under `timeout 900`; kubectl's own output
 #    comes back into tunnel.log, and if it exits for any reason the remote shell says so there.
-#    It is killed when the ssh session's stdin closes (`cat` returns). fd 3 is a FIFO held open
+#    `microk8s kubectl` is a chain of bash wrappers that do not exec the real kubectl, so killing
+#    the PID `$!` would only kill the top wrapper and leave kubectl holding the port (every run
+#    used to leak one). So the port-forward is started with `setsid`, as its own process group,
+#    and stopped with ONE group kill when the ssh session's stdin closes (`cat` returns) or the
+#    remote shell exits or is signalled (timeout's TERM included). fd 3 is a FIFO held open
 #    read-write, so ssh's stdin never hits EOF while this script runs.
 SOCK="$WORK/n8n.sock"
 [ ! -e "$SOCK" ] || die "$SOCK already exists"
 mkfifo "$WORK/keepalive"
 exec 3<>"$WORK/keepalive"
 # A background job's stdin is /dev/null, so the watcher reads the session's stdin through fd 3.
-REMOTE="timeout 900 sh -c 'exec 3<&0; microk8s kubectl -n $NAMESPACE port-forward --address 127.0.0.1 $SERVICE $FORWARD_PORT:5678 & pf=\$!; (cat <&3 >/dev/null; kill \$pf 2>/dev/null) >/dev/null 2>&1 & wait \$pf; echo \"deploy-workflow: port-forward exited (\$?)\" >&2'"
+# The remote /bin/sh is dash: there `kill -TERM -- -PID` silently fails (no group is killed),
+# while `kill -s TERM -- -PID` works. That failure does not show on macOS, whose /bin/sh is
+# bash; deploy-workflow.selfcheck.js runs this command under dash to catch it, and the form was
+# verified end to end on the homelab (nothing survived, the port was free).
+REMOTE="timeout 900 sh -c 'exec 3<&0; setsid microk8s kubectl -n $NAMESPACE port-forward --address 127.0.0.1 $SERVICE $FORWARD_PORT:5678 & pf=\$!; stop() { kill -s TERM -- -\$pf 2>/dev/null; }; trap stop EXIT HUP TERM INT; (cat <&3 >/dev/null; stop) >/dev/null 2>&1 & wait \$pf; echo \"deploy-workflow: port-forward exited (\$?)\" >&2'"
 ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -o ConnectTimeout=10 \
   -T -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o ControlMaster=no -o ControlPath=none \
   -L "$SOCK:127.0.0.1:$FORWARD_PORT" "$SSH_HOST" "$REMOTE" \
@@ -157,7 +171,7 @@ tunnel_alive() {
 }
 tunnel_died() {
   grep -v -i 'authorized\|^\*' "$WORK/tunnel.log" >&2 || true
-  die "the ssh tunnel or the remote port-forward to $SERVICE died (port $FORWARD_PORT in use on the homelab? set N8N_FORWARD_PORT)"
+  die "the ssh tunnel or the remote port-forward to $SERVICE died (\"address already in use\" above means a stale port-forward still holds $FORWARD_PORT on the homelab; set N8N_FORWARD_PORT)"
 }
 
 # Ready = kubectl reported binding OUR port (so nothing else held it), the socket is ours, n8n's
