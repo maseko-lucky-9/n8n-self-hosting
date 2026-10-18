@@ -177,7 +177,8 @@ Paste the evidence at each step; nothing moves to the next step without your go.
        `manifests/tiktok-sidecar-deployment.yaml` to
        `localhost:32000/reelsmith/tiktok-sidecar@sha256:<digest>`, and merge it before step 3's
        sync.
-     - Git keeps `:0.2.0` until the digest is known; only that follow-up PR edits the line.
+     - Done: `sha256:6a2aa8f4aa66c8804698d5bf3191ef4f9c5cb7b803de0aa69dd91e88a3604540`, built from `tiktok-sidecar` `766150c` on 2026-10-18 and confirmed against
+       the registry's `Docker-Content-Digest`. The follow-up PR carries the `image:` change.
 3. **Merge this PR**, review `argocd app diff reelsmith-social-publish`, then sync it.
    - Before the sync, confirm root owns the cookies folder. The new seed-cookies init container
      runs with no capabilities, so it cannot write a folder another uid owns:
@@ -283,8 +284,7 @@ manifest is never archived. The Telegram alert prints the exact commands for tha
 
 - The sidecar image runs as root.
 - Images are pinned by tag, not digest: `busybox:1.36`, `postgres:16-alpine` and
-  `syncthing/syncthing:1.27`. The sidecar image is pinned by digest at go-live step 2; until
-  then git carries `:0.2.0`.
+  `syncthing/syncthing:1.27`. The sidecar image is pinned by digest (go-live step 2).
 - The sidecar's egress is unrestricted (no egress NetworkPolicy).
 - The sidecar API has no bearer auth; NetworkPolicy is the only gate (Phase 3).
 
