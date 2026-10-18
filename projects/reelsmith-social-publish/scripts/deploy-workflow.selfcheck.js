@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 'use strict';
 // Offline checks for deploy-workflow.sh: argument and env validation refuse
-// before any network use, and the remote port-forward wrapper (the REMOTE
-// line) is killed with the session and reports its own death. Nothing here
-// contacts the homelab or n8n: `ssh` on PATH is a stub that records any call,
-// and the wrapper runs locally against stub `microk8s` and `timeout`.
+// before any network use; the remote port-forward command (the REMOTE line),
+// run locally under dash like the homelab's /bin/sh, against a fake `microk8s`
+// that is a chain of non-exec bash wrappers around a fake `kubectl` holding a
+// real port, leaves nothing behind; and the whole script against a fake ssh.
+// Nothing here contacts the homelab or n8n.
 //   node deploy-workflow.selfcheck.js   -> exit 0 on pass, 1 on any failure.
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -18,15 +19,42 @@ const s = h.suite('deploy-workflow');
 
 const stubs = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-stubs-'));
 const SSH_CALLED = path.join(stubs, 'ssh-called');
-const writeStub = (name, body) => fs.writeFileSync(path.join(stubs, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+const writeStub = (name, body, shebang = '#!/bin/sh') => fs.writeFileSync(path.join(stubs, name), `${shebang}\n${body}\n`, { mode: 0o755 });
 writeStub('ssh', `echo "$@" > "${SSH_CALLED}"; exit 99`);
 writeStub('timeout', 'shift\nexec "$@"');
+// macOS has no setsid(1): the same thing, a new session and process group, via perl.
+writeStub('setsid', `exec perl -MPOSIX -e 'POSIX::setsid() or die "setsid: $!"; exec @ARGV or die "exec: $!"' "$@"`);
+// The remote `sh -c` is dash on the homelab (and on the Linux CI runner); use dash here too
+// when it exists, because only dash ignores `kill -TERM -- -PID`.
+const DASH = ['/bin/dash', '/usr/bin/dash'].find((p) => h.exists(p));
+if (DASH) writeStub('sh', `exec ${DASH} "$@"`);
+// `microk8s kubectl` as on the node: bash wrappers that do NOT exec the next stage.
 writeStub('microk8s', [
-  'echo "Forwarding from 127.0.0.1:15678 -> 5678"',
-  'if [ -n "$STUB_DIE_AFTER" ]; then sleep "$STUB_DIE_AFTER"; echo "error: lost connection to pod" >&2; exit 1; fi',
-  'trap \'echo "stub kubectl: killed" >&2; exit 143\' TERM',
-  'while :; do sleep 1; done',
-].join('\n'));
+  'echo "microk8s $$ $PPID" >> "$FAKE_PIDS"', // PPID: the remote sh that started it
+  'shift # kubectl',
+  'bash "$(dirname "$0")/microk8s-kubectl.wrapper" "$@"',
+  'rc=$?',
+  'exit $rc',
+].join('\n'), '#!/bin/bash');
+writeStub('microk8s-kubectl.wrapper', [
+  'echo "wrapper $$" >> "$FAKE_PIDS"',
+  '"$(dirname "$0")/kubectl" "$@"',
+  'rc=$?',
+  'exit $rc',
+].join('\n'), '#!/bin/bash');
+// The fake kubectl really binds the forwarded port, so a survivor is visible as a held port.
+writeStub('kubectl', String.raw`'use strict';
+const fs = require('fs');
+const net = require('net');
+const port = Number(process.argv.slice(2).find((a) => /^\d+:5678$/.test(a)).split(':')[0]);
+fs.appendFileSync(process.env.FAKE_PIDS, 'kubectl ' + process.pid + '\n');
+net.createServer(() => {}).listen(port, '127.0.0.1', () => {
+  process.stdout.write('Forwarding from 127.0.0.1:' + port + ' -> 5678\n');
+});
+if (process.env.STUB_DIE_AFTER) {
+  setTimeout(() => { process.stderr.write('error: lost connection to pod\n'); process.exit(1); }, Number(process.env.STUB_DIE_AFTER) * 1000);
+}
+process.on('SIGTERM', () => { process.stderr.write('stub kubectl: killed\n'); process.exit(143); });`, '#!/usr/bin/env node');
 const ENV = { ...process.env, PATH: `${stubs}:${process.env.PATH}` };
 
 function run(args, env = {}) {
@@ -66,43 +94,131 @@ s.check('--simulate only with --dry-run; --workflow-id required', () => {
   assert.equal(live.sshCalled || noId.sshCalled, false);
 });
 
-// The REMOTE line exactly as the script builds it, for the validated defaults.
-function remoteCommand() {
+// The REMOTE line exactly as the script builds it.
+function remoteCommand(port) {
   const line = fs.readFileSync(SCRIPT, 'utf8').split('\n').find((l) => l.startsWith('REMOTE='));
   assert.ok(line, 'REMOTE= line not found');
-  const r = spawnSync('bash', ['-c', `NAMESPACE=n8n-live SERVICE=svc/n8n-application FORWARD_PORT=15678; ${line}; printf %s "$REMOTE"`], { encoding: 'utf8' });
+  const r = spawnSync('bash', ['-c', `NAMESPACE=n8n-live SERVICE=svc/n8n-application FORWARD_PORT=${port}; ${line}; printf %s "$REMOTE"`], { encoding: 'utf8' });
   return r.stdout;
 }
 
-function runRemote({ closeStdinAfterMs, env = {} }) {
+function freePort() {
   return new Promise((resolve) => {
-    const child = spawn('bash', ['-c', remoteCommand()], { env: { ...ENV, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
-    let out = '';
-    const events = [];
-    child.stdout.on('data', (d) => { out += d; });
-    child.stderr.on('data', (d) => { out += d; events.push([Date.now(), String(d)]); });
-    const started = Date.now();
-    const timer = setTimeout(() => { events.push([Date.now(), '<stdin closed>']); child.stdin.end(); }, closeStdinAfterMs);
-    child.on('close', () => { clearTimeout(timer); resolve({ out, events, started }); });
+    const srv = require('net').createServer().listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
   });
 }
+const portFree = (port) => new Promise((resolve) => {
+  const srv = require('net').createServer();
+  srv.once('error', () => resolve(false));
+  srv.listen(port, '127.0.0.1', () => srv.close(() => resolve(true)));
+});
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-s.check('remote wrapper: the port-forward lives until the session ends, then is killed and says so', async () => {
-  const { out, events } = await runRemote({ closeStdinAfterMs: 1500 });
-  assert.match(out, /Forwarding from 127\.0\.0\.1:15678/);
-  assert.match(out, /stub kubectl: killed/);
-  assert.match(out, /deploy-workflow: port-forward exited \(143\)/);
-  const closedAt = events.find(([, e]) => e === '<stdin closed>')[0];
-  const exitedAt = events.find(([, e]) => e.includes('port-forward exited'))[0];
-  assert.ok(exitedAt >= closedAt, 'the port-forward died before the session ended');
+// Runs REMOTE as the ssh session would, ending it endAfterMs after kubectl's
+// Forwarding line (at most 10 s after the start), either by closing its stdin
+// (the local ssh went away) or by sending TERM to the remote sh, as `timeout 900`
+// does, while the session stays open. Returns the output, the fake chain's PIDs
+// and, once the remote command has exited, which of them survived and whether
+// the port is free again. stdin is a pipe whose only writer is a `sleep`, so it
+// stays open until we say so (node would close its own pipe when the shell exits).
+async function runRemote({ endAfterMs, end = 'stdin', env = {} }) {
+  const port = await freePort();
+  const pids = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-pids-')), 'pids');
+  fs.writeFileSync(pids, '');
+  const feeder = spawn('sleep', ['600'], { stdio: ['ignore', 'pipe', 'ignore'] });
+  const child = spawn('bash', ['-c', remoteCommand(port)], {
+    env: { ...ENV, FAKE_PIDS: pids, ...env }, stdio: [feeder.stdout, 'pipe', 'pipe'],
+  });
+  let out = '';
+  const events = [];
+  let timer = null;
+  let sessionEnded;
+  const ended = new Promise((resolve) => { sessionEnded = resolve; });
+  const readChain = () => fs.readFileSync(pids, 'utf8').trim().split('\n').filter(Boolean)
+    .map((l) => { const [name, pid, ppid] = l.split(' '); return { name, pid: Number(pid), ppid: Number(ppid) }; });
+  const endSession = () => {
+    events.push([Date.now(), '<session ended>']);
+    sessionEnded();
+    if (end === 'stdin') feeder.kill();
+    else process.kill(readChain().find((c) => c.name === 'microk8s').ppid, 'SIGTERM');
+  };
+  const schedule = (ms) => { if (!timer) timer = setTimeout(endSession, ms); };
+  child.stdout.on('data', (d) => {
+    out += d;
+    if (/Forwarding from/.test(out)) schedule(endAfterMs);
+  });
+  child.stderr.on('data', (d) => { out += d; events.push([Date.now(), String(d)]); });
+  const started = Date.now();
+  const fallback = setTimeout(() => schedule(0), 10000);
+  // 'exit', not 'close': a leaked port-forward keeps the pipes open forever. A
+  // remote shell still waiting 5 s after the session ended is hung (its kill
+  // missed the port-forward); it is reported, then cleaned up below.
+  const exited = new Promise((resolve) => child.on('exit', () => resolve(true)));
+  const hung = !(await Promise.race([exited, ended.then(() => Promise.race([exited, sleep(5000).then(() => false)]))]));
+  clearTimeout(timer);
+  clearTimeout(fallback);
+  const chain = readChain().map(({ name, pid, ppid }) => ({ name, pid, ppid }));
+  let survivors = [];
+  for (let i = 0; i < 20; i++) { // up to 2 s for the TERM to land
+    survivors = chain.filter((c) => alive(c.pid));
+    if (!survivors.length) break;
+    await sleep(100);
+  }
+  const free = await portFree(port);
+  feeder.kill(); // only now: a TERM-ended run must not be rescued by the stdin watcher
+  const shells = chain.filter((c) => c.name === 'microk8s').map((c) => c.ppid);
+  for (const pid of [...survivors.map((c) => c.pid), ...shells, child.pid]) {
+    try { process.kill(pid, 'SIGKILL'); } catch (e) { /* gone */ }
+  }
+  for (const stream of [child.stdout, child.stderr]) stream.destroy();
+  return { out, events, started, port, chain: chain.map(({ name, pid }) => ({ name, pid })), survivors, free, hung };
+}
+
+s.check('remote: the port-forward lives until the session ends, then the WHOLE wrapper chain dies and the port is free', async () => {
+  const r = await runRemote({ endAfterMs: 1500 });
+  assert.match(r.out, new RegExp(`Forwarding from 127\\.0\\.0\\.1:${r.port}`));
+  assert.deepEqual(r.chain.map((c) => c.name), ['microk8s', 'wrapper', 'kubectl'], 'fake chain did not start');
+  assert.deepEqual(r.survivors, [], 'left running: ' + r.survivors.map((c) => c.name).join(', '));
+  assert.equal(r.free, true, 'the forwarded port is still held');
+  assert.equal(r.hung, false, 'the remote shell never returned after the session ended');
+  assert.match(r.out, /stub kubectl: killed/);
+  assert.match(r.out, /deploy-workflow: port-forward exited \(143\)/);
+  const endedAt = r.events.find(([, e]) => e === '<session ended>')[0];
+  const exitedAt = r.events.find(([, e]) => e.includes('port-forward exited'))[0];
+  assert.ok(exitedAt >= endedAt, 'the port-forward died before the session ended');
 });
 
-s.check('remote wrapper: a port-forward that dies on its own is reported while the session is open', async () => {
-  const { out, events, started } = await runRemote({ closeStdinAfterMs: 4000, env: { STUB_DIE_AFTER: '1' } });
-  assert.match(out, /error: lost connection to pod/);
-  const reported = events.find(([, e]) => e.includes('deploy-workflow: port-forward exited (1)'));
-  assert.ok(reported, out);
-  assert.ok(reported[0] - started < 3500, 'death reported only when the session closed');
+s.check('remote: timeout\'s TERM to the remote shell also takes the whole chain down', async () => {
+  const r = await runRemote({ endAfterMs: 1500, end: 'TERM' });
+  assert.deepEqual(r.chain.map((c) => c.name), ['microk8s', 'wrapper', 'kubectl']);
+  assert.deepEqual(r.survivors, [], 'left running: ' + r.survivors.map((c) => c.name).join(', '));
+  assert.equal(r.free, true, 'the forwarded port is still held');
+  assert.equal(r.hung, false, 'the remote shell never returned after its TERM');
+});
+
+s.check('remote: a port-forward that dies on its own is reported while the session is open', async () => {
+  const r = await runRemote({ endAfterMs: 3000, env: { STUB_DIE_AFTER: '1' } });
+  assert.match(r.out, /error: lost connection to pod/);
+  const reported = r.events.find(([, e]) => e.includes('deploy-workflow: port-forward exited (1)'));
+  assert.ok(reported, r.out);
+  assert.ok(reported[0] - r.started < 3500, 'death reported only when the session closed');
+  assert.deepEqual(r.survivors, []);
+});
+
+s.check('the remote shell in these checks is dash, as on the homelab', () => {
+  assert.ok(DASH, 'dash not installed: the dash-only `kill -TERM -- -PID` failure cannot be checked');
+  const r = spawnSync('sh', ['-c', 'echo ${BASH_VERSION:-nobash}'], { env: ENV, encoding: 'utf8' });
+  assert.equal(r.stdout.trim(), 'nobash');
+});
+
+s.check('shellcheck -S style is clean', () => {
+  const r = spawnSync('shellcheck', ['-S', 'style', SCRIPT], { encoding: 'utf8' });
+  assert.ok(!r.error, 'shellcheck not installed');
+  assert.equal(r.status, 0, r.stdout);
 });
 
 // ---- the whole script against a faithful fake tunnel -------------------------
@@ -171,14 +287,6 @@ const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-fake-'));
 fs.writeFileSync(path.join(fakeBin, 'ssh'), FAKE_SSH, { mode: 0o755 });
 const API_KEY = 'test-api-key-0123456789abcdef';
 
-function freePort() {
-  return new Promise((resolve) => {
-    const srv = require('net').createServer().listen(0, '127.0.0.1', () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
-  });
-}
 
 // Runs a COPY of the current script in a temp project tree (its backups/ too),
 // with the fake ssh first on PATH. -> {status, out, err, log: [records], tree}
@@ -195,10 +303,10 @@ async function deploy(args, env = {}) {
   return new Promise((resolve) => {
     const child = spawn('bash', [path.join(tree, 'scripts', 'deploy-workflow.sh'), ...args], {
       cwd: tree,
-      env: {
+      env: Object.fromEntries(Object.entries({
         ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, N8N_FORWARD_PORT: String(port),
         FAKE_SSH_LOG: logFile, FAKE_API_KEY: API_KEY, ...env,
-      },
+      }).filter(([, v]) => v !== undefined)), // env: {X: undefined} unsets X
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let out = '';
@@ -269,6 +377,16 @@ s.check('a port-forward that dies mid-run stops the script before any change', a
   assert.equal(r.status, 1);
   assert.match(r.err, /the ssh tunnel or the remote port-forward to svc\/n8n-application died/);
   assert.deepEqual(calls(r.log), ['GET /api/v1/workflows/ID'], 'kept talking after the tunnel died');
+});
+
+s.check('ssh goes to homelab-tunnel (svc-ai-agent, the user allowed to forward) unless N8N_SSH_HOST says otherwise', async () => {
+  const host = (r) => { const a = r.log.find((x) => x.event === 'start').args; return a[a.length - 2]; };
+  const byDefault = await deploy(['--workflow-id', 'abcdefgh12345678', '--deactivate'], { N8N_SSH_HOST: undefined });
+  assert.equal(byDefault.status, 0, byDefault.err);
+  assert.equal(host(byDefault), 'homelab-tunnel');
+  const override = await deploy(['--workflow-id', 'abcdefgh12345678', '--deactivate'], { N8N_SSH_HOST: 'other-alias' });
+  assert.equal(override.status, 0, override.err);
+  assert.equal(host(override), 'other-alias');
 });
 
 s.check('an ssh that exits mid-run stops the script before any change', async () => {
