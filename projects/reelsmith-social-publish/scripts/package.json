@@ -1,0 +1,16 @@
+{
+  "name": "reelsmith-social-publish-scripts",
+  "private": true,
+  "description": "Selfchecks for the Reelsmith Social Publish n8n Code nodes (luxon matches n8n 2.39.8).",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node build-workflow.js",
+    "selfcheck": "for f in *.selfcheck.js; do node \"$f\" || exit 1; done"
+  },
+  "devDependencies": {
+    "luxon": "3.7.2"
+  }
+}

@@ -28,8 +28,13 @@
 #   2. Deny by default. ALLOW holds only identifiers this repository already publishes; every
 #      new one must be added consciously. Adding a line to ALLOW is a review decision.
 #
-# NOT FOR CI ON `pull_request`: the only workflow here runs on a self-hosted runner, so a fork
-# PR that edits this script would execute on the homelab. Run it locally, and in review.
+# Run it locally and in review. Do not add it to the self-hosted deploy workflow on
+# `pull_request`; but keeping it out of CI is not a fork-PR defence either: for pull_request
+# events GitHub runs the workflow files from the PR's own merge ref, so a fork PR can bring its
+# own workflow that targets the self-hosted runner (which holds cluster credentials), whatever
+# the workflows on main say. The real controls are the repo setting Actions > General >
+# "Require approval for all external contributors" and detaching the self-hosted runner from
+# this public repo; both are owner actions listed in projects/reelsmith-social-publish/README.md.
 
 set -uo pipefail
 
@@ -45,7 +50,14 @@ homelab\.local|homelab-tailscale|100\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|[a-z0-9
 (kv/)?secret/n8n/[a-z]+/[a-z-]+
 (id|credentialsId|workflowId)["'"'"' :=]+[A-Za-z0-9]{16}
 \+ ?27[ -]?[0-9][0-9 -]{7,}
-eyJ[A-Za-z0-9_-]{10,}|BEGIN [A-Z ]*PRIVATE KEY|[A-Za-z0-9+/]{60,}={0,2}'
+eyJ[A-Za-z0-9_-]{10,}|BEGIN [A-Z ]*PRIVATE KEY|[A-Za-z0-9+/]{60,}={0,2}
+[0-9]{8,10}:[A-Za-z0-9_-]{35}
+sessionid[=: "'"'"']+[0-9a-f]{32}'
+
+# npm lockfile integrity lines are package hashes, not secrets. A line that is exactly
+# `"integrity": "sha512-<base64>",` and nothing else is blanked before scanning (line numbers
+# are kept); anything more on the line, or any other line of the lockfile, is still scanned.
+INTEGRITY_LINE='^[[:space:]]*"integrity": "sha512-[A-Za-z0-9+/]+={0,2}",?[[:space:]]*$'
 
 # Allow: already published in this repository, or structurally safe. Matched against the HIT
 # TEXT, not the line, so an allowed token cannot smuggle a denied one on the same line.
@@ -79,7 +91,7 @@ for f in "$@"; do
       echo "$text" | grep -qiE "$ALLOW" && continue
       echo "$f:$hit"
       rc=1
-    done < <(grep -noEi "$pat" "$f" 2>/dev/null)
+    done < <(sed -E "s#${INTEGRITY_LINE}##" "$f" | grep -noEi "$pat" 2>/dev/null)
   done <<< "$DENY"
 done
 

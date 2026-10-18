@@ -1,78 +1,303 @@
 # Reelsmith Social Publish
 
-Reelsmith renders clips on your Mac → Syncthing replicates the export folder into
-the cluster PVC → n8n watches `manifest.csv`, schedules each clip at a TZ-aware
-peak window, and uploads to **TikTok Inbox (drafts)** and **YouTube (private)** in
-parallel. Results land in `results.log.csv`; failures alert via Telegram.
+Reelsmith exports clips and a `manifest.csv` per job on the Mac. Syncthing copies the export
+folder into the cluster PVC. Every 15 minutes an n8n dispatcher picks at most one due clip and
+asks the `tiktok-sidecar` to post it. The sidecar is the gatekeeper: it reads the clip itself,
+refuses anything unsafe or already posted, and uploads it to TikTok as a public post. Outcomes
+land in `results.log.csv` and the ledger; problems alert on Telegram. YouTube posting is dropped.
 
-## Prerequisites
+Decision record: [ADR-0002](../../docs/decisions/0002-reelsmith-posting-gatekeeper.md), which
+points to Reelsmith's ADR-012.
 
-1. **Vault** — write the three secrets documented in `vault/secrets.md`.
-2. **TikTok app** — create at developers.tiktok.com, product: Content Posting API,
-   scopes `user.info.basic` + `video.upload`, redirect URI:
-   `https://n8n.homelab.local/rest/oauth2-credential/callback`
-3. **GCP project** `reelsmith-publisher` — enable YouTube Data API v3; create an
-   OAuth2 Web app client with the same redirect URI.
-4. **Telegram bot** — token from @BotFather; get your `chat_id` from @userinfobot.
-5. **n8n OAuth2 credentials** — after ESO syncs the secrets, create `reelsmith-tiktok`
-   and `reelsmith-youtube` OAuth2 Generic credentials in the n8n UI and complete
-   the browser consent flow.
+## Flow
 
-## Deploy order
+```
+Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Sidecar Upload → Log Results → Archive Manifest
+```
+
+- **Slots:** 12:00, 15:00 and 18:00 SAST. A run posts only when a slot has passed, is unused
+  today, and at least 170 minutes have gone by since the last slot was claimed. The last tick is
+  20:45, so nothing catches up after 21:00. At most 3 posts per SAST day; the sidecar enforces
+  the same cap (`DAILY_CAP`).
+- **Candidates:** manifests under the inbox modified on or after **2026-10-11** (the cutoff),
+  newest job first, then manifest row order.
+- **YouTube-sourced jobs only.** If a manifest has a `source` column, the row must say
+  `youtube` (an empty cell is accepted only for an allowlisted job; any other value is skipped). A manifest without one (the backlog) qualifies only if its job id is in the legacy
+  allowlist `YOUTUBE_LEGACY_JOBS` in `scripts/pick-due-clip.jsCode.js` (5 jobs). Everything else,
+  TikTok-sourced jobs included, is skipped and never archived.
+- **Missing file = wait** (Syncthing may still be copying it). **Ordinary junk** (empty
+  filename, not `.mp4`, 1 KB or less) is skipped and does not hold up archiving.
+- **A clip that can never be posted as it is** is skipped too, but reported and never archived
+  away: a name over 200 bytes or one the sidecar refuses (only letters, digits, `_`, `.`, `-` and
+  space, ending in `.mp4`), a file over 300 MiB, no usable caption (nothing left of the
+  description or the title once URLs, `@`, `#` and emoji are stripped), or not a regular file.
+  - Reported three ways: listed (job, row, reason) in `/data/reelsmith-inbox/.state/notices.json`;
+    counted in a once-a-day Telegram notice from a run that posts; and, when nothing else can be
+    posted, by one failed execution a day, which the watchdog reports. Read the list with
+    `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- cat /data/reelsmith-inbox/.state/notices.json'`.
+  - It pins its manifest: Archive Manifest keeps the manifest until you fix the clip (re-export
+    it so it passes) or archive the manifest by hand, which also skips its remaining clips:
+    `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- sh -c "cd /data/reelsmith-inbox/reelsmith-inbox/<job> && mkdir -p processed && mv manifest.csv processed/manifest-by-hand.csv"'`.
+- **No video bytes pass through n8n.** n8n sends `clip_path` = `<job>/<filename>`. The sidecar
+  mounts the PVC's `reelsmith-inbox` folder read-only at `/inbox` (subPath, so Syncthing's keys
+  and config at the PVC root stay invisible) and reads `/inbox/<job>/<filename>` itself.
+- **The sidecar decides** (image `0.2.0`, code in the `tiktok-sidecar` repo, which documents the
+  n8n contract):
+  - it validates the path and the file;
+  - it keeps a ledger (`ledger.jsonl` on the cookies PVC) and refuses a clip already posted, by
+    name or by content hash (409);
+  - it enforces the daily cap (429), at most 6 upload attempts a day, and a 12h pause after 2
+    failures in a row;
+  - it holds the **kill switch** `POSTING_ENABLED`, which stays `false` until go-live step 7.
+    While it is off, every request is a dry run.
+- **Log Results** records each outcome in `results.log.csv` and the claim files, then alerts on
+  Telegram when you are needed (cookie expired: clips wait and retry every 15 min; bad input: that clip is set aside and the next takes its slot; an upload that may or may not have
+  posted). If the workflow is live while the sidecar's `POSTING_ENABLED` is `false`, every clip
+  is released and retried, and a once-a-day Telegram notice says so. **Archive Manifest** moves a
+  manifest once every row is posted or ordinary junk.
+
+## Where things live
+
+| Piece | Location |
+|---|---|
+| Workflow export | `workflow/reelsmith-social-publish.json`, built by `scripts/build-workflow.js` from the `scripts/*.jsCode.js` files |
+| Workflow deploy | `scripts/deploy-workflow.sh` (n8n API; never automatic) |
+| Kubernetes manifests | `manifests/`, synced by ArgoCD |
+| One-off TEST_ALERT Job | `manifests/test/`, applied by hand, never synced |
+| ArgoCD Application | `homelab-infra/argocd/applications/reelsmith-social-publish.yaml`: **manual sync**, a non-recursive directory source on `manifests/`. Merging here deploys nothing until you sync |
+| Sidecar code and image | `tiktok-sidecar` repo, image `localhost:32000/reelsmith/tiktok-sidecar:0.2.0`, deployed by digest from go-live step 2 |
+| Self-checks | `cd scripts && npm ci && npm run selfcheck` (dispatcher); `bash scripts/watchdog.selftest.sh` (watchdog); from the repo root, `bash scripts/disclosure-sweep.selftest.sh` (disclosure sweep) |
+
+### Manifests
+
+| File | What |
+|---|---|
+| `pvc-reelsmith-inbox.yaml` | Syncthing's PVC (`syncthing-reelsmith-pvc`); n8n mounts it at `/data/reelsmith-inbox`, the sidecar mounts its `reelsmith-inbox` folder at `/inbox` |
+| `syncthing-deployment.yaml`, `syncthing-networkpolicy.yaml` | Syncthing receiver (NodePort 32200) |
+| `tiktok-sidecar-deployment.yaml` | the gatekeeper; settings are env vars (`POSTING_ENABLED`, `DAILY_CAP`, `ATTEMPT_CAP`, `MAX_CLIP_MB`, `INBOX_DIR`, `LEDGER_PATH`) |
+| `tiktok-sidecar-service.yaml`, `tiktok-sidecar-pvc.yaml` | Service on 8000; cookies and ledger PVC |
+| `tiktok-sidecar-networkpolicy.yaml` | ingress to the sidecar from n8n, the n8n worker and the watchdog; egress from n8n to the sidecar |
+| `reelsmith-watchdog-cronjob.yaml`, `reelsmith-watchdog-networkpolicy.yaml` | the watchdog (below) and its path to Postgres |
+| `external-secret-telegram.yaml` | Telegram alert credentials |
+| `external-secret-youtube.yaml` | unused since YouTube was dropped; removal is deferred |
+| `tiktok-sidecar-cookies-secret.yaml.example` | template only (ArgoCD reads only `.yaml`, `.yml` and `.json`) |
+
+## Secrets (names only; values never in git)
+
+| Secret in `n8n-live` | Keys | Source | Used by |
+|---|---|---|---|
+| `reelsmith-telegram` | `bot_token`, `chat_id` | ESO from Vault `kv/secret/n8n/live/reelsmith-telegram` | n8n (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` via `values-live.yaml`), the watchdog |
+| `tiktok-sidecar-cookies` | `tiktok_session-reelsmith.cookie` | out-of-band, written by `make refresh-cookies` | the sidecar's init container copies it onto the cookies PVC |
+| `reelsmith-watchdog-db` | `password` | out-of-band; recipe in the CronJob header | the watchdog (role `n8n_watchdog`, SELECT on `execution_entity` only) |
+| `reelsmith-youtube` | `client_id`, `client_secret` | ESO | nothing (removal deferred) |
+| n8n API key | none in the cluster | created in the n8n UI for one deploy, shortest expiry, typed on stdin to `deploy-workflow.sh`, deleted after go-live | deploys only |
+
+## Refresh the TikTok cookie
+
+The session cookie expires every few weeks. When n8n or the watchdog says
+"cookie expired - run make refresh-cookies", run this from the `tiktok-sidecar` repo:
 
 ```bash
-# 1. Write Vault entries (see vault/secrets.md)
-
-# 2. Apply infra manifests
-ssh homelab "microk8s kubectl apply -f -" < manifests/pvc-reelsmith-inbox.yaml
-ssh homelab "microk8s kubectl apply -f -" < manifests/syncthing-deployment.yaml
-ssh homelab "microk8s kubectl apply \
-  -f manifests/external-secret-tiktok.yaml \
-  -f manifests/external-secret-youtube.yaml \
-  -f manifests/external-secret-telegram.yaml"
-
-# 3. Register ArgoCD application (picks up the manifests/ dir automatically)
-ssh homelab "microk8s kubectl apply -f -" < argocd/application.yaml
-
-# 4. Mount the PVC on the n8n + worker pods: edit values-live.yaml, open a PR, merge, then sync
-#    the n8n-live Application (../../docs/runbook.md section 4). Never run helm against n8n-live.
-
-# 5. Import workflow and activate (n8n UI)
-#    - Import workflow/reelsmith-social-publish.json
-#    - Attach reelsmith-tiktok and reelsmith-youtube OAuth2 credentials
-#    - Activate
+make refresh-cookies
 ```
+
+You log in in the browser it opens. The script then:
+
+1. checks the new cookie;
+2. replaces the `tiktok-sidecar-cookies` Secret over `ssh` stdin, so the cookie never
+   appears in argv or in a `last-applied` annotation;
+3. restarts the sidecar and probes `/healthz/session`.
+
+## The watchdog
+
+The CronJob `reelsmith-publish-watchdog` runs at 12:45, 15:45, 18:45 and 20:45 SAST (the
+CronJob has `timeZone: Africa/Johannesburg`) and sends at most one Telegram message per run:
+
+- **Every run:** failed executions (`error`, `crashed` or `canceled`; an execution timeout may
+  be recorded as canceled) of the workflow in the last 4h. The 12:45 run looks back 17h, so a
+  failure after the previous evening's 20:45 run is not missed.
+- **12:45 run only, one combined message:**
+  - the session probe: 401 is "cookie expired - run make refresh-cookies"; 502 is "sidecar
+    cannot reach TikTok"; 503 is "no cookie on the sidecar"; no answer is "sidecar down"; any
+    other status is "sidecar session check failed";
+  - `/api/stats`: any non-200 is "sidecar down"; also no successful post for over 48h, none on
+    record, or posting paused;
+  - no executions at all in 25h.
+
+Messages carry only fixed text, validated integers and the workflow id. A failed send exits 1 and
+prints only the HTTP status. The CronJob ships **suspended** and is switched on at go-live step 8.
+`bash scripts/watchdog.selftest.sh` runs the script against stub `psql`/`wget` and checks every
+decision.
+
+## Deploy
+
+1. **Manifests.** Merge the PR, review the diff (`argocd app diff reelsmith-social-publish`
+   or the ArgoCD UI), then sync the `reelsmith-social-publish` Application. If the `argocd` CLI
+   on the node is not logged in, use the `.operation` patch in `docs/runbook.md` §4 with this
+   app name. Before a sync that raises memory, check the namespace quota has room:
+   `ssh homelab 'microk8s kubectl -n n8n-live describe resourcequota'`.
+2. **Workflow.** Run `scripts/deploy-workflow.sh --workflow-id <ID>` with `--dry-run`, `--live`
+   or `--deactivate` (the ID is the one in the n8n editor URL). It reaches the n8n API through
+   an SSH port forward and reads the API key on stdin. It saves the live copy (mode 0600) in
+   the gitignored `backups/`, then updates the workflow in place. A `--dry-run` deploy is saved
+   only and never published (you execute it by hand from the editor); `--live` saves and
+   publishes; `--deactivate` unpublishes.
+3. **The inbox mount on n8n** (`/data/reelsmith-inbox` on the main and worker pods) comes from
+   `values-live.yaml`. Change it through a PR and an `n8n-live` sync (`docs/runbook.md` §4),
+   never with Helm.
 
 ## Mac setup
 
-1. Set `YTVIDEO_EXPORT_BASE_FOLDER` in Reelsmith `.env` to your local Syncthing
-   share folder (e.g. `~/Sync/reelsmith-inbox`).
-2. Install Syncthing on your Mac. In the Syncthing web UI:
-   - Add the homelab Syncthing as a remote device via `<node-ip>:32200`.
-   - Share the folder targeting `/var/syncthing/reelsmith-inbox` on the cluster side.
-   - Set Mac folder as **Send Only**, cluster side as **Receive Only**.
-   - Add `.stignore`: `*.tmp`, `.DS_Store`, `processed/`
+1. Set `YTVIDEO_EXPORT_BASE_FOLDER` in Reelsmith `.env` to your local Syncthing share folder
+   (for example `~/Sync/reelsmith-inbox`).
+2. In the Syncthing web UI on the Mac:
+   - add the homelab Syncthing as a remote device via `<node-ip>:32200`;
+   - share the folder targeting `/var/syncthing/reelsmith-inbox` on the cluster side;
+   - set the Mac folder to **Send Only** and the cluster side to **Receive Only**;
+   - add a `.stignore` with `*.tmp`, `.DS_Store` and `processed/`.
+3. New clips reach the cluster only while the Mac is awake with Tailscale up, and nothing posts
+   while the homelab is off. Keep it on from 11:30 to 21:00 SAST.
 
-## Smoke test
+## Go-live runbook
 
-```bash
-# 1. ESO synced
-ssh homelab "microk8s kubectl -n n8n-live get externalsecret \
-  reelsmith-tiktok reelsmith-youtube reelsmith-telegram"
-# Expect: STATUS=SecretSynced, READY=True for all three
+Paste the evidence at each step; nothing moves to the next step without your go.
 
-# 2. PVC bound
-ssh homelab "microk8s kubectl -n n8n-live get pvc syncthing-reelsmith-pvc"
-# Expect: STATUS=Bound
+1. **Spike (read-only), in the current sidecar pod.** Probe with the real cookie and with a bogus
+   `sessionid`. Print only the HTTP status and whether `video_token_v5` is in the body.
+2. **Merge the sidecar PR**, then `make remote-ship TAG=0.2.0` in `tiktok-sidecar`. Run a
+   signature smoke test in a throwaway 0.2.0 container
+   (`node tiktok-signature/browser.js <url> <ua>`, no cookie).
+   - **Deploy the sidecar image by digest, not by tag.** The in-cluster registry
+     (`localhost:32000`, NodePort 32000) has no auth, so any pod that can reach it could push a
+     poisoned `:0.2.0`.
+     - Read the pushed digest: `docker push` prints `0.2.0: digest: sha256:<digest> size: …`
+       at the end of `make remote-ship`. Or, on the homelab, run
+       `ssh homelab "docker inspect --format '{{index .RepoDigests 0}}' localhost:32000/reelsmith/tiktok-sidecar:0.2.0"`.
+     - In a follow-up PR to this one (the PR-B follow-up), change the `image:` line in
+       `manifests/tiktok-sidecar-deployment.yaml` to
+       `localhost:32000/reelsmith/tiktok-sidecar@sha256:<digest>`, and merge it before step 3's
+       sync.
+     - Git keeps `:0.2.0` until the digest is known; only that follow-up PR edits the line.
+3. **Merge this PR**, review `argocd app diff reelsmith-social-publish`, then sync it.
+   - Before the sync, confirm root owns the cookies folder. The new seed-cookies init container
+     runs with no capabilities, so it cannot write a folder another uid owns:
+     `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/tiktok-sidecar -- stat -c "%u:%g %a" /app/CookiesDir'`
+     must print `0:0` and a mode. Otherwise, chown it to root first, or the new pod stays in
+     `Init` (and the old one is already gone: the Deployment uses Recreate).
+   - Before step 5 writes any claim, add a **cluster-side** Syncthing ignore file. Claims,
+     `results.log.csv` and `processed/` live inside the receive-only synced folder, so Syncthing
+     lists them as local changes:
+     `printf '%s\n' .claims results.log.csv processed | ssh homelab 'microk8s kubectl -n n8n-live exec -i deploy/syncthing -- sh -c "cat > /var/syncthing/reelsmith-inbox/.stignore"'`.
+     Check the folder's Ignore Patterns in the cluster Syncthing UI. **Never click "Revert Local
+     Changes"** on the cluster side: it deletes every claim, the results logs and the archived
+     manifests, so posted clips would be posted again.
 
-# 3. n8n main pod has the volume
-ssh homelab "microk8s kubectl -n n8n-live exec deploy/n8n -- ls /data/reelsmith-inbox"
+   After the sync, check:
+   - the image is `localhost:32000/reelsmith/tiktok-sidecar@sha256:<digest>` from step 2,
+     `/inbox` is mounted, and `POSTING_ENABLED=false`;
+   - `/healthz`, `/healthz/session?account=reelsmith` and `/api/stats?account=reelsmith` answer.
+     From the Mac:
+     `ssh -L 18000:127.0.0.1:18000 homelab 'microk8s kubectl -n n8n-live port-forward svc/tiktok-sidecar 18000:8000'`,
+     then `curl -s localhost:18000/healthz`;
+   - the watchdog is suspended:
+     `ssh homelab 'microk8s kubectl -n n8n-live get cronjob reelsmith-publish-watchdog -o jsonpath={.spec.suspend}'`
+     prints `true`.
+4. **`make refresh-cookies`, once, regardless.** You log in; the probe says valid.
+5. **Dry run.** `scripts/deploy-workflow.sh --workflow-id <ID> --dry-run` (n8n API key on
+   stdin, shortest expiry). A dry-run deploy is saved, never published, so it does not run 36
+   times a day; execute it once by hand from the n8n editor. Check:
+   - the newest **YouTube** clip is picked (job `1979f8a4`), and no TikTok-sourced job is
+     touched;
+   - a `dry_run` row appears in `ledger.dryrun.jsonl`, the separate, size-capped dry-run log
+     next to the ledger; the posting ledger `ledger.jsonl` is unchanged; the claim and slot are
+     released;
+   - `fs` and `DateTime` work in the n8n 2.39.8 runner;
+   - **no TikTok post** appears.
+6. **Forced-failure dry run.** `scripts/deploy-workflow.sh --workflow-id <ID> --dry-run --simulate auth_invalid`,
+   executed by hand from the editor (`simulate` is honoured only in dry runs). Confirm the 401
+   Telegram alert arrives.
+7. **Your go.** Record your Phase 0 gate answers first (account status, For You eligibility,
+   clickable tags). Then a manifest PR sets `POSTING_ENABLED` to `"true"`; merge it and sync.
+   Deploy the workflow live with `scripts/deploy-workflow.sh --workflow-id <ID> --live`, the only
+   deploy that publishes.
+8. **First real post** at the next slot. In an incognito window, check it's public, with the full
+   caption and at most 5 clickable tags, and the ledger row says `posted`. Then:
+   - a manifest PR sets the watchdog's `suspend: false` and pins its image by digest; merge it
+     and sync;
+   - run the TEST_ALERT Job once:
+     `ssh homelab 'microk8s kubectl create -f -' < manifests/test/reelsmith-watchdog-test-alert-job.yaml`.
+     One test message must arrive.
+9. **Observe for 2 days:**
+   - at most 3 posts per SAST day, one per slot, newest first;
+   - no duplicates; missing clips are waited for; junk is skipped;
+   - no `OOMKilled` or `Error` in the sidecar's `lastState`;
+   - the watchdog stays quiet;
+   - run the largest clip as a dry run to measure peak memory.
+10. **Rollback:**
+    - run `scripts/deploy-workflow.sh --workflow-id <ID> --deactivate` first. Never PUT the old
+      copy while it is published.
+    - set `POSTING_ENABLED` back to `"false"` and sync, or `git revert` this PR and sync.
 
-# 4. n8n worker pod has the volume
-ssh homelab "microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- ls /data/reelsmith-inbox"
+    The saved copy's path is recorded in the session log. While the workflow stays off, set the
+    watchdog back to `suspend: true` in the same PR; otherwise it reports "no executions in 25h"
+    every day.
 
-# 5. Submit a job in Reelsmith, confirm manifest + clips sync into the PVC
+## When a clip is set aside
 
-# 6. After scheduled peak window: clip in TikTok drafts + YouTube Studio (private);
-#    results.log.csv row written; processed/manifest-<ISO>.csv archived
-```
+A clip with an unclear or refused outcome keeps its n8n claim, so it is never retried and its
+manifest is never archived. The Telegram alert prints the exact commands for that clip.
+
+- **Ambiguous upload** (it may or may not have posted), or a clip **blocked** by an earlier
+  unresolved upload (409 `ambiguous`):
+  1. check the account, then in `tiktok-sidecar` run the line that matches:
+     `make ledger-resolve KEY='<job>/<filename>' OUTCOME=posted`
+     `make ledger-resolve KEY='<job>/<filename>' OUTCOME=not_posted`
+     Keep the single quotes: clip names contain spaces, and an unquoted `KEY` splits at the first
+     one. Here `<filename>` is the clip's file name including `.mp4`.
+     - If it is refused with "no ledger rows for that clip_key" or "...; it is free", the upload
+       never reached TikTok (a 502 rejection, a failed 500, or a reset or timeout before the
+       sidecar wrote its row). There is nothing to resolve: go to step 2.
+  2. then, **in every case**, release the n8n claim:
+     `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "/data/reelsmith-inbox/reelsmith-inbox/<job>/.claims/<filename>.json"'`.
+     - After `not_posted`, or when the key was free, the clip is uploaded again at a later slot.
+     - After `posted`, the retry gets a 409 `duplicate` from the sidecar and is logged as
+       `posted_elsewhere`. That frees the slot, posts nothing, and lets the manifest archive.
+     - A claim left in place keeps its `failed` status, so the manifest never archives.
+     - If the ledger says ambiguous, resolve it first: releasing the claim alone only produces
+       another ambiguous 409.
+- **Refused clip** (400 bad input or 413 too large): fix or re-export the clip, then release the
+  claim with the same command. Or leave it set aside.
+
+## Known limits
+
+- The watchdog's Telegram token is visible to anyone with a shell on the node: busybox `wget`
+  takes it in its argv, which `/proc/<pid>/cmdline` exposes for the few seconds of the call
+  (the environment is not exposed that way). This is accepted on this single-user node. The fix
+  is an image that ships `curl` (token on stdin); installing it at runtime is what made the old
+  watchdog miss its deadline, so it is deferred.
+- The once-a-day checks run only at 12:45. If the homelab is off then, that day's checks are
+  skipped; failed executions are still reported on the later runs.
+- The web uploader returns no TikTok post id, so the ledger's `posted` row is the record.
+
+## Known hardening deferred
+
+- The sidecar image runs as root.
+- Images are pinned by tag, not digest: `busybox:1.36`, `postgres:16-alpine` and
+  `syncthing/syncthing:1.27`. The sidecar image is pinned by digest at go-live step 2; until
+  then git carries `:0.2.0`.
+- The sidecar's egress is unrestricted (no egress NetworkPolicy).
+- The sidecar API has no bearer auth; NetworkPolicy is the only gate (Phase 3).
+
+## Owner actions (repository and host settings, not code)
+
+- **Fork pull requests.** This repository is public and its self-hosted runner holds cluster
+  credentials. For `pull_request` events, GitHub runs the workflow files from the PR's own
+  merge ref, so a fork PR can bring its own workflow that targets the self-hosted runner. The
+  `runs-on` value in this repo's workflows does not prevent that. Set Actions > General >
+  "Require approval for all external contributors", and/or detach the self-hosted runner from
+  this repository.
+- Enable secret scanning and push protection, and protect `main`.
+- **The in-cluster image registry has no auth.** The microk8s registry (`localhost:32000`,
+  NodePort 32000) is reachable from pods, and nothing authenticates a push, so any pod could
+  replace a tag. Deploying by digest (go-live step 2) protects the sidecar. To close the hole
+  itself, restrict who can reach the registry or put auth in front of it.

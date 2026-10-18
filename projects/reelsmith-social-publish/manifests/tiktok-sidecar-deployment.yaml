@@ -8,6 +8,19 @@ metadata:
     app.kubernetes.io/name: tiktok-sidecar
     app.kubernetes.io/part-of: reelsmith-social-publish
 spec:
+  # ONE pod, replaced with Recreate, never RollingUpdate (watchdog.selftest.sh
+  # checks both). The sidecar is the single gatekeeper: its upload lock lives in
+  # one process. During a rolling update two pods would serve at once with
+  # separate locks, and the new pod's startup recovery would mark the old pod's
+  # in-flight upload `interrupted`. Both PVCs it mounts (cookies + ledger, and
+  # the inbox) are ReadWriteOnce. On this single node that still lets pods share
+  # them; on more than one node a surge pod could not attach them, and a
+  # rolling update would hang.
+  # Cost of Recreate: every restart (a sync, `make refresh-cookies`) is a short
+  # outage, and n8n treats it as retryable. A restart DURING an upload kills it
+  # after the 30 s grace period. That clip is then `interrupted` (ambiguous:
+  # resolve it with `make ledger-resolve`), so restart outside the ~15 minutes
+  # after a posting slot.
   replicas: 1
   strategy:
     type: Recreate
@@ -20,6 +33,11 @@ spec:
         app.kubernetes.io/name: tiktok-sidecar
         app.kubernetes.io/part-of: reelsmith-social-publish
     spec:
+      # The sidecar never talks to the Kubernetes API.
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       # initContainer (re)seeds CookiesDir from the out-of-band Secret on EVERY
       # pod start, overwriting any existing PVC copy whenever the Secret has
       # cookies. This makes the documented refresh flow actually work: update
@@ -28,6 +46,8 @@ spec:
       # non-empty, so a refreshed Secret never reached a populated PVC — a
       # stale-cookie trap that silently kept failed auth.) If the Secret is
       # empty it leaves the PVC untouched, so it never wipes a working cookie.
+      # It also locks CookiesDir to 0700: the cookie and the posting ledger
+      # (ledger.jsonl) live there.
       initContainers:
         - name: seed-cookies
           image: busybox:1.36
@@ -43,6 +63,19 @@ spec:
                 echo "seed-cookies: no .cookie files in /secrets — leaving existing PVC contents untouched"
                 ls -la /app/CookiesDir || true
               fi
+              chmod 0700 /app/CookiesDir
+          # Runs as root with no capabilities. That is enough because root owns
+          # CookiesDir and everything in it (hostpath provisioner, then only root
+          # writers): reading its own 0400 Secret files, replacing a 0400 cookie
+          # (cp -f unlinks and recreates) and chmod of its own dir need none.
+          # If CookiesDir were ever owned by another uid this fails closed (the
+          # pod stays in Init) and the fix is a one-off chown, not a capability:
+          # DAC_OVERRIDE alone would still fail the chmod (that needs FOWNER).
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           volumeMounts:
             - name: cookies-pvc
               mountPath: /app/CookiesDir
@@ -51,7 +84,11 @@ spec:
               readOnly: true
       containers:
         - name: tiktok-sidecar
-          image: localhost:32000/reelsmith/tiktok-sidecar:0.1.0
+          # Go-live step 2 replaces this tag with the pushed digest
+          # (localhost:32000/reelsmith/tiktok-sidecar@sha256:<digest>) in a follow-up
+          # PR. The in-cluster registry has no auth, so any pod that reaches it
+          # could push a different :0.2.0.
+          image: localhost:32000/reelsmith/tiktok-sidecar:0.2.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -64,9 +101,32 @@ spec:
               value: /app/CookiesDir
             - name: UPLOADER_PATH
               value: /opt/uploader/cli.py
+            # Kill switch: only the go-live manifest change (runbook step 7)
+            # sets "true". Until then every upload request is a dry run.
+            - name: POSTING_ENABLED
+              value: "false"
+            # Posts per Africa/Johannesburg calendar day.
+            - name: DAILY_CAP
+              value: "3"
+            # Upload attempts that reach the uploader, per day.
+            - name: ATTEMPT_CAP
+              value: "6"
+            - name: MAX_CLIP_MB
+              value: "300"
+            # clip_path from n8n is <job>/<filename>, resolved under INBOX_DIR.
+            - name: INBOX_DIR
+              value: /inbox
+            - name: LEDGER_PATH
+              value: /app/CookiesDir/ledger.jsonl
           volumeMounts:
             - name: cookies-pvc
               mountPath: /app/CookiesDir
+            # The Syncthing share only (subPath), read-only: Syncthing's keys
+            # and config at the PVC root stay invisible to the sidecar.
+            - name: reelsmith-inbox
+              mountPath: /inbox
+              subPath: reelsmith-inbox
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /healthz
@@ -86,14 +146,13 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 384Mi
+              memory: 512Mi
             limits:
-              # Bumped 512Mi -> 1Gi: the uploader launches headless Chromium
-              # (Playwright) + Node + Python + the video buffer, which can
-              # exceed 512Mi and OOMKill mid-upload (no upload ever reached
-              # this far before the luxon fix, so OOM was latent).
+              # 1.5Gi: the uploader launches headless Chromium (Playwright) +
+              # Node + Python and buffers the clip; backlog clips reach 248 MB
+              # and MAX_CLIP_MB allows 300.
               cpu: 750m
-              memory: 1Gi
+              memory: 1536Mi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -108,3 +167,7 @@ spec:
             secretName: tiktok-sidecar-cookies
             optional: true
             defaultMode: 0400
+        - name: reelsmith-inbox
+          persistentVolumeClaim:
+            claimName: syncthing-reelsmith-pvc
+            readOnly: true

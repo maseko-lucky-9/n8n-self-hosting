@@ -15,7 +15,8 @@ metadata:
     app.kubernetes.io/name: tiktok-sidecar
     app.kubernetes.io/part-of: reelsmith-social-publish
 spec:
-  # Apply to sidecar pods — let n8n + n8n worker pods reach us on port 8000.
+  # Apply to sidecar pods — let n8n + n8n worker pods reach us on port 8000,
+  # and the publish watchdog (session probe + /api/stats).
   podSelector:
     matchLabels:
       app.kubernetes.io/name: tiktok-sidecar
@@ -29,6 +30,11 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/component: worker
+        # The watchdog's egress is open (its unique component label matches
+        # no egress policy), so only this ingress side needs the allow.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: reelsmith-watchdog
       ports:
         - port: 8000
           protocol: TCP

@@ -1,0 +1,192 @@
+# apply manually; not synced by ArgoCD.
+#
+# One-off TEST_ALERT run of the publish watchdog (go-live step 8): sends exactly
+# one Telegram test message and exits 0, or exits 1 printing only the HTTP status.
+# ArgoCD does not sync this file: the reelsmith-social-publish Application
+# (homelab-infra/argocd/applications/reelsmith-social-publish.yaml) uses a plain
+# directory source on manifests/ with no `directory.recurse`, and directory
+# sources read only the top level of the path.
+#
+# The container script is a verbatim copy of the CronJob's
+# (../reelsmith-watchdog-cronjob.yaml); scripts/watchdog.selftest.sh fails if
+# they drift. Run, read, clean up:
+#   ssh homelab 'microk8s kubectl create -f -' < manifests/test/reelsmith-watchdog-test-alert-job.yaml
+#   ssh homelab 'microk8s kubectl -n n8n-live logs -f job/reelsmith-watchdog-test-alert'
+#   ssh homelab 'microk8s kubectl -n n8n-live delete job reelsmith-watchdog-test-alert'
+# (ttlSecondsAfterFinished removes it after an hour if you skip the delete.)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: reelsmith-watchdog-test-alert
+  namespace: n8n-live
+  labels:
+    app.kubernetes.io/part-of: reelsmith-social-publish
+    app.kubernetes.io/component: reelsmith-watchdog
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        # UNIQUE label: matches no egress policy => open egress (Telegram),
+        # and is the source the reelsmith-watchdog-to-postgres and
+        # n8n-to-tiktok-sidecar policies allow.
+        app.kubernetes.io/component: reelsmith-watchdog
+        app.kubernetes.io/part-of: reelsmith-social-publish
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70    # the image's postgres user
+        runAsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: watchdog
+          # Ships psql and busybox wget; nothing is installed at runtime.
+          # The tag floats: replace it with a digest pin
+          # (postgres:16-alpine@sha256:...) before un-suspending.
+          image: postgres:16-alpine
+          # Only the Telegram secret: the test path never touches the database
+          # or the sidecar.
+          env:
+            - name: TG_TOKEN
+              valueFrom:
+                secretKeyRef: { name: reelsmith-telegram, key: bot_token }
+            - name: TG_CHAT
+              valueFrom:
+                secretKeyRef: { name: reelsmith-telegram, key: chat_id }
+            - name: TEST_ALERT
+              value: "1"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -u
+              export LC_ALL=C
+              DIGEST_HOUR=12   # the 12:45 run carries the daily digest of ongoing conditions
+              STALE_HOURS=48
+
+              log() { printf '%s\n' "$*"; }
+              die() { log "FATAL: $*"; exit 1; }
+              # valid VALUE CHARS ERE: VALUE is non-empty, uses only the bracket-class
+              # CHARS (so never a newline) and matches ERE in full.
+              valid() { case $1 in ''|*[!$2]*) return 1 ;; esac; printf '%s\n' "$1" | grep -Eqx -e "$3"; }
+              is_int() { valid "$1" 0-9 '[0-9]{1,9}'; }
+              # HTTP status from busybox wget's error text ("server returned
+              # error: HTTP/1.1 401 ..."); 000 = no HTTP answer at all.
+              status_of() {
+                s=$(printf '%s\n' "$1" | sed -n 's/.*HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p' | tail -n 1)
+                if is_int "$s"; then printf '%s' "$s"; else printf '000'; fi
+              }
+              # fetch URL: sets STATUS (200 on success) and BODY (empty on failure). Prints nothing.
+              fetch() {
+                if BODY=$(wget -q -T 10 -O - "$1" 2>&1); then STATUS=200; return; fi
+                STATUS=$(status_of "$BODY"); BODY=
+              }
+              # Allowlist: quotes, newlines and every other character are dropped.
+              clean() { printf '%s' "$1" | tr -cd 'A-Za-z0-9 .,;:()/_-' | cut -c1-1000; }
+              send() {
+                text=$(clean "$1")
+                enc=$(printf '%s' "$text" | sed -e 's/ /%20/g' -e 's/,/%2C/g' -e 's/;/%3B/g' -e 's/:/%3A/g' -e 's/(/%28/g' -e 's/)/%29/g' -e 's/\//%2F/g')
+                # Accepted tradeoff: busybox wget takes the token in its argv, and
+                # /proc/<pid>/cmdline of a container process is readable by any user
+                # on the node (environ is not) for the few seconds of the call. Fine on
+                # this single-user node. The fix is an image that ships curl (token on
+                # stdin via -K -), deferred: installing curl at runtime is what made the
+                # old watchdog miss its deadline.
+                if out=$(wget -q -T 10 -O /dev/null --post-data "chat_id=${TG_CHAT}&text=${enc}" \
+                    "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" 2>&1); then
+                  log "alert sent: $text"
+                else
+                  die "telegram send failed (HTTP $(status_of "$out"))"
+                fi
+              }
+
+              valid "${TG_TOKEN:-}" '0-9A-Za-z:_-' '[0-9]+:[A-Za-z0-9_-]+' || die "TG_TOKEN is missing or malformed"
+              valid "${TG_CHAT:-}" '0-9-' '-?[0-9]+' || die "TG_CHAT is missing or not a numeric chat id"
+
+              if [ "${TEST_ALERT:-0}" = 1 ]; then
+                send "Reelsmith watchdog: test alert, Telegram delivery works"
+                exit 0
+              fi
+
+              valid "${WF_ID:-}" 'A-Za-z0-9' '[A-Za-z0-9]{1,32}' || die "WF_ID is missing or malformed"
+              valid "${ACCOUNT:-}" 'a-z0-9_-' '[a-z0-9_-]{1,32}' || die "ACCOUNT is missing or malformed"
+              valid "${SIDECAR_URL:-}" 'A-Za-z0-9.:/-' 'http://[A-Za-z0-9.-]+:[0-9]{1,5}' || die "SIDECAR_URL is missing or malformed"
+
+              HOUR=$(TZ=SAST-2 date +%H)   # SAST is UTC+2 all year; the POSIX form needs no tzdata
+              DIGEST=0; [ "$HOUR" = "$DIGEST_HOUR" ] && DIGEST=1
+              LOOKBACK=4; [ "$DIGEST" = 1 ] && LOOKBACK=17
+              NOW_ITEMS=; DAY_ITEMS=
+              add_now() { NOW_ITEMS="${NOW_ITEMS:+$NOW_ITEMS; }$1"; }
+              add_day() { DAY_ITEMS="${DAY_ITEMS:+$DAY_ITEMS; }$1"; }
+
+              # (a) failed executions in the lookback window, (d) all executions in 25h.
+              export PGCONNECT_TIMEOUT=10 PGOPTIONS='-c statement_timeout=10000'
+              RES=$(psql -X -h postgres-service -U n8n_watchdog -d n8n -tA -c \
+                "SELECT count(*) FILTER (WHERE status IN ('error','crashed','canceled') AND \"startedAt\" > now() - interval '$LOOKBACK hours') \
+                 ||'|'|| COALESCE((max(id) FILTER (WHERE status IN ('error','crashed','canceled') AND \"startedAt\" > now() - interval '$LOOKBACK hours'))::text, '0') \
+                 ||'|'|| count(*) \
+                 FROM execution_entity WHERE \"workflowId\"='$WF_ID' AND \"startedAt\" > now() - interval '25 hours';")
+              if valid "$RES" '0-9|' '[0-9]{1,9}\|[0-9]{1,12}\|[0-9]{1,9}'; then
+                ERRS=${RES%%|*}; REST=${RES#*|}; LAST_ID=${REST%%|*}; TOTAL=${REST#*|}
+                [ "$ERRS" -gt 0 ] && add_now "$ERRS failed execution(s) of workflow $WF_ID in the last ${LOOKBACK}h, latest id $LAST_ID"
+                [ "$TOTAL" -eq 0 ] && add_day "no executions of workflow $WF_ID in 25h - inactive or n8n down"
+                log "hour=$HOUR lookback=${LOOKBACK}h failed=$ERRS executions_25h=$TOTAL"
+              else
+                add_now "n8n database query failed"
+                log "hour=$HOUR database query failed"
+              fi
+
+              if [ "$DIGEST" = 1 ]; then
+                # (b) cookie session probe (the sidecar caches it; no forced refresh).
+                fetch "$SIDECAR_URL/healthz/session?account=$ACCOUNT"
+                case $STATUS in
+                  200) ;;
+                  401) add_day "cookie expired - run make refresh-cookies" ;;
+                  502) add_day "sidecar cannot reach TikTok (session check HTTP 502)" ;;
+                  503) add_day "no cookie on the sidecar - run make refresh-cookies (session check HTTP 503)" ;;
+                  000) add_day "sidecar down (session check HTTP 000)" ;;
+                  *) add_day "sidecar session check failed (HTTP $STATUS)" ;;
+                esac
+                log "session=$STATUS"
+                # (c) posting state.
+                fetch "$SIDECAR_URL/api/stats?account=$ACCOUNT"
+                if [ "$STATUS" != 200 ]; then
+                  add_day "sidecar down (stats HTTP $STATUS)"
+                else
+                  flat=$(printf '%s' "$BODY" | tr -d '\r\n')
+                  hrs=$(printf '%s' "$flat" | sed -n 's/.*"hours_since_success"[[:space:]]*:[[:space:]]*\([^,}[:space:]]*\).*/\1/p')
+                  paused=$(printf '%s' "$flat" | sed -n 's/.*"paused_until"[[:space:]]*:[[:space:]]*\([^,}[:space:]]*\).*/\1/p')
+                  unreadable=0
+                  if [ "$hrs" = null ]; then
+                    add_day "no successful post on record"
+                  elif is_int "${hrs%%.*}"; then
+                    [ "${hrs%%.*}" -gt "$STALE_HOURS" ] && add_day "no successful post for ${hrs%%.*}h"
+                  else
+                    unreadable=1
+                  fi
+                  case $paused in
+                    null) ;;
+                    '') unreadable=1 ;;
+                    *) add_day "posting paused after repeated failures" ;;
+                  esac
+                  [ "$unreadable" = 1 ] && add_day "sidecar stats unreadable"
+                fi
+              fi
+
+              MSG=$NOW_ITEMS
+              if [ "$DIGEST" = 1 ] && [ -n "$DAY_ITEMS" ]; then MSG="${MSG:+$MSG; }daily: $DAY_ITEMS"; fi
+              if [ -z "$MSG" ]; then log "ok: no alert"; exit 0; fi
+              send "Reelsmith watchdog: $MSG"
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }   # namespace LimitRange min cpu = 50m
+            limits: { cpu: 200m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
