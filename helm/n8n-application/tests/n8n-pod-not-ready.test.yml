@@ -1,0 +1,30 @@
+# promtool test for N8nPodNotReady: an ended (Evicted/Failed) pod stays silent, a Running pod
+# that is not ready still alerts. The rules come from the rendered chart, so render first:
+#   helm template n8n-live helm/n8n-application -n n8n-live -f helm/n8n-application/values-live.yaml \
+#     | yq 'select(.kind=="PrometheusRule") | .spec' > helm/n8n-application/tests/rules.yml
+#   docker run --rm -v "$PWD/helm/n8n-application/tests":/t:ro -w /t --entrypoint promtool \
+#     prom/prometheus:v3.15.0 test rules n8n-pod-not-ready.test.yml
+# (rules.yml is generated; it is gitignored).
+rule_files: [rules.yml]
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: kube_pod_status_ready{namespace="n8n-live",condition="true",pod="n8n-application-worker-a-evicted"}
+        values: "0x20"
+      - series: kube_pod_status_phase{namespace="n8n-live",pod="n8n-application-worker-a-evicted",phase="Failed"}
+        values: "1x20"
+      - series: kube_pod_status_ready{namespace="n8n-live",condition="true",pod="n8n-application-worker-b-stuck"}
+        values: "0x20"
+      - series: kube_pod_status_phase{namespace="n8n-live",pod="n8n-application-worker-b-stuck",phase="Running"}
+        values: "1x20"
+      - series: kube_pod_status_phase{namespace="n8n-live",pod="n8n-application-worker-b-stuck",phase="Failed"}
+        values: "0x20"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: N8nPodNotReady
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, condition: "true", pod: n8n-application-worker-b-stuck}
+            exp_annotations:
+              summary: n8n pod is not ready
+              description: n8n pod n8n-application-worker-b-stuck has been in a non-ready state for more than 5 minutes.

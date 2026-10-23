@@ -44,13 +44,18 @@ spec:
 
         # Alert: n8n pod not ready (excludes completed CronJob backup pods)
         - alert: N8nPodNotReady
+          # Pods that ended (Failed/Succeeded, e.g. Evicted) are never ready again but linger until
+          # garbage-collected, so they used to keep this alert firing for weeks (15 evicted workers,
+          # 2026-10). A Running pod that is not ready still fires.
           expr: |
-            kube_pod_status_ready{
+            (kube_pod_status_ready{
               namespace="{{ .Release.Namespace }}",
               condition="true",
               pod=~"n8n.*",
               pod!~".*-db-backup-.*"
-            } == 0
+            } == 0)
+            unless on (namespace, pod)
+            (kube_pod_status_phase{namespace="{{ .Release.Namespace }}", phase=~"Failed|Succeeded"} == 1)
           for: 5m
           labels:
             severity: warning
