@@ -130,6 +130,16 @@ spec:
               value: {{ .Values.n8n.logLevel | default "info" | quote }}
             - name: N8N_LOG_OUTPUT
               value: {{ .Values.n8n.logOutput | default "console" | quote }}
+            # Bound the logs on the n8n-config emptyDir (64Mi): event log <= 3 x 2 MiB (current +
+            # 2 kept), n8n.log <= 2 x 4 MiB (winston maxFiles counts the current file).
+            - name: N8N_EVENTBUS_LOGWRITER_MAXFILESIZEINKB
+              value: "2048"
+            - name: N8N_EVENTBUS_LOGWRITER_KEEPLOGCOUNT
+              value: "2"
+            - name: N8N_LOG_FILE_SIZE_MAX
+              value: "4"
+            - name: N8N_LOG_FILE_COUNT_MAX
+              value: "2"
             - name: N8N_DIAGNOSTICS_ENABLED
               value: "false"
             {{- if and .Values.externalSecrets.enabled .Values.externalSecrets.vault.appSecretPath }}
@@ -190,8 +200,11 @@ spec:
             {{- end }}
       volumes:
         - name: n8n-config
+          # n8n writes its event log and (with logOutput file) n8n.log here. 10Mi could never hold
+          # n8n 2.x's defaults (event log 10 MB x 3 kept, n8n.log 16 MB x 100), so the kubelet
+          # evicted the worker every few days. The log caps in env bound usage to ~14 MiB.
           emptyDir:
-            sizeLimit: 10Mi
+            sizeLimit: 64Mi
         {{- if .Values.securityContext.readOnlyRootFilesystem }}
         - name: tmp-volume
           emptyDir:
