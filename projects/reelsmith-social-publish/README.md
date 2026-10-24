@@ -127,7 +127,7 @@ CronJob has `timeZone: Africa/Johannesburg`) and sends at most one Telegram mess
   - no executions at all in 25h.
 
 Messages carry only fixed text, validated integers and the workflow id. A failed send exits 1 and
-prints only the HTTP status. The CronJob ships **suspended** and is switched on at go-live step 8.
+prints only the HTTP status. The CronJob was switched on 2026-10-24 (it shipped suspended until the first upload).
 `bash scripts/watchdog.selftest.sh` runs the script against stub `psql`/`wget` and checks every
 decision.
 
@@ -302,7 +302,7 @@ manifest is never archived. The Telegram alert prints the exact commands for tha
 ## Known hardening deferred
 
 - The sidecar image runs as root.
-- Images are pinned by tag, not digest: `busybox:1.36`, `postgres:16-alpine` and
+- Images are pinned by tag, not digest: `busybox:1.36` and
   `syncthing/syncthing:1.27`. The sidecar image is pinned by digest (go-live step 2).
 - The sidecar's egress is unrestricted (no egress NetworkPolicy).
 - The sidecar API has no bearer auth; NetworkPolicy is the only gate (Phase 3).
