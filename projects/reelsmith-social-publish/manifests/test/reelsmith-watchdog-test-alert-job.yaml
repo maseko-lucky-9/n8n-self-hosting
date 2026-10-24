@@ -46,9 +46,8 @@ spec:
       containers:
         - name: watchdog
           # Ships psql and busybox wget; nothing is installed at runtime.
-          # The tag floats: replace it with a digest pin
-          # (postgres:16-alpine@sha256:...) before un-suspending.
-          image: postgres:16-alpine
+          # Same digest as the CronJob.
+          image: postgres:16-alpine@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36
           # Only the Telegram secret: the test path never touches the database
           # or the sidecar.
           env:

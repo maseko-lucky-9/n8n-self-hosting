@@ -49,9 +49,9 @@ metadata:
     app.kubernetes.io/part-of: reelsmith-social-publish
     app.kubernetes.io/component: reelsmith-watchdog
 spec:
-  # Stays suspended until go-live step 8 (after the first real post); the
-  # README runbook flips it in a manifest PR.
-  suspend: true
+  # Switched on 2026-10-24: six uploads failed in a row with no alert while this
+  # was suspended. Set back to true only while the workflow is deactivated.
+  suspend: false
   timeZone: Africa/Johannesburg
   schedule: "45 12,15,18,20 * * *"
   concurrencyPolicy: Forbid
@@ -82,9 +82,8 @@ spec:
           containers:
             - name: watchdog
               # Ships psql and busybox wget; nothing is installed at runtime.
-              # The tag floats: replace it with a digest pin
-              # (postgres:16-alpine@sha256:...) before un-suspending.
-              image: postgres:16-alpine
+              # Pinned by digest (the multi-arch index of 16-alpine on 2026-10-24).
+              image: postgres:16-alpine@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36
               env:
                 - name: PGPASSWORD
                   valueFrom:

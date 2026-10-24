@@ -98,6 +98,8 @@ sudo microk8s kubectl scale deployment/n8n-application-worker -n n8n-live --repl
 
 ### Sync (after a PR is merged)
 The `argocd` CLI on the node is not logged in. Patching `.operation` does the same thing as `argocd app sync`.
+The CLI also works without a login through the cluster's own credentials:
+`ssh homelab 'KUBECONFIG=/var/snap/microk8s/current/credentials/client.config argocd --core app diff <app>'` (then `app sync <app>`). It prints harmless `helm version --client` errors.
 ```bash
 SHA=<merge commit SHA on main>
 sudo microk8s kubectl -n argocd patch application n8n-live --type merge \
