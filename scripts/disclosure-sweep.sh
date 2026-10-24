@@ -75,7 +75,7 @@ ALLOW='^n8n-sheets@prudentia-n8n\.iam\.gserviceaccount\.com$
 ^\+27 [0-9]{2} 000 000[0-9] ?$
 ^kv/secret/n8n/(live|local)/[a-z-]+$
 ^secret/n8n/(live|local)/[a-z-]+$
-^6a2aa8f4aa66c8804698d5bf3191ef4f9c5cb7b803de0aa69dd91e88a3604540$'
+^f387451af6df39c295bfd44c20cbeaa3f78369915e0b3b626666b26ec8b647ac$'
 
 rc=0
 for f in "$@"; do

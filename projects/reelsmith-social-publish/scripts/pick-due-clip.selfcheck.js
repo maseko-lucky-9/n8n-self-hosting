@@ -606,8 +606,11 @@ s.check('multi-day: an expired cookie claims nothing, burns no slot and loses no
     }
   }
   assert.equal(failedRuns, 72, 'every 15-minute tick retried');
-  assert.equal(alerts.length, 6, 'alerts at the 1st, 13th, 25th, 37th, 49th, 61st failure');
-  for (const a of alerts) assert.match(a, /^🔑 [\s\S]*make refresh-cookies/);
+  const uploaded = alerts.filter((a) => a.startsWith('Reelsmith: uploaded as Only me'));
+  const authAlerts = alerts.filter((a) => !uploaded.includes(a));
+  assert.equal(uploaded.length, 6, 'one Only-me notice per upload');
+  assert.equal(authAlerts.length, 6, 'alerts at the 1st, 13th, 25th, 37th, 49th, 61st failure');
+  for (const a of authAlerts) assert.match(a, /^🔑 [\s\S]*make refresh-cookies/);
   assert.deepEqual(postedAt, [
     '10-19 12:00 jobA/00_clip.mp4', '10-19 15:00 jobA/01_clip.mp4', '10-19 18:00 jobA/02_clip.mp4',
     '10-20 12:00 jobA/03_clip.mp4', '10-20 15:00 jobA/04_clip.mp4', '10-20 18:00 jobA/05_clip.mp4',

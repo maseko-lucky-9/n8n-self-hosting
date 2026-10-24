@@ -290,6 +290,11 @@ if (outcome.kind === 'auth_invalid' && due(authCount, AUTH_ALERT_AFTER)) {
 } else if (outcome.kind === 'retryable' && due(retryCount, RETRY_ALERT_AFTER)) {
   safety.push(`Reelsmith: sidecar unavailable ${retryCount} times in a row; clips are waiting.` + detail);
 }
+// Every upload is Only me (the sidecar passes --visibility=1): tell the owner so they can publish it.
+// Informational: the claim is already settled, so a failed send is only logged.
+if (outcome.kind === 'posted') {
+  info.push(`Reelsmith: uploaded as Only me. Set it to Everyone in TikTok Studio when you are ready.${line('file', pick.filename)}`);
+}
 // Unusable manifests or clips Pick Due Clip reported: once per SAST day, a count only.
 const manifestIssues = Array.isArray(pick.manifestErrors) ? pick.manifestErrors.length : 0;
 if (manifestIssues > 0 && counters.manifestAlertDay !== today) {

@@ -86,9 +86,9 @@ real=()
 while IFS= read -r f; do [ -f "$f" ] && real+=("$f"); done < <(
   git ls-files projects/reelsmith-social-publish docs/decisions .github/workflows/reelsmith-selfcheck.yaml scripts/disclosure-sweep.selftest.sh
 )
-# The one allowed image digest (the sidecar 0.2.0 image, public by design); any other 64-hex
+# The one allowed image digest (the sidecar 0.3.0 image, public by design); any other 64-hex
 # string is still a hit, so the allowance cannot become a place to hide a key.
-digest=6a2aa8f4aa66c8804698d5bf3191ef4f9c5cb7b803de0aa69dd91e88a3604540
+digest=f387451af6df39c295bfd44c20cbeaa3f78369915e0b3b626666b26ec8b647ac
 expect_clean allowed_image_digest "$(fixture dig1.yaml "image: localhost:32000/reelsmith/tiktok-sidecar@sha256:$digest")"
 other_hex=$(printf "%s" "$digest" | tr "0-9a-f" "1-9a-f0")
 expect_hit other_64hex_still_flagged "$other_hex" "$(fixture dig2.yaml "key: $other_hex")"

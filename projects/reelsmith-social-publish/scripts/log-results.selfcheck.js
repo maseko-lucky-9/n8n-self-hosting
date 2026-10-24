@@ -53,7 +53,7 @@ function resultRows(pick) {
 //   slot: true when the slot marker survives
 //   alert: RegExp the alert text must match, or null for no alert
 const TABLE = [
-  ['200 posted', sidecar(200, 'posted'), { kind: 'posted', claim: 'posted', slot: true, alert: null, row: 'posted' }],
+  ['200 posted', sidecar(200, 'posted'), { kind: 'posted', claim: 'posted', slot: true, alert: /^Reelsmith: uploaded as Only me\. Set it to Everyone in TikTok Studio[\s\S]*file: /, row: 'posted' }],
   ['409 duplicate', sidecar(409, 'duplicate'), { kind: 'posted_elsewhere', claim: 'posted_elsewhere', slot: false, alert: null, row: 'posted_elsewhere' }],
   ['409 ambiguous', sidecar(409, 'ambiguous'), { kind: 'needs_you', claim: 'needs_you', slot: false, alert: /^Reelsmith: a clip is blocked by an earlier upload that may have posted[\s\S]*code: ambiguous/, row: 'needs_you' }],
   ['401 auth_invalid', sidecar(401, 'auth_invalid'), { kind: 'auth_invalid', claim: null, slot: false, alert: /^🔑[\s\S]*make refresh-cookies[\s\S]*code: auth_invalid/, row: 'auth_invalid' }],
@@ -203,21 +203,21 @@ s.check('manifest problems alert once per SAST day, as a count, and only once se
   const reset = () => fs.writeFileSync(pick.claimPath, JSON.stringify({ status: 'claimed' }));
   const fail = async () => { const e = new Error('x'); e.code = 'ECONNRESET'; throw e; };
   const logs = [];
-  await log(root, withErrors, sidecar(200, 'posted'), { httpRequest: fail, logs }); // informational: no throw
+  await log(root, withErrors, sidecar(409, 'duplicate'), { httpRequest: fail, logs }); // informational: no throw
   assert.match(logs.join('\n'), /informational alert not sent; the next run retries it/);
-  assert.equal(h.readJson(pick.claimPath).status, 'posted');
+  assert.equal(h.readJson(pick.claimPath).status, 'posted_elsewhere');
   reset();
-  const first = await log(root, withErrors, sidecar(200, 'posted'), { sast: '2026-10-17T15:05:00' });
+  const first = await log(root, withErrors, sidecar(409, 'duplicate'), { sast: '2026-10-17T15:05:00' });
   assert.equal(first.sent.length, 1, 'not retried after a failed send');
   assert.match(first.sent[0].body.text, /^Reelsmith: 2 manifest problem\(s\)/);
   assert.match(first.sent[0].body.text, /see \.state\/notices\.json/);
   assert.equal(/jobX|row 3|unterminated/.test(first.sent[0].body.text), false, 'manifest details leaked');
   reset();
-  assert.equal((await log(root, withErrors, sidecar(200, 'posted'), { sast: '2026-10-17T18:05:00' })).sent.length, 0, 'twice in a day');
+  assert.equal((await log(root, withErrors, sidecar(409, 'duplicate'), { sast: '2026-10-17T18:05:00' })).sent.length, 0, 'twice in a day');
   reset();
-  assert.equal((await log(root, withErrors, sidecar(200, 'posted'), { sast: '2026-10-18T12:05:00' })).sent.length, 1, 'next day');
+  assert.equal((await log(root, withErrors, sidecar(409, 'duplicate'), { sast: '2026-10-18T12:05:00' })).sent.length, 1, 'next day');
   reset();
-  assert.equal((await log(root, pick, sidecar(200, 'posted'), { sast: '2026-10-19T12:05:00' })).sent.length, 0, 'no problems');
+  assert.equal((await log(root, pick, sidecar(409, 'duplicate'), { sast: '2026-10-19T12:05:00' })).sent.length, 0, 'no problems');
 });
 
 s.check('a live workflow hitting the kill switch: released as before, told once a SAST day, never fails the run', async () => {
