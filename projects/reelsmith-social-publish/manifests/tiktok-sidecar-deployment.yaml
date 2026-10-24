@@ -35,7 +35,16 @@ spec:
     spec:
       # The sidecar never talks to the Kubernetes API.
       automountServiceAccountToken: false
+      # uid/gid 10001 is baked into the image (Dockerfile USER). fsGroup makes the
+      # mounted Secret's files group-owned by 10001, so the cookie Secret's 0440 mode
+      # lets the non-root seed-cookies container read it. fsGroup does NOT chown the
+      # hostpath cookies PVC: its ownership was handed to 10001 once, with
+      # manifests/test/tiktok-sidecar-chown-cookies-job.yaml (README "Run as non-root").
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       # initContainer (re)seeds CookiesDir from the out-of-band Secret on EVERY
@@ -64,13 +73,13 @@ spec:
                 ls -la /app/CookiesDir || true
               fi
               chmod 0700 /app/CookiesDir
-          # Runs as root with no capabilities. That is enough because root owns
-          # CookiesDir and everything in it (hostpath provisioner, then only root
-          # writers): reading its own 0400 Secret files, replacing a 0400 cookie
-          # (cp -f unlinks and recreates) and chmod of its own dir need none.
-          # If CookiesDir were ever owned by another uid this fails closed (the
-          # pod stays in Init) and the fix is a one-off chown, not a capability:
-          # DAC_OVERRIDE alone would still fail the chmod (that needs FOWNER).
+          # Runs as uid 10001 (the pod's runAsUser) with no capabilities. That is
+          # enough because 10001 owns CookiesDir and everything in it: it reads the
+          # Secret through the fsGroup (mode 0440), replaces a 0400 cookie (cp -f
+          # unlinks and recreates, which needs only write access to the directory)
+          # and chmods its own dir. If CookiesDir were ever owned by another uid this
+          # fails closed (the pod stays in Init) and the fix is the one-off chown job,
+          # not a capability.
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -85,11 +94,11 @@ spec:
       containers:
         - name: tiktok-sidecar
           # Pinned by digest (go-live step 2). The in-cluster registry has no auth, so
-          # any pod that reaches it could push a different :0.3.1. This is the 0.3.1
-          # image built from tiktok-sidecar 87a9c4e (linux/amd64 plus BuildKit's
+          # any pod that reaches it could push a different :0.4.0. This is the 0.4.0
+          # image built from tiktok-sidecar ee8f504 (linux/amd64 plus BuildKit's
           # provenance entry). To ship a new version: `make remote-ship TAG=<new>` in
           # tiktok-sidecar, read the digest from the registry, and change this line in a PR.
-          image: localhost:32000/reelsmith/tiktok-sidecar@sha256:95a3f5a21995cdb0a00f13e14b5c32f9efe4df6e9775a2dc062f3be8d1826b0e
+          image: localhost:32000/reelsmith/tiktok-sidecar@sha256:0f0cddada0abb51c4fe6126c645088bdd49ac5ecc125bc302debbb7a56a045be
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -168,7 +177,7 @@ spec:
           secret:
             secretName: tiktok-sidecar-cookies
             optional: true
-            defaultMode: 0400
+            defaultMode: 0440
         - name: reelsmith-inbox
           persistentVolumeClaim:
             claimName: syncthing-reelsmith-pvc

@@ -1,0 +1,65 @@
+# ONE-OFF, applied by hand, never synced by ArgoCD (it lives in manifests/test/, which the
+# Application's non-recursive directory source does not read). Hands the existing contents
+# of the sidecar's cookies PVC (cookie, ledger.jsonl, ledger.dryrun.jsonl, ledger.failures.jsonl)
+# from root to uid/gid 10001 before the non-root sidecar Deployment is synced:
+#   ssh homelab 'microk8s kubectl create -f -' < manifests/test/tiktok-sidecar-chown-cookies-job.yaml
+# Run it immediately before the sync: the old root pod (all capabilities dropped) cannot
+# open files that 10001 owns, so uploads fail until the new pod is up. Safe to re-run.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tiktok-sidecar-chown-cookies
+  namespace: n8n-live
+  labels:
+    app.kubernetes.io/part-of: reelsmith-social-publish
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 120
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        # Matches no sidecar policy (so no egress is needed or granted).
+        app.kubernetes.io/component: reelsmith-chown-cookies
+        app.kubernetes.io/part-of: reelsmith-social-publish
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: chown
+          image: busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              chown -R 10001:10001 /app/CookiesDir
+              chmod 0700 /app/CookiesDir
+              ls -ln /app/CookiesDir
+          resources:
+            requests:
+              cpu: 50m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - CHOWN
+                - DAC_OVERRIDE
+                - FOWNER
+          volumeMounts:
+            - name: cookies-pvc
+              mountPath: /app/CookiesDir
+      volumes:
+        - name: cookies-pvc
+          persistentVolumeClaim:
+            claimName: tiktok-sidecar-cookies-pvc
