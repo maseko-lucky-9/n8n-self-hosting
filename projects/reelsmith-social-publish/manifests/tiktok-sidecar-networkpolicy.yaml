@@ -66,3 +66,51 @@ spec:
       ports:
         - port: 8000
           protocol: TCP
+---
+# Egress for the sidecar itself. It talks to exactly two things: cluster DNS and
+# TikTok over the internet. Everything on a private range is refused, which
+# keeps a compromised uploader away from the unauthenticated image registry
+# (node port 32000), Vault, Postgres, Redis, the Kubernetes API and the node.
+# Ranges: RFC 1918 (the pod and service networks and the LAN), Tailscale's
+# 100.64.0.0/10 and link-local 169.254.0.0/16.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tiktok-sidecar-egress
+  namespace: n8n-live
+  labels:
+    app.kubernetes.io/name: tiktok-sidecar
+    app.kubernetes.io/part-of: reelsmith-social-publish
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tiktok-sidecar
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 80
+          protocol: TCP

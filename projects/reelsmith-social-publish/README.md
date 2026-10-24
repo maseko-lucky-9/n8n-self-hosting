@@ -302,9 +302,8 @@ manifest is never archived. The Telegram alert prints the exact commands for tha
 ## Known hardening deferred
 
 - The sidecar image runs as root.
-- Images are pinned by tag, not digest: `busybox:1.36` and
-  `syncthing/syncthing:1.27`. The sidecar image is pinned by digest (go-live step 2).
-- The sidecar's egress is unrestricted (no egress NetworkPolicy).
+- Every image is pinned by digest (the sidecar from go-live step 2; busybox, syncthing and postgres by their multi-arch index digest).
+- The sidecar's egress is limited by `tiktok-sidecar-egress`: cluster DNS and public 80/443 only, no private ranges.
 - The sidecar API has no bearer auth; NetworkPolicy is the only gate (Phase 3).
 
 ## Owner actions (repository and host settings, not code)
