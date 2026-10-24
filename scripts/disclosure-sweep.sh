@@ -68,6 +68,7 @@ ALLOW='^n8n-sheets@prudentia-n8n\.iam\.gserviceaccount\.com$
 ^homelab\.local$
 ^127\.0\.0\.1$
 ^0\.0\.0\.0$
+^(10\.0\.0\.0|172\.16\.0\.0|192\.168\.0\.0|100\.64\.0\.0|169\.254\.0\.0)$
 ^topic[ :]+(remains|archival|follow-up|end-to-end|above|below|here|itself|covered|discussed|these|those|which|rotation|value|owner|names?|name)$
 ^topic[ :]+[0-9]{4}-[0-9]{2}-[0-9]{2}$
 ^[A-Za-z0-9._%+-]+@example\.(com|net|org)$
@@ -76,7 +77,9 @@ ALLOW='^n8n-sheets@prudentia-n8n\.iam\.gserviceaccount\.com$
 ^kv/secret/n8n/(live|local)/[a-z-]+$
 ^secret/n8n/(live|local)/[a-z-]+$
 ^95a3f5a21995cdb0a00f13e14b5c32f9efe4df6e9775a2dc062f3be8d1826b0e$
-^f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36$'
+^f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36$
+^73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662$
+^5fb5438b300a430f0636b60924939defb84f965b15ad7ae16acf5a2ac9c9e5c3$'
 
 rc=0
 for f in "$@"; do
