@@ -43,7 +43,7 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
 - **No video bytes pass through n8n.** n8n sends `clip_path` = `<job>/<filename>`. The sidecar
   mounts the PVC's `reelsmith-inbox` folder read-only at `/inbox` (subPath, so Syncthing's keys
   and config at the PVC root stay invisible) and reads `/inbox/<job>/<filename>` itself.
-- **The sidecar decides** (image `0.3.1`, code in the `tiktok-sidecar` repo, which documents the
+- **The sidecar decides** (image `0.4.0`, code in the `tiktok-sidecar` repo, which documents the
   n8n contract):
   - it validates the path and the file;
   - it keeps a ledger (`ledger.jsonl` on the cookies PVC) and refuses a clip already posted, by
@@ -67,7 +67,7 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
 | Kubernetes manifests | `manifests/`, synced by ArgoCD |
 | One-off TEST_ALERT Job | `manifests/test/`, applied by hand, never synced |
 | ArgoCD Application | `homelab-infra/argocd/applications/reelsmith-social-publish.yaml`: **manual sync**, a non-recursive directory source on `manifests/`. Merging here deploys nothing until you sync |
-| Sidecar code and image | `tiktok-sidecar` repo, image `localhost:32000/reelsmith/tiktok-sidecar:0.3.1`, deployed by digest |
+| Sidecar code and image | `tiktok-sidecar` repo, image `localhost:32000/reelsmith/tiktok-sidecar:0.4.0`, deployed by digest |
 | Self-checks | `cd scripts && npm ci && npm run selfcheck` (dispatcher); `bash scripts/watchdog.selftest.sh` (watchdog); from the repo root, `bash scripts/disclosure-sweep.selftest.sh` (disclosure sweep) |
 
 ### Manifests
@@ -187,7 +187,7 @@ Paste the evidence at each step; nothing moves to the next step without your go.
        `manifests/tiktok-sidecar-deployment.yaml` to
        `localhost:32000/reelsmith/tiktok-sidecar@sha256:<digest>`, and merge it before step 3's
        sync.
-     - Done: 0.2.0 on 2026-10-18; now `sha256:95a3f5a21995cdb0a00f13e14b5c32f9efe4df6e9775a2dc062f3be8d1826b0e` (0.3.1: Only-me uploads, and the uploader ignores TikTok's 404 on its warm-up HEAD), built from `tiktok-sidecar` `87a9c4e` on 2026-10-24 and checked inside the image: both patches present once, the public line zero times. 0.2.0 was confirmed against
+     - Done: 0.2.0 on 2026-10-18; now `sha256:0f0cddada0abb51c4fe6126c645088bdd49ac5ecc125bc302debbb7a56a045be` (0.3.1: Only-me uploads, and the uploader ignores TikTok's 404 on its warm-up HEAD), built from `tiktok-sidecar` `87a9c4e` on 2026-10-24 and checked inside the image: both patches present once, the public line zero times. 0.2.0 was confirmed against
        the registry's `Docker-Content-Digest`. The follow-up PR carries the `image:` change.
 3. **Merge this PR**, review `argocd app diff reelsmith-social-publish`, then sync it.
    - Before the sync, confirm root owns the cookies folder. The new seed-cookies init container
@@ -283,6 +283,21 @@ manifest is never archived. The Telegram alert prints the exact commands for tha
 - **Refused clip** (400 bad input or 413 too large): fix or re-export the clip, then release the
   claim with the same command. Or leave it set aside.
 
+## Run as non-root (sidecar 0.4.0)
+
+The image runs as uid/gid 10001 under tini. The Deployment pins `runAsUser`, `runAsGroup` and
+`fsGroup` to 10001, and the cookie Secret is mode 0440 so that group can read it. `fsGroup` does
+not change the ownership of the hostpath cookies PVC, so its existing files were handed over once:
+
+```bash
+ssh homelab 'microk8s kubectl create -f -' < manifests/test/tiktok-sidecar-chown-cookies-job.yaml
+```
+
+Run it immediately before the sync that rolls out the non-root Deployment (the old root pod has
+no capabilities and cannot open files that 10001 owns). It is safe to re-run. To go back to root,
+revert the Deployment change and sync: root can still read files owned by 10001 only with
+`DAC_OVERRIDE`, so run the same Job with `chown -R 0:0` first.
+
 ## Known limits
 
 - The watchdog's Telegram token is visible to anyone with a shell on the node: busybox `wget`
@@ -301,7 +316,6 @@ manifest is never archived. The Telegram alert prints the exact commands for tha
 
 ## Known hardening deferred
 
-- The sidecar image runs as root.
 - Every image is pinned by digest (the sidecar from go-live step 2; busybox, syncthing and postgres by their multi-arch index digest).
 - The sidecar's egress is limited by `tiktok-sidecar-egress`: cluster DNS and public 80/443 only, no private ranges.
 - The sidecar API has no bearer auth; NetworkPolicy is the only gate (Phase 3).
