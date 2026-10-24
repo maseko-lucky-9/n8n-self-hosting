@@ -3,11 +3,13 @@
 Reelsmith exports clips and a `manifest.csv` per job on the Mac. Syncthing copies the export
 folder into the cluster PVC. Every 15 minutes an n8n dispatcher picks at most one due clip and
 asks the `tiktok-sidecar` to post it. The sidecar is the gatekeeper: it reads the clip itself,
-refuses anything unsafe or already posted, and uploads it to TikTok as a public post. Outcomes
+refuses anything unsafe or already posted, and uploads it to TikTok as **Only me** (private). You make
+each one public yourself in TikTok Studio; a Telegram notice says when a clip is waiting. Outcomes
 land in `results.log.csv` and the ledger; problems alert on Telegram. YouTube posting is dropped.
 
-Decision record: [ADR-0002](../../docs/decisions/0002-reelsmith-posting-gatekeeper.md), which
-points to Reelsmith's ADR-012.
+Decision records: [ADR-0002](../../docs/decisions/0002-reelsmith-posting-gatekeeper.md), which
+points to Reelsmith's ADR-012, and [ADR-0003](../../docs/decisions/0003-reelsmith-private-uploads.md)
+(uploads are Only me).
 
 ## Flow
 
@@ -230,8 +232,10 @@ Paste the evidence at each step; nothing moves to the next step without your go.
    clickable tags). Then a manifest PR sets `POSTING_ENABLED` to `"true"`; merge it and sync.
    Deploy the workflow live with `scripts/deploy-workflow.sh --workflow-id <ID> --live` (via
    `homelab-tunnel`), the only deploy that publishes.
-8. **First real post** at the next slot. In an incognito window, check it's public, with the full
-   caption and at most 5 clickable tags, and the ledger row says `posted`. Then:
+8. **First real upload** at the next slot. A Telegram "uploaded as Only me" notice arrives. In an
+   incognito window the post must **not** be visible; in TikTok Studio it shows as Only me with the
+   full caption and at most 5 clickable tags, and the ledger row says `posted`. Set it to Everyone
+   when you are ready. Then:
    - a manifest PR sets the watchdog's `suspend: false` and pins its image by digest; merge it
      and sync;
    - run the TEST_ALERT Job once:
@@ -289,6 +293,11 @@ manifest is never archived. The Telegram alert prints the exact commands for tha
 - The once-a-day checks run only at 12:45. If the homelab is off then, that day's checks are
   skipped; failed executions are still reported on the later runs.
 - The web uploader returns no TikTok post id, so the ledger's `posted` row is the record.
+- The Only-me notice is informational: if Telegram is down when a clip uploads, the notice is lost
+  (the ledger and TikTok Studio still show the clip).
+- **Failed uploads leave a tail.** The sidecar appends the redacted uploader output of every run
+  that did not post to `ledger.failures.jsonl` on the cookies PVC (survives restarts). Read it:
+  `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/tiktok-sidecar -c tiktok-sidecar -- tail -n 5 /app/CookiesDir/ledger.failures.jsonl'`.
 
 ## Known hardening deferred
 
