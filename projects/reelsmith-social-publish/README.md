@@ -43,7 +43,7 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
 - **No video bytes pass through n8n.** n8n sends `clip_path` = `<job>/<filename>`. The sidecar
   mounts the PVC's `reelsmith-inbox` folder read-only at `/inbox` (subPath, so Syncthing's keys
   and config at the PVC root stay invisible) and reads `/inbox/<job>/<filename>` itself.
-- **The sidecar decides** (image `0.2.0`, code in the `tiktok-sidecar` repo, which documents the
+- **The sidecar decides** (image `0.3.0`, code in the `tiktok-sidecar` repo, which documents the
   n8n contract):
   - it validates the path and the file;
   - it keeps a ledger (`ledger.jsonl` on the cookies PVC) and refuses a clip already posted, by
@@ -67,7 +67,7 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
 | Kubernetes manifests | `manifests/`, synced by ArgoCD |
 | One-off TEST_ALERT Job | `manifests/test/`, applied by hand, never synced |
 | ArgoCD Application | `homelab-infra/argocd/applications/reelsmith-social-publish.yaml`: **manual sync**, a non-recursive directory source on `manifests/`. Merging here deploys nothing until you sync |
-| Sidecar code and image | `tiktok-sidecar` repo, image `localhost:32000/reelsmith/tiktok-sidecar:0.2.0`, deployed by digest from go-live step 2 |
+| Sidecar code and image | `tiktok-sidecar` repo, image `localhost:32000/reelsmith/tiktok-sidecar:0.3.0`, deployed by digest |
 | Self-checks | `cd scripts && npm ci && npm run selfcheck` (dispatcher); `bash scripts/watchdog.selftest.sh` (watchdog); from the repo root, `bash scripts/disclosure-sweep.selftest.sh` (disclosure sweep) |
 
 ### Manifests
@@ -187,7 +187,7 @@ Paste the evidence at each step; nothing moves to the next step without your go.
        `manifests/tiktok-sidecar-deployment.yaml` to
        `localhost:32000/reelsmith/tiktok-sidecar@sha256:<digest>`, and merge it before step 3's
        sync.
-     - Done: `sha256:6a2aa8f4aa66c8804698d5bf3191ef4f9c5cb7b803de0aa69dd91e88a3604540`, built from `tiktok-sidecar` `766150c` on 2026-10-18 and confirmed against
+     - Done: 0.2.0 on 2026-10-18; now `sha256:f387451af6df39c295bfd44c20cbeaa3f78369915e0b3b626666b26ec8b647ac` (0.3.0, Only-me uploads), built from `tiktok-sidecar` `3e9fe6b` on 2026-10-24 and checked inside the image: the patched line is present once, the public one zero times. 0.2.0 was confirmed against
        the registry's `Docker-Content-Digest`. The follow-up PR carries the `image:` change.
 3. **Merge this PR**, review `argocd app diff reelsmith-social-publish`, then sync it.
    - Before the sync, confirm root owns the cookies folder. The new seed-cookies init container
