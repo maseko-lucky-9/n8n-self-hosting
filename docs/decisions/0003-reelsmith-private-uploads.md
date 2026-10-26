@@ -1,6 +1,6 @@
 # ADR-0003: Reelsmith uploads are Only me; the owner publishes
 
-- **Status:** Accepted 2026-10-24.
+- **Status:** Accepted 2026-10-24. (Clip order amended in ADR-0002 on 2026-10-26; uploads are unchanged.)
 - **Deciders:** owner.
 - **Amends:** [ADR-0002](0002-reelsmith-posting-gatekeeper.md), which assumed public posts.
 

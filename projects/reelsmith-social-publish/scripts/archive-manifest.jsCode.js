@@ -83,11 +83,18 @@ function captionUsable(text) {
   return !BLANK_RE.test(body);
 }
 
+// Same rule as Pick Due Clip: a video's intro (row 1, 00_*, or a clip titled "Intro") is never posted.
+function isIntro(row) {
+  const name = String(row.filename == null ? '' : row.filename).normalize('NFC');
+  return name.startsWith('00_') || String(row.title == null ? '' : row.title).trim().toLowerCase() === 'intro';
+}
+
 // The same rules as Pick Due Clip. Ordinary junk is done; a clip Pick reports
 // (a notice) is NOT: it pins the manifest until a human fixes the clip or
 // archives the manifest by hand. Otherwise done only if the claim records a
 // posted outcome.
 function rowDone(jobDir, row) {
+  if (isIntro(row)) return true; // never posted (needs extra editing), so it must not pin the manifest
   const name = String(row.filename == null ? '' : row.filename);
   if (!name.trim()) return true;
   const nfc = name.normalize('NFC');

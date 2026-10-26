@@ -1,7 +1,9 @@
 // Pick Due Clip: chooses and claims AT MOST ONE clip per execution.
 // Schedule: every 15 min, 12:00-20:45 SAST. One clip per slot (12:00, 15:00,
-// 18:00), newest manifest first, YouTube-sourced jobs only. Returning []
-// stops the run. Canonical source: scripts/pick-due-clip.jsCode.js; the
+// 18:00), YouTube-sourced jobs only, rotating across source videos (jobs): never
+// the same video twice in a row, a video holding most of the backlog every other
+// post, otherwise the video used least recently; each video's intro (00_*) is never
+// posted. Returning [] stops the run. Canonical source: scripts/pick-due-clip.jsCode.js; the
 // workflow JSON is generated from it (scripts/build-workflow.js).
 //
 // n8n 2.x Code-node sandbox: luxon is the global `DateTime` (requiring the
@@ -45,10 +47,23 @@ const YOUTUBE_LEGACY_JOBS = [
   '48ac096bd9db4976a06f63be654a2900',
 ];
 const JOB_RE = /^[A-Za-z0-9_-]+$/;
+// Rotation: a claim counts as "this video was used" when the upload may have reached
+// TikTok (posted, failed = ambiguous, claimed = in flight) or it predates the status
+// field. needs_you and posted_elsewhere keep their claim but free the slot, so they do
+// not count: the next 15-minute run must not repeat the video that just posted.
+const COUNTED_STATUSES = ['posted', 'failed', 'claimed'];
+const FUTURE_SKEW_MIN = 5; // a claim dated further ahead is ignored (wrong boot clock)
 
 const now = DateTime.now().setZone(TZ);
 const today = now.toISODate();
 const execId = (typeof $execution !== 'undefined' && $execution && $execution.id) ? String($execution.id) : 'manual';
+
+// The video's intro (row 1, 00_*, or a clip titled "Intro") needs extra editing and is
+// never posted. Archive Manifest has the same rule and counts such a row as done.
+function isIntro(row) {
+  const name = String(row.filename == null ? '' : row.filename).normalize('NFC');
+  return name.startsWith('00_') || String(row.title == null ? '' : row.title).trim().toLowerCase() === 'intro';
+}
 
 function lstatOrNull(p) {
   try {
@@ -202,6 +217,7 @@ function hashtagsField(raw) {
 // ponytail: the crashed run's slot marker is NOT released, so a crash costs
 //   that slot (at most 3 a day); the safe direction for an upload that may
 //   have posted.
+const lastUsedMs = {}; // job -> newest counted claim, in ms
 for (const job of listJobs()) {
   const claimDir = path.join(INBOX, job, '.claims');
   const dirSt = lstatOrNull(claimDir);
@@ -215,11 +231,15 @@ for (const job of listJobs()) {
     } catch (e) {
       continue; // being written right now, or not ours
     }
-    if (!claim || claim.status !== 'claimed') continue;
+    if (!claim || typeof claim !== 'object') continue;
     const claimedAt = readClaimedAt(file);
-    if (claimedAt && now.diff(claimedAt, 'minutes').minutes > STALE_CLAIM_MIN) {
+    if (claim.status === 'claimed' && claimedAt && now.diff(claimedAt, 'minutes').minutes > STALE_CLAIM_MIN) {
       fs.rmSync(file, { force: true });
+      continue;
     }
+    if (!claimedAt || (claim.status !== undefined && !COUNTED_STATUSES.includes(claim.status))) continue;
+    if (claimedAt.diff(now, 'minutes').minutes > FUTURE_SKEW_MIN) continue;
+    if (claimedAt.toMillis() > (lastUsedMs[job] || 0)) lastUsedMs[job] = claimedAt.toMillis();
   }
 }
 
@@ -245,7 +265,7 @@ if (!DRY_RUN) {
 }
 
 // 3. Candidates: every non-archived manifest.csv modified on/after CUTOFF,
-// newest first, rows in file order.
+// newest first, rows in file order. (Step 4b rotates across videos.)
 const cutoffMs = DateTime.fromISO(CUTOFF, { zone: TZ }).toMillis();
 const manifests = [];
 for (const job of listJobs()) {
@@ -298,6 +318,7 @@ for (const m of manifests) {
     const row = parsed.rows[rowIndex];
     const source = String(row.source).trim();
     if (hasSource && source !== 'youtube' && !(source === '' && legacyJob)) continue;
+    if (isIntro(row)) continue; // never posted, never reported, never pins the manifest
     const where = `${m.job} row ${rowIndex + 1}`;
     // One bad row never stops the others: an unexpected error (EACCES, EIO, ...)
     // skips that row for this run.
@@ -318,6 +339,37 @@ for (const m of manifests) {
     }
     candidates.push({ m, rowIndex, row, clip, title, caption });
   }
+}
+
+// 4b. Rotate across videos (jobs). Within a video, clips keep row order. Order of
+// videos: (1) never the one used last while another has a ready clip; (2) a video
+// holding more than half of all ready clips first, so it cannot pile up at the end;
+// (3) the least recently used; ties keep the manifest order above (newest first).
+// A clip that cannot be claimed (EEXIST) falls through to the next one in this order.
+{
+  const groups = new Map();
+  for (const c of candidates) {
+    if (!groups.has(c.m.job)) groups.set(c.m.job, []);
+    groups.get(c.m.job).push(c);
+  }
+  const jobs = [...groups.keys()];
+  let lastJob = null;
+  let lastMs = 0;
+  for (const j of Object.keys(lastUsedMs)) {
+    if (lastUsedMs[j] > lastMs) { lastMs = lastUsedMs[j]; lastJob = j; }
+  }
+  const others = jobs.filter((j) => j !== lastJob);
+  const total = candidates.length;
+  const rank = (j) => jobs.indexOf(j);
+  const lru = (a, b) => ((lastUsedMs[a] || 0) - (lastUsedMs[b] || 0)) || (rank(a) - rank(b));
+  const big = others.filter((j) => groups.get(j).length * 2 > total)
+    .sort((a, b) => (groups.get(b).length - groups.get(a).length) || (rank(a) - rank(b)))[0];
+  const ordered = [];
+  if (big !== undefined) ordered.push(big);
+  ordered.push(...others.filter((j) => j !== big).sort(lru));
+  if (groups.has(lastJob)) ordered.push(lastJob);
+  candidates.length = 0;
+  for (const j of ordered) candidates.push(...groups.get(j));
 }
 const manifestErrors = [...errors, ...notices];
 if (notices.length || lstatOrNull(NOTICES_FILE)) {

@@ -21,7 +21,7 @@ async function pick(root, sast, { live = true, fsImpl, execId } = {}) {
 // A youtube job with n clips 00.mp4..; mtime decides newest-first.
 function job(root, name, n, mtime = '2026-10-15T10:00:00') {
   const rows = [];
-  for (let i = 0; i < n; i++) rows.push({ filename: `${String(i).padStart(2, '0')}_clip.mp4` });
+  for (let i = 1; i <= n; i++) rows.push({ filename: `${String(i).padStart(2, '0')}_clip.mp4` }); // 00_ is the intro: never posted
   return h.addJob(root, name, { rows, mtime });
 }
 
@@ -35,12 +35,12 @@ s.check('gate: nothing before 12:00, slot 0 at 12:00, then wait for 15:00', asyn
   job(root, 'jobA', 5);
   assert.deepEqual(await pick(root, '2026-10-17T11:59:00'), []);
   const [first] = await pick(root, '2026-10-17T12:00:00');
-  assert.equal(first.json.clip_key, 'jobA/00_clip.mp4');
+  assert.equal(first.json.clip_key, 'jobA/01_clip.mp4');
   markPosted(first.json);
   assert.deepEqual(h.listSlots(root), ['2026-10-17-0.json']);
   for (const t of ['12:15', '13:00', '14:45', '14:50', '14:59']) assert.deepEqual(await pick(root, `2026-10-17T${t}:00`), [], t);
   const [second] = await pick(root, '2026-10-17T15:00:00');
-  assert.equal(second.json.clip_key, 'jobA/01_clip.mp4');
+  assert.equal(second.json.clip_key, 'jobA/02_clip.mp4');
   assert.deepEqual(h.listSlots(root), ['2026-10-17-0.json', '2026-10-17-1.json']);
 });
 
@@ -52,7 +52,7 @@ s.check('gate: 170-minute gap after the newest slot marker', async () => {
   assert.deepEqual(await pick(root, '2026-10-17T15:00:00'), [], '120 min after 13:00');
   assert.deepEqual(await pick(root, '2026-10-17T15:49:00'), [], '169 min');
   const [next] = await pick(root, '2026-10-17T15:50:00');
-  assert.equal(next.json.clip_key, 'jobA/01_clip.mp4', '170 min');
+  assert.equal(next.json.clip_key, 'jobA/02_clip.mp4', '170 min');
 });
 
 s.check('gate: earliest unused passed slot, never more than 3 a day', async () => {
@@ -75,7 +75,7 @@ s.check('gate: no catch-up at or after 21:00', async () => {
   assert.deepEqual(h.listSlots(root), []);
   assert.equal(h.listClaims(root).length, 0);
   const [late] = await pick(root, '2026-10-17T20:59:00');
-  assert.equal(late.json.clip_key, 'jobA/00_clip.mp4');
+  assert.equal(late.json.clip_key, 'jobA/01_clip.mp4');
 });
 
 s.check('gate: uses SAST, not the instance default zone', async () => {
@@ -106,15 +106,15 @@ s.check('stale-claim sweep releases unresolved claims older than 30 min only', a
   const claims = path.join(jobDir, '.claims');
   fs.mkdirSync(claims);
   const put = (f, data) => fs.writeFileSync(path.join(claims, f + '.json'), JSON.stringify(data));
-  put('00_clip.mp4', { status: 'claimed', claimedAt: '2026-10-17T11:29:00.000+02:00' }); // 31 min
-  put('01_clip.mp4', { status: 'claimed', claimedAt: '2026-10-17T11:31:00.000+02:00' }); // 29 min
-  put('02_clip.mp4', { status: 'posted', claimedAt: '2026-10-01T12:00:00.000+02:00' });
-  put('03_clip.mp4', { claimedAt: '2026-06-01T12:00:00.000Z', execId: '9', clipIndex: 3 }); // marker from the pre-2026-10 workflow
+  put('01_clip.mp4', { status: 'claimed', claimedAt: '2026-10-17T11:29:00.000+02:00' }); // 31 min
+  put('02_clip.mp4', { status: 'claimed', claimedAt: '2026-10-17T11:31:00.000+02:00' }); // 29 min
+  put('03_clip.mp4', { status: 'posted', claimedAt: '2026-10-01T12:00:00.000+02:00' });
+  put('04_clip.mp4', { claimedAt: '2026-06-01T12:00:00.000Z', execId: '9', clipIndex: 3 }); // marker from the pre-2026-10 workflow
   const [item] = await pick(root, '2026-10-17T12:00:00');
-  assert.equal(item.json.clip_key, 'jobA/00_clip.mp4', 'released stale clip is picked again');
+  assert.equal(item.json.clip_key, 'jobA/01_clip.mp4', 'released stale clip is picked again');
   const left = h.listClaims(root).map((c) => c.file).sort();
-  assert.deepEqual(left, ['00_clip.mp4.json', '01_clip.mp4.json', '02_clip.mp4.json', '03_clip.mp4.json']);
-  assert.equal(h.readJson(path.join(claims, '00_clip.mp4.json')).execId, 'test-exec', 'fresh claim');
+  assert.deepEqual(left, ['01_clip.mp4.json', '02_clip.mp4.json', '03_clip.mp4.json', '04_clip.mp4.json']);
+  assert.equal(h.readJson(path.join(claims, '01_clip.mp4.json')).execId, 'test-exec', 'fresh claim');
 });
 
 s.check('YouTube only: source column, legacy allowlist (also an empty cell), TikTok/unknown skipped', async () => {
@@ -144,7 +144,7 @@ s.check('RFC 4180: quoted newlines, commas and quotes stay inside one row', asyn
   const description = 'Line one, with a comma\nLine "two"\r\nLine three';
   h.addJob(root, 'jobA', {
     rows: [
-      { filename: '00_first.mp4', size: null, description }, // missing: skipped, but parsed
+      { filename: '01_first.mp4', size: null, description }, // missing: skipped, but parsed
       { filename: '01_second.mp4', description, hashtags: '["#a", "#b,c"]' },
     ],
     mtime: '2026-10-15T10:00:00',
@@ -178,13 +178,13 @@ s.check('missing file waits; junk (empty name, not .mp4, <=1 KB, unsafe) is skip
       { filename: '03_tiny.mp4', size: 1024 },
       { filename: '../escape.mp4', size: null },
       { filename: '.hidden.mp4' },
-      { filename: '06_ok.mp4', size: 1025 },
+      { filename: '07_ok.mp4', size: 1025 },
     ],
     mtime: '2026-10-15T10:00:00',
   });
   const [item] = await pick(root, '2026-10-17T09:00:00', { live: false });
-  assert.equal(item.json.clip_key, `${LEGACY_JOB}/06_ok.mp4`);
-  assert.deepEqual(h.listClaims(root).map((c) => c.file), ['06_ok.mp4.json']);
+  assert.equal(item.json.clip_key, `${LEGACY_JOB}/07_ok.mp4`);
+  assert.deepEqual(h.listClaims(root).map((c) => c.file), ['07_ok.mp4.json']);
   // Syncthing delivers the missing clip: it is picked next (06 stays claimed)
   fs.writeFileSync(path.join(h.inboxOf(root), LEGACY_JOB, '01_missing.mp4'), Buffer.alloc(2048));
   const [next] = await pick(root, '2026-10-17T09:15:00', { live: false });
@@ -239,11 +239,11 @@ s.check('a row whose lookup throws is junk for that run; the next row is still p
   const { jobDir } = job(root, 'jobA', 2);
   const fsShim = Object.create(fs);
   fsShim.lstatSync = (p, ...rest) => {
-    if (String(p) === path.join(jobDir, '00_clip.mp4')) { const e = new Error('EACCES'); e.code = 'EACCES'; throw e; }
+    if (String(p) === path.join(jobDir, '01_clip.mp4')) { const e = new Error('EACCES'); e.code = 'EACCES'; throw e; }
     return fs.lstatSync(p, ...rest);
   };
   const [item] = await pick(root, '2026-10-17T12:00:00', { fsImpl: fsShim });
-  assert.equal(item.json.clip_key, 'jobA/01_clip.mp4');
+  assert.equal(item.json.clip_key, 'jobA/02_clip.mp4');
   assert.deepEqual(item.json.manifestErrors, ['jobA row 1: EACCES']);
   markPosted(item.json);
   await assert.rejects(pick(root, '2026-10-17T15:00:00', { fsImpl: fsShim }), /row\(s\): jobA row 1: EACCES/);
@@ -320,13 +320,13 @@ s.check('a symlinked .slots is refused; nothing is written through it', async ()
 s.check('not a regular file (a folder or a symlink named .mp4) is junk', async () => {
   const root = h.makeRoot();
   const { jobDir } = h.addJob(root, 'jobA', {
-    rows: [{ filename: '00_dir.mp4', size: null }, { filename: '01_link.mp4', size: null }, { filename: '02_ok.mp4' }],
+    rows: [{ filename: '01_dir.mp4', size: null }, { filename: '02_link.mp4', size: null }, { filename: '03_ok.mp4' }],
     mtime: '2026-10-15T10:00:00',
   });
-  fs.mkdirSync(path.join(jobDir, '00_dir.mp4'));
-  fs.symlinkSync(path.join(jobDir, '02_ok.mp4'), path.join(jobDir, '01_link.mp4'));
+  fs.mkdirSync(path.join(jobDir, '01_dir.mp4'));
+  fs.symlinkSync(path.join(jobDir, '03_ok.mp4'), path.join(jobDir, '02_link.mp4'));
   const [item] = await pick(root, '2026-10-17T09:00:00', { live: false });
-  assert.equal(item.json.clip_key, 'jobA/02_ok.mp4');
+  assert.equal(item.json.clip_key, 'jobA/03_ok.mp4');
   assert.deepEqual(item.json.manifestErrors, ['jobA row 1: not a regular file', 'jobA row 2: not a regular file']);
 });
 
@@ -349,12 +349,12 @@ s.check('a missing clip whose NFD spelling is over 255 bytes waits: no lstat of 
 s.check('notices come from EVERY row, even after the picked one; idle runs fail once a SAST day', async () => {
   const root = h.makeRoot();
   h.addJob(root, 'jobA', {
-    rows: [{ filename: '00_good.mp4' }, { filename: '01_huge.mp4', size: 300 * 1048576 + 1 }, { filename: "02_bad'name.mp4" }],
+    rows: [{ filename: '01_good.mp4' }, { filename: '02_huge.mp4', size: 300 * 1048576 + 1 }, { filename: "03_bad'name.mp4" }],
     mtime: '2026-10-15T10:00:00',
   });
   const alerts = [];
   const first = await dispatchRun(root, '2026-10-17T12:00:00', posted, alerts);
-  assert.equal(first.clip_key, 'jobA/00_good.mp4');
+  assert.equal(first.clip_key, 'jobA/01_good.mp4');
   assert.deepEqual(first.manifestErrors, ['jobA row 2: over 300 MiB', 'jobA row 3: name the sidecar refuses']);
   assert.deepEqual(alerts.map((a) => (a.match(/(\d+) manifest problem/) || [])[1]), ['2'], 'daily Telegram notice');
   assert.equal(h.exists(path.join(h.inboxOf(root), 'jobA', 'manifest.csv')), true, 'pinned manifest archived away');
@@ -415,37 +415,188 @@ s.check('cutoff: manifests modified before 2026-10-11 SAST are ignored', async (
   assert.equal(item.json.clip_key, 'edge/edge.mp4');
 });
 
-s.check('ordering: newest manifest first, then row order', async () => {
-  const root = h.makeRoot();
-  job(root, 'older', 2, '2026-10-12T10:00:00');
-  job(root, 'newest', 2, '2026-10-16T10:00:00');
-  job(root, 'middle', 1, '2026-10-14T10:00:00');
+// Dry-run picks (no slot gate), one per minute so every claim has its own time, each marked posted.
+async function sequence(root, n, { start = '2026-10-17T09:00:00', after = markPosted } = {}) {
   const order = [];
-  for (let i = 0; i < 6; i++) {
-    const items = await pick(root, '2026-10-17T09:00:00', { live: false });
+  let t = h.DateTime.fromISO(start, { zone: h.TZ });
+  for (let i = 0; i < n; i++, t = t.plus({ minutes: 1 })) {
+    const items = await pick(root, t.toFormat("yyyy-MM-dd'T'HH:mm:ss"), { live: false });
     if (!items.length) break;
     order.push(items[0].json.clip_key);
-    markPosted(items[0].json);
+    after(items[0].json);
   }
-  assert.deepEqual(order, ['newest/00_clip.mp4', 'newest/01_clip.mp4', 'middle/00_clip.mp4',
-    'older/00_clip.mp4', 'older/01_clip.mp4']);
+  return order;
+}
+
+function claimFile(root, jobName, file, data, mtime) {
+  const dir = path.join(h.inboxOf(root), jobName, '.claims');
+  fs.mkdirSync(dir, { recursive: true });
+  const f = path.join(dir, file + '.json');
+  fs.writeFileSync(f, JSON.stringify(data));
+  if (mtime) {
+    const t = h.DateTime.fromISO(mtime, { zone: h.TZ }).toJSDate();
+    fs.utimesSync(f, t, t);
+  }
+}
+
+s.check('rotation: videos take turns, never the same one twice; ties keep the newest manifest first', async () => {
+  const root = h.makeRoot();
+  job(root, 'older', 3, '2026-10-12T10:00:00');
+  job(root, 'newest', 3, '2026-10-16T10:00:00');
+  job(root, 'middle', 3, '2026-10-14T10:00:00');
+  assert.deepEqual(await sequence(root, 9), [
+    'newest/01_clip.mp4', 'middle/01_clip.mp4', 'older/01_clip.mp4',
+    'newest/02_clip.mp4', 'middle/02_clip.mp4', 'older/02_clip.mp4',
+    'newest/03_clip.mp4', 'middle/03_clip.mp4', 'older/03_clip.mp4']);
+});
+
+s.check('rotation: the video used least recently goes next, judged by its NEWEST claim (not oldest, not count)', async () => {
+  const root = h.makeRoot();
+  for (const [name, mtime] of [['A', '2026-10-12T10:00:00'], ['B', '2026-10-13T10:00:00'], ['C', '2026-10-14T10:00:00'], ['D', '2026-10-15T10:00:00']]) {
+    job(root, name, 6, mtime);
+  }
+  const posted = (at) => ({ status: 'posted', claimedAt: at });
+  claimFile(root, 'A', '01_clip.mp4', posted('2026-10-01T09:00:00.000+02:00')); // oldest of all
+  claimFile(root, 'A', '02_clip.mp4', posted('2026-10-16T09:00:00.000+02:00')); // but A was used again recently
+  claimFile(root, 'B', '01_clip.mp4', posted('2026-10-10T09:00:00.000+02:00'));
+  for (let i = 1; i <= 5; i++) claimFile(root, 'C', `0${i}_clip.mp4`, posted(`2026-10-0${i + 1}T09:00:00.000+02:00`)); // many, all old
+  claimFile(root, 'D', '01_clip.mp4', posted('2026-10-16T12:00:00.000+02:00')); // the video used last
+  const order = await sequence(root, 3);
+  assert.deepEqual(order.map((k) => k.split('/')[0]), ['C', 'B', 'A'], 'max claim time, not min and not count');
+});
+
+s.check('rotation: only claims that may have reached TikTok count; needs_you and posted_elsewhere do not', async () => {
+  const at = (hhmm) => `2026-10-17T${hhmm}:00.000+02:00`;
+  for (const [status, lastIsA] of [['needs_you', false], ['posted_elsewhere', false], ['failed', true], ['claimed', true], ['posted', true]]) {
+    const root = h.makeRoot();
+    job(root, 'A', 3, '2026-10-16T10:00:00');
+    job(root, 'B', 3, '2026-10-15T10:00:00');
+    claimFile(root, 'B', '01_clip.mp4', { status: 'posted', claimedAt: at('08:00') });
+    claimFile(root, 'A', '01_clip.mp4', { status, claimedAt: at('08:30') });
+    const [first] = await sequence(root, 1, { start: '2026-10-17T08:40:00' });
+    // lastIsA: A was used last, so B goes. Otherwise A's refused claim is ignored, B is last, A goes (its next clip).
+    assert.equal(first, lastIsA ? 'B/02_clip.mp4' : 'A/02_clip.mp4', status);
+  }
+});
+
+s.check('rotation: a claim without status counts (time from the file mtime); a future-dated claim and a .tmp file do not', async () => {
+  const root = h.makeRoot();
+  job(root, 'A', 3, '2026-10-16T10:00:00');
+  job(root, 'B', 3, '2026-10-15T10:00:00');
+  claimFile(root, 'B', '01_clip.mp4', { status: 'posted', claimedAt: '2026-10-16T08:00:00.000+02:00' });
+  claimFile(root, 'A', '01_clip.mp4', { execId: '9' }, '2026-10-17T07:00:00'); // legacy marker, newer by mtime
+  fs.writeFileSync(path.join(h.inboxOf(root), 'B', '.claims', '.tmp-1-2'), '{"status":"posted","claimedAt":"2026-10-17T08:59:00.000+02:00"}');
+  assert.equal((await sequence(root, 1))[0], 'B/02_clip.mp4', 'legacy marker makes A the video used last');
+  const root2 = h.makeRoot();
+  job(root2, 'A', 3, '2026-10-16T10:00:00');
+  job(root2, 'B', 3, '2026-10-15T10:00:00');
+  claimFile(root2, 'B', '01_clip.mp4', { status: 'posted', claimedAt: '2026-10-16T08:00:00.000+02:00' });
+  claimFile(root2, 'A', '01_clip.mp4', { status: 'posted', claimedAt: '2026-10-18T09:00:00.000+02:00' }); // a day ahead: wrong clock
+  assert.equal((await sequence(root2, 1))[0], 'A/02_clip.mp4', 'the future-dated claim is ignored, so B is last');
+});
+
+s.check('rotation: a video holding more than half of the ready clips goes every other post', async () => {
+  const root = h.makeRoot();
+  job(root, 'A', 8, '2026-10-12T10:00:00');
+  job(root, 'B', 1, '2026-10-16T10:00:00');
+  job(root, 'C', 1, '2026-10-14T10:00:00');
+  const order = await sequence(root, 10);
+  assert.deepEqual(order.slice(0, 4), ['A/01_clip.mp4', 'B/01_clip.mp4', 'A/02_clip.mp4', 'C/01_clip.mp4']);
+  assert.equal(order.filter((k) => k.startsWith('A/')).length, 8);
+});
+
+s.check('rotation: with a single video left it is still posted, one after another', async () => {
+  const root = h.makeRoot();
+  job(root, 'only', 3);
+  assert.deepEqual(await sequence(root, 4), ['only/01_clip.mp4', 'only/02_clip.mp4', 'only/03_clip.mp4']);
+});
+
+s.check('rotation: a refused clip (needs_you, posted_elsewhere) does not hand the next slot back to the previous video', async () => {
+  for (const response of [
+    { statusCode: 400, body: { status: 'error', code: 'bad_input', error_id: 'e1' } },
+    { statusCode: 409, body: { status: 'error', code: 'duplicate', error_id: 'e2' } },
+  ]) {
+    const root = h.makeRoot();
+    job(root, 'A', 3, '2026-10-16T10:00:00');
+    job(root, 'B', 3, '2026-10-15T10:00:00');
+    const first = await dispatchRun(root, '2026-10-17T12:00:00', posted);
+    assert.equal(first.clip_key, 'A/01_clip.mp4');
+    const refused = await dispatchRun(root, '2026-10-17T15:00:00', () => response);
+    assert.equal(refused.clip_key, 'B/01_clip.mp4');
+    const next = await dispatchRun(root, '2026-10-17T15:15:00', posted);
+    assert.equal(next.clip_key, 'B/02_clip.mp4', 'B again: the refusal did not count, so A is still the video used last');
+  }
+});
+
+s.check('rotation: a retryable failure retries the same clip of the same video', async () => {
+  const root = h.makeRoot();
+  job(root, 'A', 3, '2026-10-16T10:00:00');
+  job(root, 'B', 3, '2026-10-15T10:00:00');
+  const busy = () => ({ statusCode: 503, body: { status: 'error', code: 'busy', error_id: 'e3' } });
+  const first = await dispatchRun(root, '2026-10-17T12:00:00', busy);
+  const retry = await dispatchRun(root, '2026-10-17T12:15:00', posted);
+  assert.equal(first.clip_key, 'A/01_clip.mp4');
+  assert.equal(retry.clip_key, 'A/01_clip.mp4');
+});
+
+s.check('intro: a 00_ clip and a clip titled Intro are never posted, never reported, and never block the others', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'A', {
+    mtime: '2026-10-16T10:00:00',
+    rows: [
+      { filename: '00_huge.mp4', size: 300 * 1048576 + 1 }, // would be a reported "over 300 MiB" notice if it were not the intro
+      { filename: '00_Intro.mp4' },
+      { filename: '01_a.mp4', title: ' INTRO ' },
+      { filename: '02_b.mp4', title: 'Introducing the vest' },
+      { filename: '03_c.mp4', title: 'intro to ropes' },
+    ],
+  });
+  const [item] = await pick(root, '2026-10-17T09:00:00', { live: false });
+  assert.equal(item.json.clip_key, 'A/02_b.mp4');
+  assert.deepEqual(item.json.manifestErrors, []);
+  markPosted(item.json);
+  assert.equal((await sequence(root, 5, { start: '2026-10-17T09:05:00' })).join(), 'A/03_c.mp4');
+});
+
+s.check('intro: a video with only its intro left is skipped and the others keep posting', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'onlyIntro', { mtime: '2026-10-16T10:00:00', rows: [{ filename: '00_Intro.mp4' }] });
+  job(root, 'B', 2, '2026-10-15T10:00:00');
+  assert.deepEqual(await sequence(root, 4), ['B/01_clip.mp4', 'B/02_clip.mp4']);
+});
+
+s.check('rotation: parity with the planning simulation on the live backlog (intros excluded), first 10 posts', async () => {
+  const root = h.makeRoot();
+  // job letters: T = TILER (newest manifest, 11 clips already used), C, I, G, V.
+  const jobs = [['T', 12 + 11, '2026-10-12T19:21:00'], ['C', 5, '2026-10-11T20:26:00'], ['I', 2, '2026-10-11T20:20:00'],
+    ['G', 49, '2026-10-11T18:52:00'], ['V', 24, '2026-10-11T08:41:00']];
+  for (const [name, n, mtime] of jobs) {
+    const rows = [{ filename: '00_intro.mp4' }];
+    for (let i = 1; i <= n; i++) rows.push({ filename: `${String(i).padStart(2, '0')}_clip.mp4` });
+    h.addJob(root, name, { rows, mtime });
+  }
+  for (let i = 1; i <= 11; i++) {
+    claimFile(root, 'T', `${String(i).padStart(2, '0')}_clip.mp4`, { status: 'failed', claimedAt: `2026-10-${17 + (i % 9)}T10:00:00.000+02:00` });
+  }
+  const order = await sequence(root, 10, { start: '2026-10-26T09:00:00' });
+  assert.equal(order.map((k) => k.split('/')[0]).join(''), 'GCGIGVGTGC');
 });
 
 s.check('race: a clip already claimed by another run is skipped', async () => {
   const root = h.makeRoot();
   const { jobDir } = job(root, 'jobA', 2);
   fs.mkdirSync(path.join(jobDir, '.claims'));
-  fs.writeFileSync(path.join(jobDir, '.claims', '00_clip.mp4.json'),
+  fs.writeFileSync(path.join(jobDir, '.claims', '01_clip.mp4.json'),
     JSON.stringify({ status: 'claimed', claimedAt: '2026-10-17T12:00:00.000+02:00' }));
   const [item] = await pick(root, '2026-10-17T12:00:00');
-  assert.equal(item.json.clip_key, 'jobA/01_clip.mp4');
+  assert.equal(item.json.clip_key, 'jobA/02_clip.mp4');
 });
 
 s.check('race: a clip claimed between the check and the write is skipped (EEXIST)', async () => {
   const root = h.makeRoot();
   const { jobDir } = job(root, 'jobA', 2);
   fs.mkdirSync(path.join(jobDir, '.claims'));
-  const theirs = path.join(jobDir, '.claims', '00_clip.mp4.json');
+  const theirs = path.join(jobDir, '.claims', '01_clip.mp4.json');
   fs.writeFileSync(theirs, JSON.stringify({ status: 'claimed', claimedAt: '2026-10-17T12:00:00.000+02:00', execId: 'other' }));
   const fsShim = Object.create(fs);
   fsShim.lstatSync = (p, ...rest) => {
@@ -453,7 +604,7 @@ s.check('race: a clip claimed between the check and the write is skipped (EEXIST
     return fs.lstatSync(p, ...rest);
   };
   const [item] = await pick(root, '2026-10-17T12:00:00', { fsImpl: fsShim });
-  assert.equal(item.json.clip_key, 'jobA/01_clip.mp4');
+  assert.equal(item.json.clip_key, 'jobA/02_clip.mp4');
   assert.equal(h.readJson(theirs).execId, 'other', 'the other run\'s claim was overwritten');
 });
 
@@ -534,7 +685,7 @@ async function dispatchRun(root, sast, sidecar, alerts = []) {
 
 const posted = (item) => ({ statusCode: 200, body: { status: 'success', code: 'posted', clip_key: item.clip_key } });
 
-s.check('multi-day: 3 posts per SAST day at 12:00/15:00/18:00, newest first, no duplicates', async () => {
+s.check('multi-day: 3 posts per SAST day at 12:00/15:00/18:00, videos alternate, no duplicates', async () => {
   const root = h.makeRoot();
   job(root, 'jobOld', 4, '2026-10-12T10:00:00');
   job(root, 'jobNew', 6, '2026-10-16T10:00:00');
@@ -558,8 +709,8 @@ s.check('multi-day: 3 posts per SAST day at 12:00/15:00/18:00, newest first, no 
     '2026-10-20': ['12:00'],
   });
   assert.equal(new Set(postedKeys).size, postedKeys.length, 'duplicate post');
-  assert.deepEqual(postedKeys.slice(0, 7), ['jobNew/00_clip.mp4', 'jobNew/01_clip.mp4', 'jobNew/02_clip.mp4',
-    'jobNew/03_clip.mp4', 'jobNew/04_clip.mp4', 'jobNew/05_clip.mp4', 'jobOld/00_clip.mp4']);
+  assert.deepEqual(postedKeys, ['jobNew/01_clip.mp4', 'jobOld/01_clip.mp4', 'jobNew/02_clip.mp4', 'jobOld/02_clip.mp4',
+    'jobNew/03_clip.mp4', 'jobOld/03_clip.mp4', 'jobNew/04_clip.mp4', 'jobOld/04_clip.mp4', 'jobNew/05_clip.mp4', 'jobNew/06_clip.mp4']);
   for (const j of ['jobOld', 'jobNew']) {
     const dir = path.join(h.inboxOf(root), j);
     assert.equal(h.exists(path.join(dir, 'manifest.csv')), false, j + ' not archived');
@@ -575,10 +726,10 @@ s.check('multi-day: a retryable failure frees the slot and the clip for the next
     ? { error: { code: 'ECONNREFUSED', message: 'connect ECONNREFUSED' } }
     : posted(item));
   const first = await dispatchRun(root, '2026-10-17T12:00:00', flaky);
-  assert.equal(first.clip_key, 'jobA/00_clip.mp4');
+  assert.equal(first.clip_key, 'jobA/01_clip.mp4');
   assert.deepEqual(h.listSlots(root), [], 'slot released');
   const retry = await dispatchRun(root, '2026-10-17T12:15:00', flaky);
-  assert.equal(retry.clip_key, 'jobA/00_clip.mp4', 'same clip retried');
+  assert.equal(retry.clip_key, 'jobA/01_clip.mp4', 'same clip retried');
   assert.deepEqual(h.listSlots(root), ['2026-10-17-0.json']);
 });
 
@@ -612,25 +763,25 @@ s.check('multi-day: an expired cookie claims nothing, burns no slot and loses no
   assert.equal(authAlerts.length, 6, 'alerts at the 1st, 13th, 25th, 37th, 49th, 61st failure');
   for (const a of authAlerts) assert.match(a, /^🔑 [\s\S]*make refresh-cookies/);
   assert.deepEqual(postedAt, [
-    '10-19 12:00 jobA/00_clip.mp4', '10-19 15:00 jobA/01_clip.mp4', '10-19 18:00 jobA/02_clip.mp4',
-    '10-20 12:00 jobA/03_clip.mp4', '10-20 15:00 jobA/04_clip.mp4', '10-20 18:00 jobA/05_clip.mp4',
+    '10-19 12:00 jobA/01_clip.mp4', '10-19 15:00 jobA/02_clip.mp4', '10-19 18:00 jobA/03_clip.mp4',
+    '10-20 12:00 jobA/04_clip.mp4', '10-20 15:00 jobA/05_clip.mp4', '10-20 18:00 jobA/06_clip.mp4',
   ]);
 });
 
 s.check('a definite "not uploaded" (400) sets the clip aside and frees the slot for the next clip', async () => {
   const root = h.makeRoot();
   job(root, 'jobA', 3);
-  const sidecarFn = (item) => (item.clip_key === 'jobA/00_clip.mp4'
+  const sidecarFn = (item) => (item.clip_key === 'jobA/01_clip.mp4'
     ? { statusCode: 400, body: { status: 'error', code: 'bad_input', error_id: 'abc123' } }
     : posted(item));
   const alerts = [];
   const first = await dispatchRun(root, '2026-10-17T12:00:00', sidecarFn, alerts);
-  assert.equal(first.clip_key, 'jobA/00_clip.mp4');
+  assert.equal(first.clip_key, 'jobA/01_clip.mp4');
   assert.equal(h.readJson(first.claimPath).status, 'needs_you');
   assert.deepEqual(h.listSlots(root), [], 'slot 0 still taken');
   assert.equal(alerts.length, 1);
   const next = await dispatchRun(root, '2026-10-17T12:15:00', sidecarFn, alerts);
-  assert.equal(next.clip_key, 'jobA/01_clip.mp4', 'the next clip takes the same slot');
+  assert.equal(next.clip_key, 'jobA/02_clip.mp4', 'the next clip takes the same slot');
   assert.deepEqual(h.listSlots(root), ['2026-10-17-0.json']);
 });
 

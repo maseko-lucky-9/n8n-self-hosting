@@ -16,7 +16,7 @@ const CAPTION = 'CAPTION-SENTINEL never in alerts';
 const T = '2026-10-17T12:00:00';
 
 // Picks one real clip (live mode: claim + slot 0 marker) and returns the item.
-async function picked({ live = true, filename = '00_clip.mp4' } = {}) {
+async function picked({ live = true, filename = '01_clip.mp4' } = {}) {
   const root = h.makeRoot();
   h.addJob(root, 'jobA', { rows: [{ filename, description: CAPTION }], mtime: '2026-10-15T10:00:00' });
   h.setNow(live ? T : '2026-10-17T09:00:00');
@@ -92,13 +92,13 @@ for (const [name, response, want] of TABLE) {
     else {
       const claim = h.readJson(pick.claimPath);
       assert.equal(claim.status, want.claim);
-      assert.equal(claim.clip_key, 'jobA/00_clip.mp4');
+      assert.equal(claim.clip_key, 'jobA/01_clip.mp4');
     }
     assert.equal(h.exists(pick.slotMarker), want.slot, want.slot ? 'slot released' : 'slot kept');
     const { header, rows } = resultRows(pick);
     assert.equal(header, 'timestamp,filename,title,tiktok_post_id,tiktok_post_url,youtube_video_id,youtube_status,error,tiktok_status');
     assert.equal(rows.length, 1);
-    assert.equal(rows[0][1], '00_clip.mp4');
+    assert.equal(rows[0][1], '01_clip.mp4');
     assert.equal(rows[0][8], want.row);
     if (want.alert) {
       assert.equal(sent.length, 1, 'expected one alert');
@@ -121,7 +121,7 @@ s.check('alerts: fixed text + code + error_id + filename only, <= 2000 chars, pl
   assert.equal(sent[0].body.parse_mode, undefined);
   for (const leak of [CAPTION, 'SIDECAR-OUTPUT-TAIL', TOKEN]) assert.ok(!text.includes(leak), 'alert leaks ' + leak);
   const { sent: sent2 } = await log(root, pick, sidecar(502, 'publish_rejected'));
-  assert.match(sent2[0].body.text, /code: publish_rejected\nerror_id: err-123\nfile: 00_clip\.mp4\n/);
+  assert.match(sent2[0].body.text, /code: publish_rejected\nerror_id: err-123\nfile: 01_clip\.mp4\n/);
   for (const leak of [CAPTION, 'SIDECAR-OUTPUT-TAIL', TOKEN]) assert.ok(!sent2[0].body.text.includes(leak), 'alert leaks ' + leak);
   assert.equal(sent2[0].url, `https://api.telegram.org/bot${TOKEN}/sendMessage`);
   assert.equal(sent2[0].body.chat_id, '42');
@@ -129,16 +129,16 @@ s.check('alerts: fixed text + code + error_id + filename only, <= 2000 chars, pl
 
 s.check('needs_you / ambiguous alerts carry the exact claim-release command', async () => {
   const { root, pick } = await picked();
-  const cmd = `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "${h.inboxOf(root)}/jobA/.claims/00_clip.mp4.json"'`;
+  const cmd = `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "${h.inboxOf(root)}/jobA/.claims/01_clip.mp4.json"'`;
   const amb = (await log(root, pick, sidecar(504, 'timeout'))).sent[0].body.text;
   assert.ok(amb.endsWith('\n' + cmd), amb);
   for (const outcome of ['posted', 'not_posted']) {
-    assert.ok(amb.includes(`\nmake ledger-resolve KEY='jobA/00_clip.mp4' OUTCOME=${outcome}\n`), outcome);
+    assert.ok(amb.includes(`\nmake ledger-resolve KEY='jobA/01_clip.mp4' OUTCOME=${outcome}\n`), outcome);
   }
   assert.equal(/OUTCOME=posted\|/.test(amb), false, 'a | in a command line pipes make into nothing');
   assert.match(amb, /refused with "no ledger rows" or "it is free", the upload never reached TikTok: go to 2\./);
   const blocked = (await log(root, pick, sidecar(409, 'ambiguous'))).sent[0].body.text;
-  assert.ok(blocked.includes("make ledger-resolve KEY='jobA/00_clip.mp4' OUTCOME=not_posted") && blocked.endsWith(cmd));
+  assert.ok(blocked.includes("make ledger-resolve KEY='jobA/01_clip.mp4' OUTCOME=not_posted") && blocked.endsWith(cmd));
   const bad = (await log(root, pick, sidecar(400, 'bad_input'))).sent[0].body.text;
   assert.ok(bad.includes('Fix the clip') && !bad.includes('ledger-resolve') && bad.endsWith(cmd));
 });
@@ -181,11 +181,11 @@ s.check('releases refuse a symlinked .claims or .slots (nothing deleted through 
   const os = require('os');
   const a = await picked();
   const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'elsewhere-'));
-  fs.writeFileSync(path.join(elsewhere, '00_clip.mp4.json'), '{}');
+  fs.writeFileSync(path.join(elsewhere, '01_clip.mp4.json'), '{}');
   fs.rmSync(path.dirname(a.pick.claimPath), { recursive: true });
   fs.symlinkSync(elsewhere, path.dirname(a.pick.claimPath));
   await assert.rejects(log(a.root, a.pick, sidecar(503, 'busy')), /not a real directory/);
-  assert.ok(h.exists(path.join(elsewhere, '00_clip.mp4.json')), 'claim deleted through the symlink');
+  assert.ok(h.exists(path.join(elsewhere, '01_clip.mp4.json')), 'claim deleted through the symlink');
 
   const b = await picked();
   const slots = path.dirname(b.pick.slotMarker);
@@ -305,8 +305,8 @@ s.check('atomic claim write: tmp + rename, no tmp left, refuses a symlinked .cla
   } finally {
     fs.renameSync = realRename;
   }
-  assert.ok(renames.some(([a, b]) => b === '00_clip.mp4.json' && /^\.tmp-77-\d+$/.test(a)), JSON.stringify(renames));
-  assert.deepEqual(fs.readdirSync(path.dirname(pick.claimPath)), ['00_clip.mp4.json']);
+  assert.ok(renames.some(([a, b]) => b === '01_clip.mp4.json' && /^\.tmp-77-\d+$/.test(a)), JSON.stringify(renames));
+  assert.deepEqual(fs.readdirSync(path.dirname(pick.claimPath)), ['01_clip.mp4.json']);
 
   const second = await picked();
   const claims = path.dirname(second.pick.claimPath);

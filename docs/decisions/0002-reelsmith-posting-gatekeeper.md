@@ -24,7 +24,9 @@ workflow, its scripts and the Kubernetes manifests), so it records where that de
    (`POSTING_ENABLED`, off by default).
 2. **A 15-minute dispatcher replaces the Wait.** The workflow runs every 15 minutes from 12:00 to
    20:45 SAST and posts at most one clip per run, in three daily slots (12:00, 15:00, 18:00),
-   newest job first.
+   newest job first. *Amended 2026-10-26: the order is now a rotation across source videos
+   (never the same video twice in a row, least recently used first), and each video's intro
+   (`00_*` or titled "Intro") is never posted. See the README's Candidates bullet.*
 3. **No binaries in n8n.** n8n sends a relative `clip_path`; the video never passes through an
    n8n pod.
 4. **Fail closed.** The ledger is written before an upload; an unfinished attempt blocks that

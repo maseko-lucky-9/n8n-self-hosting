@@ -136,4 +136,15 @@ s.check('refuses a symlinked processed/', async () => {
   assert.equal(h.exists(ctx.manifestPath), true);
 });
 
+s.check('a never-posted intro (00_*, or titled Intro) does not pin the manifest; an unposted ordinary clip still does', async () => {
+  const done = setup([{ filename: '00_intro.mp4' }, { filename: 'x.mp4', title: ' Intro ' }, { filename: 'a.mp4' }]);
+  claim(done.jobDir, 'a.mp4', 'posted');
+  await archive(done);
+  assert.equal(h.exists(done.manifestPath), false, 'archived: only intros were left unposted');
+  const kept = setup([{ filename: '00_intro.mp4' }, { filename: 'a.mp4' }, { filename: 'b.mp4' }]);
+  claim(kept.jobDir, 'a.mp4', 'posted');
+  await archive(kept);
+  assert.equal(h.exists(kept.manifestPath), true, 'b.mp4 is unposted: keep');
+});
+
 s.run();
