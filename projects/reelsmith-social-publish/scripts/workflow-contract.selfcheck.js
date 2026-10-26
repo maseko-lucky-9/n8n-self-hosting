@@ -170,6 +170,9 @@ s.check('junk rules are identical in Pick Due Clip, Archive Manifest and Log Res
   assert.equal(caption(archive), caption(pick), 'captionUsable drifted');
   const csv = (js) => fnBlock(js, 'function parseCsv(text) {', '  return { header, rows };\n}\n');
   assert.equal(csv(archive), csv(pick), 'parseCsv drifted');
+  // A drifted copy would archive manifests that still hold postable clips (or pin them forever).
+  const intro = (js) => fnBlock(js, 'function isIntro(row) {', '\n}\n');
+  assert.equal(intro(archive), intro(pick), 'isIntro drifted');
 });
 
 s.check('Code nodes need only fs/path and the global DateTime', () => {

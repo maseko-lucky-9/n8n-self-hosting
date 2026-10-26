@@ -22,7 +22,13 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
   20:45, so nothing catches up after 21:00. At most 3 posts per SAST day; the sidecar enforces
   the same cap (`DAILY_CAP`).
 - **Candidates:** manifests under the inbox modified on or after **2026-10-11** (the cutoff),
-  newest job first, then manifest row order.
+  taken in turns across source videos (a job is one video): never the same video twice in a row; a
+  video holding more than half of all ready clips goes every other post; otherwise the video used
+  least recently (its newest claim that may have reached TikTok: `posted`, `failed`, in flight, or an
+  old marker; `needs_you` and `posted_elsewhere` do not count); ties keep the newest manifest first.
+  Within a video, manifest row order. **A video's intro is never posted**: a clip whose filename
+  starts with `00_` or whose title is "Intro". It is skipped silently (no notice) and does not stop
+  its manifest from archiving, even if an old claim on it never resolved.
 - **YouTube-sourced jobs only.** If a manifest has a `source` column, the row must say
   `youtube` (an empty cell is accepted only for an allowlisted job; any other value is skipped). A manifest without one (the backlog) qualifies only if its job id is in the legacy
   allowlist `YOUTUBE_LEGACY_JOBS` in `scripts/pick-due-clip.jsCode.js` (5 jobs). Everything else,
@@ -218,7 +224,7 @@ Paste the evidence at each step; nothing moves to the next step without your go.
    stdin, shortest expiry; it connects as `homelab-tunnel`, see Deploy step 2). A dry-run
    deploy is saved, never published, so it does not run 36 times a day; execute it once by
    hand from the n8n editor. Check:
-   - the newest **YouTube** clip is picked (job `1979f8a4`), and no TikTok-sourced job is
+   - a **YouTube** clip is picked (historically the newest, job `1979f8a4`; see Candidates for the rotation now), and no TikTok-sourced job is
      touched;
    - a `dry_run` row appears in `ledger.dryrun.jsonl`, the separate, size-capped dry-run log
      next to the ledger; the posting ledger `ledger.jsonl` is unchanged; the claim and slot are
@@ -242,7 +248,7 @@ Paste the evidence at each step; nothing moves to the next step without your go.
      `ssh homelab 'microk8s kubectl create -f -' < manifests/test/reelsmith-watchdog-test-alert-job.yaml`.
      One test message must arrive.
 9. **Observe for 2 days:**
-   - at most 3 posts per SAST day, one per slot, newest first;
+   - at most 3 posts per SAST day, one per slot, consecutive posts from different videos, no `00_` intro;
    - no duplicates; missing clips are waited for; junk is skipped;
    - no `OOMKilled` or `Error` in the sidecar's `lastState`;
    - the watchdog stays quiet;
