@@ -1,6 +1,6 @@
 // Archive Manifest: moves the picked clip's manifest.csv into processed/ once
-// EVERY row is done: posted, posted_elsewhere or ordinary junk (empty filename,
-// not .mp4, 1 KB or less). A missing clip (Syncthing still copying), a failed
+// EVERY row is done: posted, posted_elsewhere, ordinary junk (empty filename,
+// not .mp4, 1 KB or less) or the video's intro (00_* or titled "Intro", never posted). A missing clip (Syncthing still copying), a failed
 // or needs-you clip, a clip Pick Due Clip reports as never postable (refused
 // name, over 300 MiB, no usable caption, not a regular file), a row that
 // cannot be checked, or a row from a non-YouTube source keeps the manifest
@@ -83,7 +83,8 @@ function captionUsable(text) {
   return !BLANK_RE.test(body);
 }
 
-// Same rule as Pick Due Clip: a video's intro (row 1, 00_*, or a clip titled "Intro") is never posted.
+// Same rule as Pick Due Clip (kept identical by workflow-contract.selfcheck.js): a video's intro,
+// a clip named 00_* or titled "Intro", is never posted, so it counts as done even with no claim.
 function isIntro(row) {
   const name = String(row.filename == null ? '' : row.filename).normalize('NFC');
   return name.startsWith('00_') || String(row.title == null ? '' : row.title).trim().toLowerCase() === 'intro';

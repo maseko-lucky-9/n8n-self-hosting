@@ -18,7 +18,7 @@ async function pick(root, sast, { live = true, fsImpl, execId } = {}) {
   return h.runNode(h.loadNode(PICK, { root, live }), { fsImpl, execId });
 }
 
-// A youtube job with n clips 00.mp4..; mtime decides newest-first.
+// A youtube job with n clips 01_clip.mp4.. (00_ is the intro); mtime only breaks rotation ties.
 function job(root, name, n, mtime = '2026-10-15T10:00:00') {
   const rows = [];
   for (let i = 1; i <= n; i++) rows.push({ filename: `${String(i).padStart(2, '0')}_clip.mp4` }); // 00_ is the intro: never posted
@@ -805,6 +805,40 @@ s.check('multi-day: a systematic 400 sets aside at most 5 clips a day, with at m
     '2026-10-19': { setAside: 5, alerts: 5, hinted: 3 },
   });
   assert.equal(h.listClaims(root).filter((c) => c.data.status === 'needs_you').length, 15);
+});
+
+s.check('rotation: exactly half of the ready clips is not a majority; a claim 4 min ahead counts, 6 min ahead does not', async () => {
+  const root = h.makeRoot();
+  job(root, 'A', 1, '2026-10-16T10:00:00');
+  job(root, 'B', 2, '2026-10-15T10:00:00');
+  job(root, 'C', 1, '2026-10-14T10:00:00');
+  assert.equal((await sequence(root, 1))[0], 'A/01_clip.mp4', 'B holds 2 of 4: tie rules apply (newest manifest), no guard');
+  for (const [minutes, lastIsA] of [[4, true], [6, false]]) {
+    const r = h.makeRoot();
+    job(r, 'A', 3, '2026-10-16T10:00:00');
+    job(r, 'B', 3, '2026-10-15T10:00:00');
+    claimFile(r, 'B', '01_clip.mp4', { status: 'posted', claimedAt: '2026-10-17T08:00:00.000+02:00' });
+    claimFile(r, 'A', '01_clip.mp4', { status: 'posted', claimedAt: `2026-10-17T09:0${minutes}:00.000+02:00` });
+    const [first] = await sequence(r, 1);
+    assert.equal(first, lastIsA ? 'B/02_clip.mp4' : 'A/02_clip.mp4', `+${minutes} min`);
+  }
+});
+
+s.check('rotation: a claim that vanishes between the listing and the read is skipped, not fatal', async () => {
+  const root = h.makeRoot();
+  job(root, 'A', 3, '2026-10-16T10:00:00');
+  job(root, 'B', 3, '2026-10-15T10:00:00');
+  claimFile(root, 'A', '01_clip.mp4', { status: 'posted' }); // no claimedAt: the time comes from the file, which then vanishes
+  const gone = path.join(h.inboxOf(root), 'A', '.claims', '01_clip.mp4.json');
+  const fsShim = {
+    ...fs,
+    lstatSync: (p, ...a) => {
+      if (p === gone) { const e = new Error('gone'); e.code = 'ENOENT'; throw e; }
+      return fs.lstatSync(p, ...a);
+    },
+  };
+  const [item] = await pick(root, '2026-10-17T09:00:00', { live: false, fsImpl: fsShim });
+  assert.equal(item.json.clip_key, 'A/02_clip.mp4');
 });
 
 s.run();

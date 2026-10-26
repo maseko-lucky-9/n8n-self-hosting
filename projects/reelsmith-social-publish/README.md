@@ -28,7 +28,7 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
   old marker; `needs_you` and `posted_elsewhere` do not count); ties keep the newest manifest first.
   Within a video, manifest row order. **A video's intro is never posted**: a clip whose filename
   starts with `00_` or whose title is "Intro". It is skipped silently (no notice) and does not stop
-  its manifest from archiving.
+  its manifest from archiving, even if an old claim on it never resolved.
 - **YouTube-sourced jobs only.** If a manifest has a `source` column, the row must say
   `youtube` (an empty cell is accepted only for an allowlisted job; any other value is skipped). A manifest without one (the backlog) qualifies only if its job id is in the legacy
   allowlist `YOUTUBE_LEGACY_JOBS` in `scripts/pick-due-clip.jsCode.js` (5 jobs). Everything else,

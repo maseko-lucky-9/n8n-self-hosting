@@ -58,8 +58,9 @@ const now = DateTime.now().setZone(TZ);
 const today = now.toISODate();
 const execId = (typeof $execution !== 'undefined' && $execution && $execution.id) ? String($execution.id) : 'manual';
 
-// The video's intro (row 1, 00_*, or a clip titled "Intro") needs extra editing and is
-// never posted. Archive Manifest has the same rule and counts such a row as done.
+// A video's intro needs extra editing and is never posted: a clip named 00_* (every
+// export's first clip) or titled "Intro". Archive Manifest has the same rule and counts
+// such a row as done; workflow-contract.selfcheck.js keeps the two copies identical.
 function isIntro(row) {
   const name = String(row.filename == null ? '' : row.filename).normalize('NFC');
   return name.startsWith('00_') || String(row.title == null ? '' : row.title).trim().toLowerCase() === 'intro';
@@ -90,9 +91,9 @@ function at(hhmm) {
   return now.startOf('day').set({ hour, minute });
 }
 
-function readClaimedAt(file) {
+function readClaimedAt(file, claim) { // claim: the already-parsed file, to save a second read
   try {
-    const parsed = DateTime.fromISO(String(JSON.parse(fs.readFileSync(file, 'utf8')).claimedAt || ''));
+    const parsed = DateTime.fromISO(String((claim || JSON.parse(fs.readFileSync(file, 'utf8'))).claimedAt || ''));
     if (parsed.isValid) return parsed;
   } catch (e) {
     // unreadable or half-written: fall back to the file's mtime below
@@ -232,7 +233,7 @@ for (const job of listJobs()) {
       continue; // being written right now, or not ours
     }
     if (!claim || typeof claim !== 'object') continue;
-    const claimedAt = readClaimedAt(file);
+    const claimedAt = readClaimedAt(file, claim);
     if (claim.status === 'claimed' && claimedAt && now.diff(claimedAt, 'minutes').minutes > STALE_CLAIM_MIN) {
       fs.rmSync(file, { force: true });
       continue;
