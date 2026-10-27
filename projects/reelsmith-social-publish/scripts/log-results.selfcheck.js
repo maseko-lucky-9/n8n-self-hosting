@@ -493,6 +493,7 @@ s.check('refusal 1 of 2: clip released, slot kept, counted per clip, one info al
   assert.equal(h.exists(pick.slotMarker), true, 'slot freed');
   const state = h.readJson(statePath(root));
   assert.deepEqual(state.refusals, { [KEY]: 1 });
+  assert.equal(state.retryAfter, KEY, 'Pick Due Clip is not told to retry it after another clip');
   assert.equal(state.needsCount, 2);
   assert.equal(out.needsCount, 2);
   assert.equal(state.idleNoticeDay, '2026-10-16', 'Pick Due Clip\'s marker lost');
@@ -523,6 +524,7 @@ s.check('refusal 2 of 2: claim needs_you, slot kept, entry removed, one safety a
   assert.equal(h.readJson(pick.claimPath).code, 'publish_rejected');
   assert.equal(h.exists(pick.slotMarker), true, 'slot freed');
   assert.deepEqual(readRefusals(root), {});
+  assert.equal('retryAfter' in h.readJson(statePath(root)), false);
   assert.deepEqual(resultRows(pick).rows.map((r) => r[8]), ['refused_retry', 'needs_you']);
   const cmd = `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "${h.inboxOf(root)}/jobA/.claims/01_clip.mp4.json"'`;
   assert.equal(sent.length, 1);
@@ -562,6 +564,7 @@ s.check('refusals: a final outcome clears the count; a released outcome keeps it
     reclaim(pick);
     await log(root, pick, response, { sast: '2026-10-17T15:05:00' });
     assert.deepEqual(readRefusals(root), {}, `${name} did not clear the count`);
+    assert.equal('retryAfter' in h.readJson(statePath(root)), false, `${name} did not clear retryAfter`);
     reclaim(pick);
     assert.equal((await log(root, pick, REFUSED, { sast: '2026-10-17T18:05:00' })).out.outcome, 'refused_retry', name);
   }
@@ -574,6 +577,7 @@ s.check('refusals: a final outcome clears the count; a released outcome keeps it
     reclaim(pick);
     await log(root, pick, response, { sast: '2026-10-17T15:05:00' });
     assert.deepEqual(readRefusals(root), { [KEY]: 1 }, `${name} changed the count`);
+    assert.equal(h.readJson(statePath(root)).retryAfter, KEY, `${name} cleared retryAfter`);
     reclaim(pick);
     const { out } = await log(root, pick, REFUSED, { sast: '2026-10-17T18:05:00' });
     assert.equal(out.outcome, 'needs_you', `after ${name} the next refusal is not the 2nd`);
@@ -583,18 +587,22 @@ s.check('refusals: a final outcome clears the count; a released outcome keeps it
 
 s.check('refusals: a dry run never reads, counts or changes them', async () => {
   const { root, pick } = await picked({ live: false });
-  const seeded = { refusals: { [KEY]: 1, 'jobB/x.mp4': 1 }, needsDay: '2026-10-17' };
+  const seeded = { refusals: { [KEY]: 1, 'jobB/x.mp4': 1 }, retryAfter: 'jobB/x.mp4', needsDay: '2026-10-17' };
   seedState(root, seeded);
-  const { out } = await log(root, pick, REFUSED);
+  const { out, sent } = await log(root, pick, REFUSED);
   assert.equal(out.outcome, 'needs_you', 'a dry run keeps the old outcome');
   assert.equal(h.exists(pick.claimPath), false, 'a dry run releases the clip');
   assert.deepEqual(readRefusals(root), seeded.refusals);
+  assert.equal(h.readJson(statePath(root)).retryAfter, 'jobB/x.mp4');
+  assert.equal(sent[0].body.text, '[dry run] Reelsmith: TikTok refused to publish it (not posted) (dry run: the clip is released).'
+    + '\ncode: publish_rejected\nerror_id: err-123\nfile: 01_clip.mp4');
   fs.writeFileSync(pick.claimPath, JSON.stringify({ status: 'claimed' }));
   await log(root, pick, sidecar(200, 'posted'));
   assert.deepEqual(readRefusals(root), seeded.refusals, 'a dry-run post cleared a live count');
   const fresh = await picked({ live: false });
   await log(fresh.root, fresh.pick, REFUSED);
   assert.equal('refusals' in h.readJson(statePath(fresh.root)), false);
+  assert.equal('retryAfter' in h.readJson(statePath(fresh.root)), false);
 });
 
 s.check('refusals: only the newest 50 clips are kept', async () => {
@@ -620,6 +628,35 @@ s.check('refusals: a retried refusal moves the clip to the newest place (checked
   const { out } = await log(root, pick, REFUSED, { patch: ['const REFUSAL_LIMIT = 2;', 'const REFUSAL_LIMIT = 3;'] });
   assert.equal(out.outcome, 'refused_retry');
   assert.equal(JSON.stringify(readRefusals(root)), JSON.stringify({ 'jobB/x.mp4': 1, [KEY]: 2 }));
+});
+
+s.check('retryAfter: only a counted refusal sets it (never throttling or a signing failure); junk is dropped', async () => {
+  for (const response of [sidecar(502, 'publish_rejected', { tiktok_status_msg: THROTTLE }), sidecar(502, 'signature_failed')]) {
+    const { root, pick } = await picked();
+    await log(root, pick, response);
+    assert.equal('retryAfter' in h.readJson(statePath(root)), false, response.body.code);
+  }
+  for (const junk of [5, 'noslash', ['jobA/01_clip.mp4'], null]) {
+    const { root, pick } = await picked();
+    seedState(root, { retryAfter: junk });
+    await log(root, pick, sidecar(503, 'busy'));
+    assert.equal('retryAfter' in h.readJson(statePath(root)), false, JSON.stringify(junk));
+  }
+  const { root, pick } = await picked();
+  seedState(root, { retryAfter: 'jobB/x.mp4' });
+  await log(root, pick, REFUSED);
+  assert.equal(h.readJson(statePath(root)).retryAfter, KEY, 'a new refusal does not overwrite the flag');
+});
+
+s.check('refusals: a clip without a <job>/<file> key is set aside at once (never retried without a count)', async () => {
+  for (const key of ['', 'noslash.mp4', undefined]) {
+    const { root, pick } = await picked();
+    const { out } = await log(root, { ...pick, clip_key: key }, REFUSED);
+    assert.equal(out.outcome, 'needs_you', String(key));
+    assert.equal(h.readJson(pick.claimPath).status, 'needs_you');
+    assert.deepEqual(readRefusals(root), {});
+    assert.equal('retryAfter' in h.readJson(statePath(root)), false);
+  }
 });
 
 s.check('refusals: a malformed map never throws and reads as empty (junk entries dropped)', async () => {

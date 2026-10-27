@@ -290,7 +290,8 @@ function writeStateAtomic(file, obj) {
 
 function readState() {
   try {
-    return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) || {};
+    const parsed = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   } catch (e) {
     return {};
   }
@@ -376,6 +377,16 @@ for (const m of manifests) {
   candidates.length = 0;
   for (const j of ordered) candidates.push(...groups.get(j));
 }
+// 4c. A clip TikTok refused once (Log Results' retryAfter) is retried after another
+// clip: it moves one place back within its video, for this pick only, unless it is
+// that video's only ready clip. Log Results clears the flag when the next attempt's
+// claim is kept; this node never writes it.
+const state = readState();
+if (typeof state.retryAfter === 'string' && state.retryAfter.includes('/')) {
+  const i = candidates.findIndex((c) => `${c.m.job}/${c.clip.nfc}` === state.retryAfter);
+  const next = i < 0 ? -1 : candidates.findIndex((c, k) => k > i && c.m.job === candidates[i].m.job);
+  if (next >= 0) [candidates[i], candidates[next]] = [candidates[next], candidates[i]];
+}
 const manifestErrors = [...errors, ...notices];
 if (notices.length || lstatOrNull(NOTICES_FILE)) {
   writeStateAtomic(NOTICES_FILE, { updatedAt: now.toISO(), notices });
@@ -452,7 +463,6 @@ if (errors.length) {
   throw new Error('Pick Due Clip: unreadable manifest(s) or row(s): ' + errors.join('; '));
 }
 if (notices.length) {
-  const state = readState();
   if (state.idleNoticeDay !== today) {
     writeStateAtomic(STATE_FILE, { ...state, idleNoticeDay: today });
     throw new Error(`Pick Due Clip: ${notices.length} clip(s) can never be posted as they are; see .state/notices.json (reported once a day)`);

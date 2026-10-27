@@ -852,10 +852,80 @@ s.check('multi-day: TikTok refusing every clip (502 publish_rejected): one attem
     const item = await dispatchRun(root, day.plus({ minutes: m }), refuse);
     if (item) tried.push(`${day.plus({ minutes: m }).toFormat('HH:mm')} ${item.filename}`);
   }
-  assert.deepEqual(tried, ['09:00 01_clip.mp4', '12:00 01_clip.mp4', '15:00 02_clip.mp4', '18:00 02_clip.mp4', '21:00 03_clip.mp4']);
-  assert.deepEqual(h.listClaims(root).filter((c) => c.data.status === 'needs_you').map((c) => c.data.clip_key),
+  // 09:00 01 refused (retryAfter 01); 12:00 02 goes first, refused (retryAfter 02); 15:00 01 is
+  // retried, set aside (flag cleared); 18:00 02 retried, set aside; 21:00 03 refused once.
+  assert.deepEqual(tried, ['09:00 01_clip.mp4', '12:00 02_clip.mp4', '15:00 01_clip.mp4', '18:00 02_clip.mp4', '21:00 03_clip.mp4']);
+  assert.deepEqual(h.listClaims(root).filter((c) => c.data.status === 'needs_you').map((c) => c.data.clip_key).sort(),
     ['jobA/01_clip.mp4', 'jobA/02_clip.mp4']);
-  assert.deepEqual(h.readJson(path.join(root, '.state', 'retryable-failures.json')).refusals, { 'jobA/03_clip.mp4': 1 });
+  const state = h.readJson(path.join(root, '.state', 'retryable-failures.json'));
+  assert.deepEqual([state.refusals, state.retryAfter], [{ 'jobA/03_clip.mp4': 1 }, 'jobA/03_clip.mp4']);
+});
+
+// ---- a refused clip is retried after another clip of its video ----
+
+const refusedOnce = () => {
+  let n = 0;
+  return (item) => (++n === 1
+    ? { statusCode: 502, body: { status: 'error', code: 'publish_rejected', error_id: 'e1', tiktok_status_code: 5 } }
+    : posted(item));
+};
+const stateOf = (root) => h.readJson(path.join(root, '.state', 'retryable-failures.json'));
+
+s.check('refusal retry: another clip of the video goes first, then the refused one; a posted attempt clears the flag', async () => {
+  const root = h.makeRoot();
+  job(root, 'jobA', 3);
+  const sidecar = refusedOnce();
+  const a = await dispatchRun(root, '2026-10-17T09:00:00', sidecar);
+  assert.equal(a.clip_key, 'jobA/01_clip.mp4');
+  assert.equal(stateOf(root).retryAfter, 'jobA/01_clip.mp4');
+  const b = await dispatchRun(root, '2026-10-17T12:00:00', sidecar);
+  assert.equal(b.clip_key, 'jobA/02_clip.mp4', 'the refused clip went first again');
+  assert.equal('retryAfter' in stateOf(root), false, 'a kept claim did not clear the flag');
+  const c = await dispatchRun(root, '2026-10-17T15:00:00', sidecar);
+  assert.equal(c.clip_key, 'jobA/01_clip.mp4', 'the refused clip was not retried next');
+  assert.deepEqual(stateOf(root).refusals, {});
+});
+
+s.check('refusal retry: the only ready clip of its video is retried next', async () => {
+  const root = h.makeRoot();
+  job(root, 'jobA', 1);
+  const sidecar = refusedOnce();
+  assert.equal((await dispatchRun(root, '2026-10-17T09:00:00', sidecar)).clip_key, 'jobA/01_clip.mp4');
+  assert.equal((await dispatchRun(root, '2026-10-17T12:00:00', sidecar)).clip_key, 'jobA/01_clip.mp4');
+  assert.equal(h.readJson(path.join(h.inboxOf(root), 'jobA', '.claims', '01_clip.mp4.json')).status, 'posted');
+});
+
+s.check('refusal retry: a released next attempt keeps the flag, so the refused clip still waits', async () => {
+  const root = h.makeRoot();
+  job(root, 'jobA', 3);
+  const answers = [
+    { statusCode: 502, body: { status: 'error', code: 'publish_rejected', error_id: 'e1' } },
+    { statusCode: 503, body: { status: 'error', code: 'busy', error_id: 'e2' } },
+  ];
+  const sidecar = (item) => answers.shift() || posted(item);
+  const got = [];
+  for (const t of ['09:00', '12:00', '12:15', '15:00']) got.push(`${t} ${(await dispatchRun(root, `2026-10-17T${t}:00`, sidecar)).filename}`);
+  assert.deepEqual(got, ['09:00 01_clip.mp4', '12:00 02_clip.mp4', '12:15 02_clip.mp4', '15:00 01_clip.mp4']);
+});
+
+s.check('refusal retry: Pick Due Clip only reads the flag; a junk or unknown flag is ignored', async () => {
+  for (const [label, raw, want] of [
+    ['valid', '{"retryAfter": "jobA/01_clip.mp4"}', 'jobA/02_clip.mp4'],
+    ['number', '{"retryAfter": 5}', 'jobA/01_clip.mp4'],
+    ['no slash', '{"retryAfter": "01_clip.mp4"}', 'jobA/01_clip.mp4'],
+    ['unknown clip', '{"retryAfter": "jobA/zz.mp4"}', 'jobA/01_clip.mp4'],
+    ['array', '{"retryAfter": ["jobA/01_clip.mp4"]}', 'jobA/01_clip.mp4'],
+    ['state is an array', '[1]', 'jobA/01_clip.mp4'],
+    ['state is null', 'null', 'jobA/01_clip.mp4'],
+  ]) {
+    const root = h.makeRoot();
+    job(root, 'jobA', 3);
+    fs.mkdirSync(path.join(root, '.state'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.state', 'retryable-failures.json'), raw);
+    const [item] = await pick(root, '2026-10-17T09:00:00');
+    assert.equal(item.json.clip_key, want, label);
+    assert.equal(fs.readFileSync(path.join(root, '.state', 'retryable-failures.json'), 'utf8'), raw, `${label}: the flag was rewritten`);
+  }
 });
 
 s.check('Pick Due Clip\'s once-a-day state write keeps Log Results\' refusal counts', async () => {

@@ -93,14 +93,15 @@ caption cause from throttling. Raw ledger rows stay in the session log.
 | T4 | `12_Extrawheel`, full body and one tag (needs the owner's approval) | dropped: the caption hypotheses (dash, length, tag text) were refuted by the Varia refusal (no dash, 299 chars, 44 tag chars) and the Redshift post (379 chars) |
 | R1 | `04_STRONG`, the bare title and no hashtags | pending: 04_STRONG re-sent with the bare title and no hashtags (refused twice with its full caption) |
 
-## Amendment 2026-10-27 (second): a refused clip is retried once at a later slot
+## Amendment 2026-10-27 (second): a refused clip is retried once, after another clip
 
 This supersedes the "set aside on the first refusal" row of the rejection mapping above.
 
 **Evidence.** The sidecar refused `15_Varia RearVue 820` at 2026-10-27 15:00 SAST (502
 `publish_rejected`, status code 5). The same clip, with the same caption and tags, posted when it
-was re-sent at 16:58 SAST (V1 above). Since 2026-10-25 about 4 uploads were refused and 6 posted.
-Refusals are therefore at least partly intermittent, and setting a clip aside at its first
+was re-sent at 16:58 SAST (V1 above). Since 2026-10-25, 11 upload attempts reached TikTok: 7
+posted and 4 refused (about 36%); n8n alone: 6 posted and 3 refused. No two refusals were ever in
+a row. Refusals are therefore at least partly intermittent, and setting a clip aside at its first
 refusal would lose clips that post on a second try.
 
 **Rule.** Log Results counts TikTok refusals per clip (`refusals` in
@@ -109,15 +110,21 @@ refusal would lose clips that post on a second try.
 
 | Refusal of the clip | Effect |
 |---|---|
-| 1st | Clip released back to the pool; a later slot (not necessarily the next) retries it. Row status `refused_retry`; a Telegram notice "refusal 1 of 2" (informational) |
+| 1st | Clip released back to the pool and recorded as `retryAfter`: the next attempt takes another clip of the same video first (unless it is that video's only ready clip), and a later slot retries the refused one. Row status `refused_retry`; a Telegram notice "refusal 1 of 2" (informational) |
 | 2nd | Claim `needs_you`, set aside as before; safety alert "TikTok refused to publish it twice", with the release command |
 
 - **Why 2.** One retry recovers an intermittent refusal; a second refusal of the same clip points
   at the clip, and further retries would spend attempts the other clips need. The sidecar also
   pauses posting for 12 hours after 2 failed attempts in a row.
-- **Why the slot stays used.** At most one upload attempt per slot keeps the posting rhythm and
-  the spacing between attempts; freeing the slot would re-attempt within 15 minutes, which is
-  closer to the throttling pattern and walks straight into the sidecar's 12-hour pause.
+- **Why the slot stays used, and why another clip goes first.** The sidecar's 12-hour pause
+  depends only on 2 failed attempts in a row, not on their spacing. Keeping the slot means the
+  retry comes at least 160 minutes later (one attempt per slot), and the retry-after rule puts a
+  different clip in between, so a single refusal no longer leads straight to a second consecutive
+  failure. A set-aside at the 2nd refusal may still coincide with the 12-hour pause if the
+  attempt before it also failed.
+- **retryAfter** names the clip just released after a refusal. Pick Due Clip moves it one place
+  back within its video for the next pick only; Log Results drops it once a claim is kept and
+  keeps it while attempts are only released. Dry runs never set it.
 - **Lifetime of the count.** It is dropped once the clip's outcome is final (posted,
   posted_elsewhere, set aside, ambiguous) and kept while the clip is only released (sidecar busy,
   cookie, daily cap, deferred). Dry runs never read or change it. Only the newest 50 clips are kept.
