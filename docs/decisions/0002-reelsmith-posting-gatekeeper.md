@@ -74,7 +74,7 @@ every 502 to "may have posted", so the clip stayed blocked for good. Now:
 
 | Sidecar reply | Outcome | Effect |
 |---|---|---|
-| 502 `publish_rejected` | `needs_you` | Claim set aside; the slot stays used; it neither counts toward the "3+ refused in a row" streak nor ends it. Alert: "TikTok refused to publish it (not posted)", with the release command |
+| 502 `publish_rejected` | `needs_you` | *Superseded by the second 2026-10-27 amendment below: retried once first.* Claim set aside; the slot stays used; it neither counts toward the "3+ refused in a row" streak nor ends it. Alert: "TikTok refused to publish it (not posted)", with the release command |
 | 502 `publish_rejected` with `tiktok_status_msg` exactly "You are posting too fast. Take a rest." | `deferred` | Clip released for a later slot; the slot stays used; safety alert (possible throttling) |
 | 502 `signature_failed` | `deferred` | As above; the alert names the signing helper |
 | Any other 502, and 500 and 504 | `ambiguous` | Unchanged: may have posted |
@@ -87,9 +87,41 @@ caption cause from throttling. Raw ledger rows stay in the session log.
 | Test | Clip and caption | Result |
 |---|---|---|
 | T1 | `04_STRONG`, unchanged | 2026-10-27 09:58 SAST: 04_STRONG, caption unchanged from 2026-10-21 (287 chars, en dash, 5 tags / 58 tag chars) -> HTTP 502 publish_rejected, tiktok_status_code 5, tiktok_status_msg null. Rejected again with the same caption (n=2); consistent with a caption cause. Not throttling text. |
-| T2 | `04_STRONG`, body with the en dash replaced by `-`, no hashtags | pending |
-| T3 | `10_MUSGUARD OMNI`, em dash replaced by `-`, tags unchanged | pending |
-| T4 | `12_Extrawheel`, full body and one tag (needs the owner's approval) | pending |
+| V1 | `15_Varia RearVue 820`, unchanged | 2026-10-27 16:58 SAST: 15_Varia RearVue 820 (refused at 15:00 with this caption) re-sent unchanged via the sidecar -> posted. Intermittent refusal, not a clip or caption fault. |
+| T2 | `04_STRONG`, body with the en dash replaced by `-`, no hashtags | dropped: the caption hypotheses (dash, length, tag text) were refuted by the Varia refusal (no dash, 299 chars, 44 tag chars) and the Redshift post (379 chars) |
+| T3 | `10_MUSGUARD OMNI`, em dash replaced by `-`, tags unchanged | dropped: the caption hypotheses (dash, length, tag text) were refuted by the Varia refusal (no dash, 299 chars, 44 tag chars) and the Redshift post (379 chars) |
+| T4 | `12_Extrawheel`, full body and one tag (needs the owner's approval) | dropped: the caption hypotheses (dash, length, tag text) were refuted by the Varia refusal (no dash, 299 chars, 44 tag chars) and the Redshift post (379 chars) |
+| R1 | `04_STRONG`, the bare title and no hashtags | pending: 04_STRONG re-sent with the bare title and no hashtags (refused twice with its full caption) |
+
+## Amendment 2026-10-27 (second): a refused clip is retried once at a later slot
+
+This supersedes the "set aside on the first refusal" row of the rejection mapping above.
+
+**Evidence.** The sidecar refused `15_Varia RearVue 820` at 2026-10-27 15:00 SAST (502
+`publish_rejected`, status code 5). The same clip, with the same caption and tags, posted when it
+was re-sent at 16:58 SAST (V1 above). Since 2026-10-25 about 4 uploads were refused and 6 posted.
+Refusals are therefore at least partly intermittent, and setting a clip aside at its first
+refusal would lose clips that post on a second try.
+
+**Rule.** Log Results counts TikTok refusals per clip (`refusals` in
+`.state/retryable-failures.json`, keyed by `<job>/<file>`). Only a non-throttle 502
+`publish_rejected` counts; the throttle message and `signature_failed` stay `deferred` and do not.
+
+| Refusal of the clip | Effect |
+|---|---|
+| 1st | Clip released back to the pool; a later slot (not necessarily the next) retries it. Row status `refused_retry`; a Telegram notice "refusal 1 of 2" (informational) |
+| 2nd | Claim `needs_you`, set aside as before; safety alert "TikTok refused to publish it twice", with the release command |
+
+- **Why 2.** One retry recovers an intermittent refusal; a second refusal of the same clip points
+  at the clip, and further retries would spend attempts the other clips need. The sidecar also
+  pauses posting for 12 hours after 2 failed attempts in a row.
+- **Why the slot stays used.** At most one upload attempt per slot keeps the posting rhythm and
+  the spacing between attempts; freeing the slot would re-attempt within 15 minutes, which is
+  closer to the throttling pattern and walks straight into the sidecar's 12-hour pause.
+- **Lifetime of the count.** It is dropped once the clip's outcome is final (posted,
+  posted_elsewhere, set aside, ambiguous) and kept while the clip is only released (sidecar busy,
+  cookie, daily cap, deferred). Dry runs never read or change it. Only the newest 50 clips are kept.
+- The `needs_you` streak is unchanged: a refusal neither counts toward it nor ends it.
 
 ## Related
 
