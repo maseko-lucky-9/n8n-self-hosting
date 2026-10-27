@@ -63,7 +63,9 @@ Schedule (*/15 9-21 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Sid
   Telegram when you are needed (cookie expired: clips wait and retry every 15 min; bad input: that clip is set aside and the next takes its slot; TikTok refused to publish it:
   that clip is set aside and the slot stays used; TikTok throttling or a signing failure: the clip
   is retried at a later slot; an upload that may or may not have posted). If the workflow is live while the sidecar's `POSTING_ENABLED` is `false`, every clip
-  is released and retried, and a once-a-day Telegram notice says so. **Archive Manifest** moves a
+  is released and retried, and a once-a-day Telegram notice says so. When the sidecar's daily cap
+  is reached (429, e.g. after a manual upload that day), the clip waits for tomorrow, the slot stays
+  used, and a once-a-day notice says so. **Archive Manifest** moves a
   manifest once every row is posted or ordinary junk.
 
 ## Where things live

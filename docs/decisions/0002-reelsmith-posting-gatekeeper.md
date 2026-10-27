@@ -74,7 +74,7 @@ every 502 to "may have posted", so the clip stayed blocked for good. Now:
 
 | Sidecar reply | Outcome | Effect |
 |---|---|---|
-| 502 `publish_rejected` | `needs_you` | Claim set aside; the slot stays used; it does not count toward the "3+ refused in a row" streak. Alert: "TikTok refused to publish it (not posted)", with the release command |
+| 502 `publish_rejected` | `needs_you` | Claim set aside; the slot stays used; it neither counts toward the "3+ refused in a row" streak nor ends it. Alert: "TikTok refused to publish it (not posted)", with the release command |
 | 502 `publish_rejected` with `tiktok_status_msg` exactly "You are posting too fast. Take a rest." | `deferred` | Clip released for a later slot; the slot stays used; safety alert (possible throttling) |
 | 502 `signature_failed` | `deferred` | As above; the alert names the signing helper |
 | Any other 502, and 500 and 504 | `ambiguous` | Unchanged: may have posted |
@@ -86,7 +86,7 @@ caption cause from throttling. Raw ledger rows stay in the session log.
 
 | Test | Clip and caption | Result |
 |---|---|---|
-| T1 | `04_STRONG`, unchanged | 2026-10-27 09:58 SAST: 04_STRONG, caption unchanged from 2026-10-21 (287 chars, en dash, 5 tags / 58 tag chars) -> HTTP 502 publish_rejected, tiktok_status_code 5, tiktok_status_msg null. Deterministic for this caption, not random, not throttling text. |
+| T1 | `04_STRONG`, unchanged | 2026-10-27 09:58 SAST: 04_STRONG, caption unchanged from 2026-10-21 (287 chars, en dash, 5 tags / 58 tag chars) -> HTTP 502 publish_rejected, tiktok_status_code 5, tiktok_status_msg null. Rejected again with the same caption (n=2); consistent with a caption cause. Not throttling text. |
 | T2 | `04_STRONG`, body with the en dash replaced by `-`, no hashtags | pending |
 | T3 | `10_MUSGUARD OMNI`, em dash replaced by `-`, tags unchanged | pending |
 | T4 | `12_Extrawheel`, full body and one tag (needs the owner's approval) | pending |

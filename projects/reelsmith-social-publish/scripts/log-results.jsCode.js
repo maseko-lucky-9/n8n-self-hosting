@@ -174,9 +174,10 @@ const outcome = classify(res);
 
 // Consecutive-outcome counters: sidecar unavailable (count), TikTok session
 // invalid (authCount), clip refused as needs_you (needsCount, today only, so
-// an old streak never blocks a later day). Any other outcome resets each to 0.
-// A TikTok refusal (publish_rejected) is needs_you but leaves needsCount as it
-// is: it says nothing about the sidecar contract and never frees a slot.
+// an old streak never blocks a later day). Any other outcome resets each to 0,
+// except a TikTok refusal (publish_rejected): it is needs_you but neither counts
+// toward the needs_you streak nor ends it (it says nothing about the sidecar
+// contract, and never frees a slot).
 fs.mkdirSync(STATE_DIR, { recursive: true });
 let state = {};
 try {
@@ -199,8 +200,9 @@ const releaseClip = ['retryable', 'auth_invalid', 'dry_run', 'daily_cap', 'defer
   || (pick.dryRun === true && ['needs_you', 'ambiguous'].includes(outcome.kind));
 // The slot stays used when an upload may have reached TikTok (posted, ambiguous),
 // TikTok refused it, it was deferred, or the daily cap is hit; any other definite
-// "not uploaded" frees it for the next 15-minute run. needs_you frees it only for the first 2 of a
-// streak (needsCount; any other outcome, a 503 included, ends the streak), so a
+// "not uploaded" frees it for the next 15-minute run. needs_you frees it only for
+// the first 2 of a streak (needsCount; any other outcome, a 503 included, ends the
+// streak, while a TikTok refusal neither counts toward it nor ends it), so a
 // systematic refusal costs at most 2 extra clips per streak beyond the slots.
 const releaseSlot = ['retryable', 'auth_invalid', 'dry_run', 'posted_elsewhere'].includes(outcome.kind)
   || (outcome.kind === 'needs_you' && !tiktokRefused && needsCount <= NEEDS_SLOT_RELEASES)
@@ -297,7 +299,7 @@ if (outcome.kind === 'auth_invalid' && due(authCount, AUTH_ALERT_AFTER)) {
   safety.push(`🔑 Reelsmith: TikTok session invalid (${authCount} in a row). Run \`make refresh-cookies\` in tiktok-sidecar; clips wait and retry every 15 min.` + detail);
 } else if (tiktokRefused) {
   safety.push('Reelsmith: TikTok refused to publish it (not posted).' + detail
-    + releaseSteps(false, 'Fix the caption in the Mac export and let it sync, or leave it set aside; to retry, release the claim:'));
+    + releaseSteps(false, 'Check the caption (see ADR-0002) in the Mac export and let it sync, or leave it set aside; to retry, release the claim:'));
 } else if (outcome.kind === 'deferred') {
   safety.push((outcome.code === 'signature_failed'
     ? 'Reelsmith: the sidecar\'s signing helper failed (not posted). Check the signing helper in tiktok-sidecar.'
@@ -331,6 +333,12 @@ if (outcome.kind === 'dry_run' && outcome.code === 'posting_disabled' && pick.dr
   && counters.postingDisabledAlertDay !== today) {
   info.push('Reelsmith: the sidecar has POSTING_ENABLED=false while the workflow is live; clips are released and retried every 15 min.');
   infoDays.postingDisabledAlertDay = today;
+}
+// The sidecar's daily cap is reached (a manual upload the same day, or the caps
+// not yet synced): the clip is released and the slot stays used, so say so once a day.
+if (outcome.kind === 'daily_cap' && counters.dailyCapAlertDay !== today) {
+  info.push('Reelsmith: today\'s upload cap is reached; clips wait for tomorrow (this slot is used).' + detail);
+  infoDays.dailyCapAlertDay = today;
 }
 const parts = [...safety, ...info];
 const alertText = parts.length ? (pick.dryRun === true ? '[dry run] ' : '') + parts.join('\n\n') : null;

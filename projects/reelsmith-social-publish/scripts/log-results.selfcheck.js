@@ -49,7 +49,7 @@ function resultRows(pick) {
 }
 
 const THROTTLE = 'You are posting too fast. Take a rest.';
-const REFUSED_ALERT = /^Reelsmith: TikTok refused to publish it \(not posted\)\.\ncode: publish_rejected\nerror_id: err-123\nfile: 01_clip\.mp4\nFix the caption in the Mac export and let it sync, or leave it set aside; to retry, release the claim:\nssh homelab '[^\n]*'$/;
+const REFUSED_ALERT = /^Reelsmith: TikTok refused to publish it \(not posted\)\.\ncode: publish_rejected\nerror_id: err-123\nfile: 01_clip\.mp4\nCheck the caption \(see ADR-0002\) in the Mac export and let it sync, or leave it set aside; to retry, release the claim:\nssh homelab '[^\n]*'$/;
 
 // [name, response, expected]
 //   claim: final claim status, or null when the clip is released
@@ -62,7 +62,7 @@ const TABLE = [
   ['401 auth_invalid', sidecar(401, 'auth_invalid'), { kind: 'auth_invalid', claim: null, slot: false, alert: /^🔑[\s\S]*make refresh-cookies[\s\S]*code: auth_invalid/, row: 'auth_invalid' }],
   ['400 bad_input', sidecar(400, 'bad_input'), { kind: 'needs_you', claim: 'needs_you', slot: false, alert: /^Reelsmith: a clip was refused \(not posted[\s\S]*code: bad_input/, row: 'needs_you' }],
   ['413 too_large', sidecar(413, 'too_large'), { kind: 'needs_you', claim: 'needs_you', slot: false, alert: /^Reelsmith: a clip was refused \(not posted[\s\S]*code: too_large/, row: 'needs_you' }],
-  ['429 daily_cap', sidecar(429, 'daily_cap'), { kind: 'daily_cap', claim: null, slot: true, alert: null, row: 'daily_cap' }],
+  ['429 daily_cap', sidecar(429, 'daily_cap'), { kind: 'daily_cap', claim: null, slot: true, alert: /^Reelsmith: today's upload cap is reached; clips wait for tomorrow \(this slot is used\)\.\ncode: daily_cap\nerror_id: err-123\nfile: 01_clip\.mp4$/, row: 'daily_cap' }],
   ['503 busy', sidecar(503, 'busy'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
   ['503 clock_unsynced', sidecar(503, 'clock_unsynced'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
   ['503 network_before_upload', sidecar(503, 'network_before_upload'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
@@ -254,6 +254,32 @@ s.check('a live workflow hitting the kill switch: released as before, told once 
   assert.deepEqual(sentAt, ['2026-10-17T12:20:00', '2026-10-18T12:05:00']);
   const dry = await picked({ live: false });
   assert.equal((await log(dry.root, dry.pick, disabled)).sent.length, 0, 'a dry-run deploy is not a live workflow');
+});
+
+s.check('daily cap: told once a SAST day (informational: a failed send is only logged and retried), clip released, slot kept', async () => {
+  const { root, pick } = await picked();
+  const run = async (sast, opts = {}) => {
+    fs.writeFileSync(pick.claimPath, JSON.stringify({ status: 'claimed' }));
+    fs.writeFileSync(pick.slotMarker, JSON.stringify({ claimedAt: pick.claimedAt }));
+    const r = await log(root, pick, sidecar(429, 'daily_cap'), { sast, ...opts });
+    assert.equal(h.exists(pick.claimPath), false, `clip not released at ${sast}`);
+    assert.equal(h.exists(pick.slotMarker), true, `slot freed at ${sast}`);
+    return r;
+  };
+  const fail = async () => { const e = new Error('x'); e.code = 'ECONNRESET'; throw e; };
+  const logs = [];
+  await run('2026-10-17T09:05:00', { httpRequest: fail, logs }); // must not throw
+  assert.match(logs.join('\n'), /informational alert not sent; the next run retries it/);
+  const sentAt = [];
+  for (const t of ['2026-10-17T12:05:00', '2026-10-17T15:05:00', '2026-10-17T18:05:00', '2026-10-18T09:05:00', '2026-10-18T12:05:00']) {
+    const { sent } = await run(t);
+    if (sent.length) {
+      sentAt.push(t);
+      assert.match(sent[0].body.text, /^Reelsmith: today's upload cap is reached/);
+    }
+  }
+  assert.deepEqual(sentAt, ['2026-10-17T12:05:00', '2026-10-18T09:05:00']);
+  assert.equal(h.readJson(path.join(root, '.state', 'retryable-failures.json')).dailyCapAlertDay, '2026-10-18');
 });
 
 s.check('a safety alert still fails the run when it cannot be sent, and leaves the daily notices unmarked', async () => {
