@@ -74,7 +74,7 @@ every 502 to "may have posted", so the clip stayed blocked for good. Now:
 
 | Sidecar reply | Outcome | Effect |
 |---|---|---|
-| 502 `publish_rejected` | `needs_you` | Claim set aside; the slot stays used; it neither counts toward the "3+ refused in a row" streak nor ends it. Alert: "TikTok refused to publish it (not posted)", with the release command |
+| 502 `publish_rejected` | `needs_you` | *Superseded by the second 2026-10-27 amendment below: retried once first.* Claim set aside; the slot stays used; it neither counts toward the "3+ refused in a row" streak nor ends it. Alert: "TikTok refused to publish it (not posted)", with the release command |
 | 502 `publish_rejected` with `tiktok_status_msg` exactly "You are posting too fast. Take a rest." | `deferred` | Clip released for a later slot; the slot stays used; safety alert (possible throttling) |
 | 502 `signature_failed` | `deferred` | As above; the alert names the signing helper |
 | Any other 502, and 500 and 504 | `ambiguous` | Unchanged: may have posted |
@@ -87,9 +87,53 @@ caption cause from throttling. Raw ledger rows stay in the session log.
 | Test | Clip and caption | Result |
 |---|---|---|
 | T1 | `04_STRONG`, unchanged | 2026-10-27 09:58 SAST: 04_STRONG, caption unchanged from 2026-10-21 (287 chars, en dash, 5 tags / 58 tag chars) -> HTTP 502 publish_rejected, tiktok_status_code 5, tiktok_status_msg null. Rejected again with the same caption (n=2); consistent with a caption cause. Not throttling text. |
-| T2 | `04_STRONG`, body with the en dash replaced by `-`, no hashtags | pending |
-| T3 | `10_MUSGUARD OMNI`, em dash replaced by `-`, tags unchanged | pending |
-| T4 | `12_Extrawheel`, full body and one tag (needs the owner's approval) | pending |
+| V1 | `15_Varia RearVue 820`, unchanged | 2026-10-27 16:58 SAST: 15_Varia RearVue 820 (refused at 15:00 with this caption) re-sent unchanged via the sidecar -> posted. Intermittent refusal, not a clip or caption fault. |
+| T2 | `04_STRONG`, body with the en dash replaced by `-`, no hashtags | dropped: the caption hypotheses (dash, length, tag text) were refuted by the Varia refusal (no dash, 299 chars, 44 tag chars) and the Redshift post (379 chars) |
+| T3 | `10_MUSGUARD OMNI`, em dash replaced by `-`, tags unchanged | dropped: the caption hypotheses (dash, length, tag text) were refuted by the Varia refusal (no dash, 299 chars, 44 tag chars) and the Redshift post (379 chars) |
+| T4 | `12_Extrawheel`, full body and one tag (needs the owner's approval) | dropped: the caption hypotheses (dash, length, tag text) were refuted by the Varia refusal (no dash, 299 chars, 44 tag chars) and the Redshift post (379 chars) |
+| R1 | `04_STRONG`, the bare title and no hashtags | pending: 04_STRONG re-sent with the bare title and no hashtags (refused twice with its full caption) |
+
+## Amendment 2026-10-27 (second): a refused clip is retried once, after another clip
+
+This supersedes the "set aside on the first refusal" row of the rejection mapping above.
+
+**Evidence.** The sidecar refused `15_Varia RearVue 820` at 2026-10-27 15:00 SAST (502
+`publish_rejected`, status code 5). The same clip, with the same caption and tags, posted when it
+was re-sent at 16:58 SAST (V1 above). Since 2026-10-25, 11 upload attempts reached TikTok: 7
+posted and 4 refused (about 36%); n8n alone: 6 posted and 3 refused. No two refusals were ever in
+a row. Refusals are therefore at least partly intermittent, and setting a clip aside at its first
+refusal would lose clips that post on a second try.
+
+**Rule.** Log Results counts TikTok refusals per clip (`refusals` in
+`.state/retryable-failures.json`, keyed by `<job>/<file>`). Only a non-throttle 502
+`publish_rejected` counts; the throttle message and `signature_failed` stay `deferred` and do not.
+
+| Refusal of the clip | Effect |
+|---|---|
+| 1st | Clip released back to the pool and recorded as `retryAfter`: the next attempt takes another clip of the same video first (unless it is that video's only ready clip), and a later slot retries the refused one. Row status `refused_retry`; a Telegram notice "refusal 1 of 2" (informational) |
+| 2nd | Claim `needs_you`, set aside as before; safety alert "TikTok refused to publish it twice", with the release command |
+
+- **Why 2.** One retry recovers an intermittent refusal; a second refusal of the same clip points
+  at the clip, and further retries would spend attempts the other clips need. The sidecar also
+  pauses posting for 12 hours after 2 failed attempts in a row.
+- **Why the slot stays used, and why another clip goes first.** The sidecar's 12-hour pause
+  depends only on 2 failed attempts in a row, not on their spacing. Keeping the slot means the
+  retry comes at least 160 minutes later (one attempt per slot), and the retry-after rule puts a
+  different clip in between. That makes two failures in a row less likely; a retry never directly
+  follows its own refusal. A set-aside at the 2nd refusal may still coincide with the 12-hour
+  pause if the attempt before it also failed.
+- **retryAfter** names the clip just released after a refusal. While it is set, Pick Due Clip
+  moves that clip one place back within its video. It is dropped once an attempt posts, or when
+  the flagged clip itself reaches a final outcome; it lasts through released attempts (e.g. a
+  sidecar 503) and other clips' set-asides, not only the next pick. Dry runs never set it.
+- **Known limits.** If the refused clip is its video's only ready clip, it is retried at the next
+  attempt even when another video could go (documented and tested). Independent refusals still
+  produce consecutive-failure pairs at about the same rate; only a refusal tied to the clip
+  itself gets better.
+- **Lifetime of the count.** It is dropped once the clip's outcome is final (posted,
+  posted_elsewhere, set aside, ambiguous) and kept while the clip is only released (sidecar busy,
+  cookie, daily cap, deferred). Dry runs never read or change it. Only the newest 50 clips are kept.
+- The `needs_you` streak is unchanged: a refusal neither counts toward it nor ends it.
 
 ## Related
 

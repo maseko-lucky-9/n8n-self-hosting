@@ -61,7 +61,8 @@ Schedule (*/15 9-21 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Sid
     While it is off, every request is a dry run.
 - **Log Results** records each outcome in `results.log.csv` and the claim files, then alerts on
   Telegram when you are needed (cookie expired: clips wait and retry every 15 min; bad input: that clip is set aside and the next takes its slot; TikTok refused to publish it:
-  that clip is set aside and the slot stays used; TikTok throttling or a signing failure: the clip
+  the slot stays used and the clip is retried once, after another clip, at a later slot, then set aside at its 2nd
+  refusal (a short notice for the 1st, an alert for the 2nd); TikTok throttling or a signing failure: the clip
   is retried at a later slot; an upload that may or may not have posted). If the workflow is live while the sidecar's `POSTING_ENABLED` is `false`, every clip
   is released and retried, and a once-a-day Telegram notice says so. When the sidecar's daily cap
   is reached (429, e.g. after a manual upload that day), the clip waits for tomorrow, the slot stays
@@ -293,9 +294,20 @@ manifest is never archived. The Telegram alert prints the exact commands for tha
 - **Refused clip** (400 bad input or 413 too large): fix or re-export the clip, then release the
   claim with the same command. Or leave it set aside.
 - **TikTok refused to publish it** (502 `publish_rejected`; not posted, the sidecar's ledger key
-  is already free): fix the caption in the Mac export and let it sync, then release the claim
-  with the same command. Or leave it set aside. The slot stays used, so a run of refusals sets
-  aside at most one clip per slot. A refusal that says "You are posting too fast", and a 502
+  is already free). Refusals are often intermittent: the same clip and caption can post on a later
+  try. The 1st refusal releases the clip back to the pool and a Telegram notice says "refusal 1
+  of 2". The next attempt takes another clip of the same video first (unless it is that video's
+  only ready clip), and a later attempt retries the refused one. The 2nd refusal of the same clip
+  sets it aside with an alert: probably the clip itself; re-export it, then release the claim with
+  the same command. Or leave it set aside. Either way the slot stays used: at most one upload
+  attempt per slot. The sidecar also pauses posting for 12h after 2 failed attempts in a row, so
+  back-to-back refusals can cost the rest of the day's slots. Putting another clip between a
+  refusal and its retry makes two failures in a row less likely; a retry never directly follows
+  its own refusal. The per-clip count lives in `.state/retryable-failures.json` (`refusals`, the
+  newest 50 clips) and is dropped once the clip's outcome is final. The flag `retryAfter` (the
+  clip waiting behind another) is dropped once an attempt posts, or when the flagged clip itself
+  reaches a final outcome; it lasts through released attempts (e.g. a sidecar 503), not only the
+  next pick. A refusal that says "You are posting too fast", and a 502
   `signature_failed`, are not the clip's fault: the clip is released for a later slot and a
   Telegram alert says so.
 

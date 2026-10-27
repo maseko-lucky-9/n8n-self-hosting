@@ -15,6 +15,12 @@ const RETRY_ALERT_AFTER = 3;    // consecutive retryable failures before the fir
 const AUTH_ALERT_AFTER = 1;     // consecutive auth_invalid answers before the first alert
 const REALERT_EVERY = 12;       // then one more alert per 12 in a row (about 3h at */15)
 const NEEDS_SLOT_RELEASES = 2;  // needs_you frees the slot only for the first 2 in a row
+// TikTok refusals (502 publish_rejected) are often intermittent: the same clip and
+// caption can post on a later try. A refused clip is released for a later slot and
+// set aside at its 2nd refusal; 2 bounds the retries, and the sidecar pauses 12h
+// after 2 failed attempts in a row anyway.
+const REFUSAL_LIMIT = 2;
+const REFUSALS_KEPT = 50;       // per-clip refusal counts kept in the state file (newest)
 // Names are at most 200 UTF-8 bytes (Pick Due Clip), so even the longest alert,
 // which repeats the name in two ledger commands and the claim-release command,
 // stays under this cap (Telegram's own limit is 4096).
@@ -177,7 +183,8 @@ const outcome = classify(res);
 // an old streak never blocks a later day). Any other outcome resets each to 0,
 // except a TikTok refusal (publish_rejected): it is needs_you but neither counts
 // toward the needs_you streak nor ends it (it says nothing about the sidecar
-// contract, and never frees a slot).
+// contract, and never frees a slot). Refusals are counted per clip instead
+// (state.refusals, {clip_key: n}, oldest first); a dry run never reads or changes them.
 fs.mkdirSync(STATE_DIR, { recursive: true });
 let state = {};
 try {
@@ -190,13 +197,30 @@ const authCount = outcome.kind === 'auth_invalid' ? (Number(state.authCount) || 
 const tiktokRefused = outcome.kind === 'needs_you' && outcome.code === 'publish_rejected';
 const needsCount = outcome.kind === 'needs_you'
   ? (state.needsDay === today ? Number(state.needsCount) || 0 : 0) + (tiktokRefused ? 0 : 1) : 0;
+const tracksRefusals = pick.dryRun !== true;
+const isClipKey = (k) => typeof k === 'string' && k.includes('/'); // <job>/<file>
+const refusals = new Map(); // a Map: no key (not even __proto__) touches a prototype
+if (tracksRefusals && state.refusals && typeof state.refusals === 'object' && !Array.isArray(state.refusals)) {
+  for (const [k, v] of Object.entries(state.refusals)) {
+    // a key is <job>/<file> and a stored count is 1..REFUSAL_LIMIT-1; anything else is junk, read as 0
+    if (isClipKey(k) && Number.isInteger(v) && v >= 1 && v < REFUSAL_LIMIT) refusals.set(k, v);
+  }
+}
+const clipKey = String(pick.clip_key || '');
+const refusalCount = tiktokRefused && tracksRefusals ? (refusals.get(clipKey) || 0) + 1 : 0;
+// The first refusal(s): retried after another clip, at a later slot, instead of being
+// set aside. A clip without a proper key is never retried (no count could stop it).
+const retryRefused = refusalCount > 0 && refusalCount < REFUSAL_LIMIT && isClipKey(clipKey);
 
 // Released clips are retried by a later run: nothing reached TikTok (retryable,
-// auth_invalid, dry run), today's cap was hit, or TikTok did not publish for a
-// reason that is not the clip's (deferred). A dry run never uploads, so even
-// a "needs you" answer (e.g. simulate=auth_invalid) releases the clip there. A
-// real "posted" is always kept, whatever the mode.
+// auth_invalid, dry run), today's cap was hit, TikTok did not publish for a
+// reason that is not the clip's (deferred), or TikTok refused it fewer than
+// REFUSAL_LIMIT times. The clip goes back to the pool and is retried after another
+// clip, at a later slot (retryAfter below); rotation does not count a released claim.
+// A dry run never uploads, so even a "needs you" answer (e.g. simulate=auth_invalid)
+// releases the clip there. A real "posted" is always kept, whatever the mode.
 const releaseClip = ['retryable', 'auth_invalid', 'dry_run', 'daily_cap', 'deferred'].includes(outcome.kind)
+  || retryRefused
   || (pick.dryRun === true && ['needs_you', 'ambiguous'].includes(outcome.kind));
 // The slot stays used when an upload may have reached TikTok (posted, ambiguous),
 // TikTok refused it, it was deferred, or the daily cap is hit; any other definite
@@ -210,7 +234,22 @@ const releaseSlot = ['retryable', 'auth_invalid', 'dry_run', 'posted_elsewhere']
 const claimStatus = {
   posted: 'posted', posted_elsewhere: 'posted_elsewhere', needs_you: 'needs_you', ambiguous: 'failed',
 }[outcome.kind];
-const rowStatus = releaseClip ? outcome.kind : claimStatus;
+const rowStatus = retryRefused ? 'refused_retry' : releaseClip ? outcome.kind : claimStatus;
+// A clip's refusal count lives until its outcome is final: set on a retried refusal,
+// dropped once the claim is kept (posted, posted_elsewhere, needs_you, ambiguous),
+// untouched while the clip is only released (retryable, auth, daily cap, deferred).
+if (tracksRefusals) {
+  if (retryRefused) {
+    refusals.delete(clipKey); // re-insert: newest last
+    refusals.set(clipKey, refusalCount);
+  } else if (!releaseClip) {
+    refusals.delete(clipKey);
+  }
+  for (const k of refusals.keys()) {
+    if (refusals.size <= REFUSALS_KEPT) break;
+    refusals.delete(k); // oldest first
+  }
+}
 
 // 1. Settle the claim and the slot on disk.
 if (releaseClip) {
@@ -243,7 +282,21 @@ const counters = {
   needsDay: today,
   lastCode: outcome.code,
   updatedAt: now.toISO(),
+  ...(tracksRefusals ? { refusals: Object.fromEntries(refusals) } : {}),
 };
+// retryAfter: the clip just released after a refusal; Pick Due Clip puts another
+// clip of its video first. Dropped once an attempt posts, or when the flagged clip
+// itself reaches a final outcome; it lasts through released attempts (e.g. a 503)
+// and through other clips' set-asides (a 400 frees the slot for the next run).
+// Dry runs never touch it.
+if (tracksRefusals) {
+  if (retryRefused) counters.retryAfter = clipKey;
+  else if (outcome.kind === 'posted' || !isClipKey(state.retryAfter)
+    || (!releaseClip && state.retryAfter === clipKey)) delete counters.retryAfter;
+}
+// Accepted window: a crash after step 1 and before this write loses the refusal
+// count and the retryAfter flag, so that clip gets one extra retry, possibly at the
+// very next attempt. Never a lost or doubled post.
 writeJsonAtomic(RETRY_STATE, counters);
 
 // 3. One row per outcome in the job's results.log.csv (live column order; the
@@ -297,9 +350,13 @@ const info = [];
 const infoDays = {};
 if (outcome.kind === 'auth_invalid' && due(authCount, AUTH_ALERT_AFTER)) {
   safety.push(`🔑 Reelsmith: TikTok session invalid (${authCount} in a row). Run \`make refresh-cookies\` in tiktok-sidecar; clips wait and retry every 15 min.` + detail);
+} else if (retryRefused) {
+  // Routine (about 2 a day): informational, a failed send is only logged.
+  info.push(`Reelsmith: TikTok refused it (not posted); it will be retried at a later slot (refusal ${refusalCount} of ${REFUSAL_LIMIT}).` + detail);
 } else if (tiktokRefused) {
-  safety.push('Reelsmith: TikTok refused to publish it (not posted).' + detail
-    + releaseSteps(false, 'Check the caption (see ADR-0002) in the Mac export and let it sync, or leave it set aside; to retry, release the claim:'));
+  safety.push(`Reelsmith: TikTok refused to publish it${refusalCount >= REFUSAL_LIMIT ? ' twice' : ''} (not posted)`
+    + (pick.dryRun === true ? ' (dry run: the clip is released).' : '; it is set aside.') + detail
+    + releaseSteps(false, 'Probably this clip: re-export it, or leave it set aside; to retry, release the claim:'));
 } else if (outcome.kind === 'deferred') {
   safety.push((outcome.code === 'signature_failed'
     ? 'Reelsmith: the sidecar\'s signing helper failed (not posted). Check the signing helper in tiktok-sidecar.'
@@ -361,7 +418,7 @@ return [{
     manifestPath: pick.manifestPath,
     jobDir: pick.jobDir,
     dryRun: pick.dryRun === true,
-    outcome: outcome.kind,
+    outcome: retryRefused ? 'refused_retry' : outcome.kind,
     status: rowStatus,
     code: outcome.code,
     error_id: outcome.errorId,
