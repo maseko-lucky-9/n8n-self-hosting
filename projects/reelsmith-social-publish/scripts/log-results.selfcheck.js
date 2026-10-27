@@ -25,13 +25,15 @@ async function picked({ live = true, filename = '01_clip.mp4' } = {}) {
   return { root, pick: item.json };
 }
 
-async function log(root, pick, response, { env = ENV, httpRequest, sast = '2026-10-17T12:05:00', logs } = {}) {
+async function log(root, pick, response, { env = ENV, httpRequest, sast = '2026-10-17T12:05:00', logs, patch } = {}) {
   const sent = [];
   h.setNow(sast);
   const helpers = {
     httpRequest: httpRequest || (async (opts) => { sent.push(opts); return { ok: true }; }),
   };
-  const [out] = await h.runNode(h.loadNode('log-results.jsCode.js', { root }), {
+  const code = h.loadNode('log-results.jsCode.js', { root });
+  if (patch) assert.equal(code.split(patch[0]).length, 2, 'patch target not found exactly once');
+  const [out] = await h.runNode(patch ? code.replace(patch[0], patch[1]) : code, {
     input: [{ json: response }], nodes: { 'Pick Due Clip': [{ json: pick }] }, env, helpers, execId: '77', logs,
   });
   return { out: out.json, sent };
@@ -610,6 +612,14 @@ s.check('refusals: only the newest 50 clips are kept', async () => {
   await log(b.root, b.pick, sidecar(200, 'posted'));
   const keysB = Object.keys(readRefusals(b.root));
   assert.deepEqual([keysB.length, keysB[0], keysB[49]], [50, 'jobZ/c02.mp4', 'jobZ/c51.mp4']);
+});
+
+s.check('refusals: a retried refusal moves the clip to the newest place (checked with a limit of 3)', async () => {
+  const { root, pick } = await picked();
+  seedState(root, { refusals: { [KEY]: 1, 'jobB/x.mp4': 1 } });
+  const { out } = await log(root, pick, REFUSED, { patch: ['const REFUSAL_LIMIT = 2;', 'const REFUSAL_LIMIT = 3;'] });
+  assert.equal(out.outcome, 'refused_retry');
+  assert.equal(JSON.stringify(readRefusals(root)), JSON.stringify({ 'jobB/x.mp4': 1, [KEY]: 2 }));
 });
 
 s.check('refusals: a malformed map never throws and reads as empty (junk entries dropped)', async () => {
