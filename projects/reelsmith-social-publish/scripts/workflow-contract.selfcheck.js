@@ -9,6 +9,7 @@
 //    build-workflow.js output byte for byte;
 //  - the sidecar URL names the Service in manifests/, and the NetworkPolicies
 //    there let the n8n main and worker pods reach it on that port;
+//  - the sidecar's DAILY_CAP and ATTEMPT_CAP fit Pick Due Clip's slots;
 //  - the repo's import banned-keys check and disclosure sweep both pass.
 //   node workflow-contract.selfcheck.js   -> exit 0 on pass, 1 on any failure.
 const assert = require('node:assert/strict');
@@ -90,7 +91,8 @@ s.check('nodes, versions, schedule and connections', () => {
   const sched = node('Schedule');
   assert.equal(sched.type, 'n8n-nodes-base.scheduleTrigger');
   assert.equal(sched.typeVersion, 1);
-  assert.deepEqual(sched.parameters.rule.interval, [{ field: 'cronExpression', expression: '*/15 12-20 * * *' }]);
+  assert.deepEqual(sched.parameters.rule.interval, [{ field: 'cronExpression', expression: '*/15 9-21 * * *' }]);
+  assert.match(sched.notes, /^Every 15 min, 09:00-21:45 in /);
   for (const name of Object.keys(SCRIPTS)) {
     assert.equal(node(name).type, 'n8n-nodes-base.code');
     assert.equal(node(name).typeVersion, 2);
@@ -237,6 +239,20 @@ s.check('sidecar URL resolves to the manifests\' Service, and the NetworkPolicie
   for (const component of n8nComponents) {
     assert.ok(covered && covered.values.includes(component), `${egress.metadata.name} does not cover component=${component}`);
   }
+});
+
+s.check('the sidecar caps fit the slots: DAILY_CAP = one per slot, ATTEMPT_CAP = two per slot', () => {
+  const slots = fs.readFileSync(path.join(__dirname, SCRIPTS['Pick Due Clip']), 'utf8').match(/^const SLOTS = \[([^\]]*)\];/m);
+  assert.ok(slots, 'SLOTS not found in Pick Due Clip');
+  const n = slots[1].split(',').filter((x) => x.trim()).length;
+  const deployment = fs.readFileSync(path.join(MANIFESTS_DIR, 'tiktok-sidecar-deployment.yaml'), 'utf8');
+  const env = (name) => {
+    const m = deployment.match(new RegExp(`- name: ${name}\\n\\s+value: "(\\d+)"`));
+    assert.ok(m, name + ' not set in tiktok-sidecar-deployment.yaml');
+    return Number(m[1]);
+  };
+  assert.equal(env('DAILY_CAP'), n, 'DAILY_CAP must allow one post per slot');
+  assert.equal(env('ATTEMPT_CAP'), 2 * n, 'ATTEMPT_CAP must allow two attempts per slot');
 });
 
 s.check('passes the import banned-keys check (scripts/import-workflows.sh)', () => {

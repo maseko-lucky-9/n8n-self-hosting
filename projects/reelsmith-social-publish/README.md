@@ -14,13 +14,14 @@ points to Reelsmith's ADR-012, and [ADR-0003](../../docs/decisions/0003-reelsmit
 ## Flow
 
 ```
-Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Sidecar Upload → Log Results → Archive Manifest
+Schedule (*/15 9-21 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Sidecar Upload → Log Results → Archive Manifest
 ```
 
-- **Slots:** 12:00, 15:00 and 18:00 SAST. A run posts only when a slot has passed, is unused
-  today, and at least 170 minutes have gone by since the last slot was claimed. The last tick is
-  20:45, so nothing catches up after 21:00. At most 3 posts per SAST day; the sidecar enforces
-  the same cap (`DAILY_CAP`).
+- **Slots:** 09:00, 12:00, 15:00, 18:00 and 21:00 SAST. A run posts only when a slot has passed,
+  is unused today, and at least 160 minutes have gone by since the last slot was claimed (runs
+  fall on the quarter hour, so a late slot catches up 15 minutes per slot). The last tick is
+  21:45, so nothing catches up after 22:00. At most 5 posts per SAST day; the sidecar enforces
+  the same cap (`DAILY_CAP`, deployed as 5).
 - **Candidates:** manifests under the inbox modified on or after **2026-10-11** (the cutoff),
   taken in turns across source videos (a job is one video): never the same video twice in a row; a
   video holding more than half of all ready clips goes every other post; otherwise the video used
@@ -54,14 +55,17 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
   - it validates the path and the file;
   - it keeps a ledger (`ledger.jsonl` on the cookies PVC) and refuses a clip already posted, by
     name or by content hash (409);
-  - it enforces the daily cap (429), at most 6 upload attempts a day, and a 12h pause after 2
-    failures in a row;
+  - it enforces the daily cap (429), at most 10 upload attempts a day (`ATTEMPT_CAP`, 2 per
+    slot), and a 12h pause after 2 failures in a row;
   - it holds the **kill switch** `POSTING_ENABLED`, `false` until go-live step 7 and `"true"` after it.
     While it is off, every request is a dry run.
 - **Log Results** records each outcome in `results.log.csv` and the claim files, then alerts on
-  Telegram when you are needed (cookie expired: clips wait and retry every 15 min; bad input: that clip is set aside and the next takes its slot; an upload that may or may not have
-  posted). If the workflow is live while the sidecar's `POSTING_ENABLED` is `false`, every clip
-  is released and retried, and a once-a-day Telegram notice says so. **Archive Manifest** moves a
+  Telegram when you are needed (cookie expired: clips wait and retry every 15 min; bad input: that clip is set aside and the next takes its slot; TikTok refused to publish it:
+  that clip is set aside and the slot stays used; TikTok throttling or a signing failure: the clip
+  is retried at a later slot; an upload that may or may not have posted). If the workflow is live while the sidecar's `POSTING_ENABLED` is `false`, every clip
+  is released and retried, and a once-a-day Telegram notice says so. When the sidecar's daily cap
+  is reached (429, e.g. after a manual upload that day), the clip waits for tomorrow, the slot stays
+  used, and a once-a-day notice says so. **Archive Manifest** moves a
   manifest once every row is posted or ordinary junk.
 
 ## Where things live
@@ -118,13 +122,13 @@ You log in in the browser it opens. The script then:
 
 ## The watchdog
 
-The CronJob `reelsmith-publish-watchdog` runs at 12:45, 15:45, 18:45 and 20:45 SAST (the
-CronJob has `timeZone: Africa/Johannesburg`) and sends at most one Telegram message per run:
+The CronJob `reelsmith-publish-watchdog` runs at 09:45, 12:45, 15:45, 18:45 and 21:45 SAST
+(the CronJob has `timeZone: Africa/Johannesburg`) and sends at most one Telegram message per run:
 
 - **Every run:** failed executions (`error`, `crashed` or `canceled`; an execution timeout may
-  be recorded as canceled) of the workflow in the last 4h. The 12:45 run looks back 17h, so a
-  failure after the previous evening's 20:45 run is not missed.
-- **12:45 run only, one combined message:**
+  be recorded as canceled) of the workflow in the last 4h. The 09:45 run looks back 13h, so a
+  failure in the previous evening's 21:45 tick or after the 21:45 run is not missed.
+- **09:45 run only, one combined message:**
   - the session probe: 401 is "cookie expired - run make refresh-cookies"; 502 is "sidecar
     cannot reach TikTok"; 503 is "no cookie on the sidecar"; no answer is "sidecar down"; any
     other status is "sidecar session check failed";
@@ -172,7 +176,7 @@ decision.
    - set the Mac folder to **Send Only** and the cluster side to **Receive Only**;
    - add a `.stignore` with `*.tmp`, `.DS_Store` and `processed/`.
 3. New clips reach the cluster only while the Mac is awake with Tailscale up, and nothing posts
-   while the homelab is off. Keep it on from 11:30 to 21:00 SAST.
+   while the homelab is off. Keep it on from 08:30 to 22:15 SAST.
 
 ## Go-live runbook
 
@@ -222,7 +226,7 @@ Paste the evidence at each step; nothing moves to the next step without your go.
 4. **`make refresh-cookies`, once, regardless.** You log in; the probe says valid.
 5. **Dry run.** `scripts/deploy-workflow.sh --workflow-id <ID> --dry-run` (n8n API key on
    stdin, shortest expiry; it connects as `homelab-tunnel`, see Deploy step 2). A dry-run
-   deploy is saved, never published, so it does not run 36 times a day; execute it once by
+   deploy is saved, never published, so it does not run 52 times a day; execute it once by
    hand from the n8n editor. Check:
    - a **YouTube** clip is picked (historically the newest, job `1979f8a4`; see Candidates for the rotation now), and no TikTok-sourced job is
      touched;
@@ -248,7 +252,7 @@ Paste the evidence at each step; nothing moves to the next step without your go.
      `ssh homelab 'microk8s kubectl create -f -' < manifests/test/reelsmith-watchdog-test-alert-job.yaml`.
      One test message must arrive.
 9. **Observe for 2 days:**
-   - at most 3 posts per SAST day, one per slot, consecutive posts from different videos, no `00_` intro;
+   - at most 5 posts per SAST day, one per slot, consecutive posts from different videos, no `00_` intro;
    - no duplicates; missing clips are waited for; junk is skipped;
    - no `OOMKilled` or `Error` in the sidecar's `lastState`;
    - the watchdog stays quiet;
@@ -288,6 +292,12 @@ manifest is never archived. The Telegram alert prints the exact commands for tha
        another ambiguous 409.
 - **Refused clip** (400 bad input or 413 too large): fix or re-export the clip, then release the
   claim with the same command. Or leave it set aside.
+- **TikTok refused to publish it** (502 `publish_rejected`; not posted, the sidecar's ledger key
+  is already free): fix the caption in the Mac export and let it sync, then release the claim
+  with the same command. Or leave it set aside. The slot stays used, so a run of refusals sets
+  aside at most one clip per slot. A refusal that says "You are posting too fast", and a 502
+  `signature_failed`, are not the clip's fault: the clip is released for a later slot and a
+  Telegram alert says so.
 
 ## Run as non-root (sidecar 0.4.0)
 
@@ -311,7 +321,7 @@ revert the Deployment change and sync: root can still read files owned by 10001 
   (the environment is not exposed that way). This is accepted on this single-user node. The fix
   is an image that ships `curl` (token on stdin); installing it at runtime is what made the old
   watchdog miss its deadline, so it is deferred.
-- The once-a-day checks run only at 12:45. If the homelab is off then, that day's checks are
+- The once-a-day checks run only at 09:45. If the homelab is off then, that day's checks are
   skipped; failed executions are still reported on the later runs.
 - The web uploader returns no TikTok post id, so the ledger's `posted` row is the record.
 - The Only-me notice is informational: if Telegram is down when a clip uploads, the notice is lost

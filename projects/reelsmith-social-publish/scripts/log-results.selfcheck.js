@@ -48,6 +48,9 @@ function resultRows(pick) {
   return { header: lines[0], rows: lines.slice(1).map((l) => l.split(',')) };
 }
 
+const THROTTLE = 'You are posting too fast. Take a rest.';
+const REFUSED_ALERT = /^Reelsmith: TikTok refused to publish it \(not posted\)\.\ncode: publish_rejected\nerror_id: err-123\nfile: 01_clip\.mp4\nCheck the caption \(see ADR-0002\) in the Mac export and let it sync, or leave it set aside; to retry, release the claim:\nssh homelab '[^\n]*'$/;
+
 // [name, response, expected]
 //   claim: final claim status, or null when the clip is released
 //   slot: true when the slot marker survives
@@ -59,7 +62,7 @@ const TABLE = [
   ['401 auth_invalid', sidecar(401, 'auth_invalid'), { kind: 'auth_invalid', claim: null, slot: false, alert: /^🔑[\s\S]*make refresh-cookies[\s\S]*code: auth_invalid/, row: 'auth_invalid' }],
   ['400 bad_input', sidecar(400, 'bad_input'), { kind: 'needs_you', claim: 'needs_you', slot: false, alert: /^Reelsmith: a clip was refused \(not posted[\s\S]*code: bad_input/, row: 'needs_you' }],
   ['413 too_large', sidecar(413, 'too_large'), { kind: 'needs_you', claim: 'needs_you', slot: false, alert: /^Reelsmith: a clip was refused \(not posted[\s\S]*code: too_large/, row: 'needs_you' }],
-  ['429 daily_cap', sidecar(429, 'daily_cap'), { kind: 'daily_cap', claim: null, slot: true, alert: null, row: 'daily_cap' }],
+  ['429 daily_cap', sidecar(429, 'daily_cap'), { kind: 'daily_cap', claim: null, slot: true, alert: /^Reelsmith: today's upload cap is reached; clips wait for tomorrow \(this slot is used\)\.\ncode: daily_cap\nerror_id: err-123\nfile: 01_clip\.mp4$/, row: 'daily_cap' }],
   ['503 busy', sidecar(503, 'busy'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
   ['503 clock_unsynced', sidecar(503, 'clock_unsynced'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
   ['503 network_before_upload', sidecar(503, 'network_before_upload'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
@@ -74,8 +77,17 @@ const TABLE = [
   ['EPIPE', transport('EPIPE', 'write EPIPE'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: epipe/, row: 'failed' }],
   ['HTTP timeout (ECONNABORTED)', transport('ECONNABORTED', 'timeout of 673000ms exceeded'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: timeout/, row: 'failed' }],
   ['ECONNRESET', transport('ECONNRESET', 'socket hang up'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: econnreset/, row: 'failed' }],
-  ['502 publish_rejected', sidecar(502, 'publish_rejected'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: publish_rejected/, row: 'failed' }],
-  ['502 signature_failed', sidecar(502, 'signature_failed'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: signature_failed/, row: 'failed' }],
+  // TikTok refused the post: not published, the clip is set aside, the slot stays used.
+  ['502 publish_rejected', sidecar(502, 'publish_rejected', { tiktok_status_code: 5, tiktok_status_msg: null }), { kind: 'needs_you', claim: 'needs_you', slot: true, alert: REFUSED_ALERT, row: 'needs_you' }],
+  ['502 publish_rejected, other TikTok text', sidecar(502, 'publish_rejected', { tiktok_status_msg: 'You are posting too fast.' }), { kind: 'needs_you', claim: 'needs_you', slot: true, alert: REFUSED_ALERT, row: 'needs_you' }],
+  // Not the clip's fault: released for a later slot, this slot stays used, safety alert.
+  ['502 publish_rejected, throttled', sidecar(502, 'publish_rejected', { tiktok_status_msg: THROTTLE }), { kind: 'deferred', claim: null, slot: true, alert: /^Reelsmith: TikTok says "posting too fast" \(not posted\)[\s\S]*released for a later slot; this slot stays used\.\ncode: publish_rejected\nerror_id: err-123\nfile: 01_clip\.mp4$/, row: 'deferred' }],
+  ['502 signature_failed', sidecar(502, 'signature_failed'), { kind: 'deferred', claim: null, slot: true, alert: /^Reelsmith: the sidecar's signing helper failed \(not posted\)[\s\S]*released for a later slot; this slot stays used\.\ncode: signature_failed\nerror_id: err-123\nfile: 01_clip\.mp4$/, row: 'deferred' }],
+  // Every other 502, and those codes on any other status, may have posted.
+  ['502 other code', sidecar(502, 'upload_failed'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: upload_failed/, row: 'failed' }],
+  ['502 no JSON body', http(502, 'Bad Gateway'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: http_502/, row: 'failed' }],
+  ['500 publish_rejected', sidecar(500, 'publish_rejected', { tiktok_status_msg: THROTTLE }), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: publish_rejected/, row: 'failed' }],
+  ['504 signature_failed', sidecar(504, 'signature_failed'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: signature_failed/, row: 'failed' }],
   ['500 internal', sidecar(500, 'internal'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: internal/, row: 'failed' }],
   ['504 timeout', sidecar(504, 'timeout'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: timeout/, row: 'failed' }],
   ['200 posting_disabled (real run, kill switch off)', http(200, { status: 'dry_run', code: 'posting_disabled' }), { kind: 'dry_run', claim: null, slot: false, alert: /^Reelsmith: the sidecar has POSTING_ENABLED=false while the workflow is live/, row: 'dry_run' }],
@@ -244,6 +256,32 @@ s.check('a live workflow hitting the kill switch: released as before, told once 
   assert.equal((await log(dry.root, dry.pick, disabled)).sent.length, 0, 'a dry-run deploy is not a live workflow');
 });
 
+s.check('daily cap: told once a SAST day (informational: a failed send is only logged and retried), clip released, slot kept', async () => {
+  const { root, pick } = await picked();
+  const run = async (sast, opts = {}) => {
+    fs.writeFileSync(pick.claimPath, JSON.stringify({ status: 'claimed' }));
+    fs.writeFileSync(pick.slotMarker, JSON.stringify({ claimedAt: pick.claimedAt }));
+    const r = await log(root, pick, sidecar(429, 'daily_cap'), { sast, ...opts });
+    assert.equal(h.exists(pick.claimPath), false, `clip not released at ${sast}`);
+    assert.equal(h.exists(pick.slotMarker), true, `slot freed at ${sast}`);
+    return r;
+  };
+  const fail = async () => { const e = new Error('x'); e.code = 'ECONNRESET'; throw e; };
+  const logs = [];
+  await run('2026-10-17T09:05:00', { httpRequest: fail, logs }); // must not throw
+  assert.match(logs.join('\n'), /informational alert not sent; the next run retries it/);
+  const sentAt = [];
+  for (const t of ['2026-10-17T12:05:00', '2026-10-17T15:05:00', '2026-10-17T18:05:00', '2026-10-18T09:05:00', '2026-10-18T12:05:00']) {
+    const { sent } = await run(t);
+    if (sent.length) {
+      sentAt.push(t);
+      assert.match(sent[0].body.text, /^Reelsmith: today's upload cap is reached/);
+    }
+  }
+  assert.deepEqual(sentAt, ['2026-10-17T12:05:00', '2026-10-18T09:05:00']);
+  assert.equal(h.readJson(path.join(root, '.state', 'retryable-failures.json')).dailyCapAlertDay, '2026-10-18');
+});
+
 s.check('a safety alert still fails the run when it cannot be sent, and leaves the daily notices unmarked', async () => {
   const { root, pick } = await picked();
   const withErrors = { ...pick, manifestErrors: ['jobX: unterminated quoted field'] };
@@ -381,6 +419,46 @@ s.check('needs_you streak: slot freed for the first 2 in a row, kept from the 3r
   await step(sidecar(200, 'posted'));
   assert.deepEqual(await step(sidecar(400, 'bad_input')), { needs: 1, slotFreed: true, hint: false, alerts: 1 }, 'streak not reset');
   assert.equal(h.readJson(path.join(root, '.state', 'retryable-failures.json')).needsCount, 1);
+});
+
+s.check('publish_rejected: never frees the slot, leaves needsCount as it is, no contract hint; deferred resets it', async () => {
+  const { root, pick } = await picked();
+  const HINT = '3+ clips refused in a row: check the sidecar contract.';
+  const step = async (response) => {
+    fs.writeFileSync(pick.claimPath, JSON.stringify({ status: 'claimed' }));
+    fs.writeFileSync(pick.slotMarker, JSON.stringify({ claimedAt: pick.claimedAt }));
+    const r = await log(root, pick, response);
+    return { needs: r.out.needsCount, slotFreed: !h.exists(pick.slotMarker), hint: r.sent.length > 0 && r.sent[0].body.text.includes(HINT) };
+  };
+  const rejected = sidecar(502, 'publish_rejected');
+  const got = [];
+  for (const response of [rejected, sidecar(400, 'bad_input'), rejected, sidecar(400, 'bad_input'), rejected, sidecar(400, 'bad_input'), rejected]) {
+    got.push(await step(response));
+  }
+  assert.deepEqual(got, [
+    { needs: 0, slotFreed: false, hint: false },
+    { needs: 1, slotFreed: true, hint: false },
+    { needs: 1, slotFreed: false, hint: false },
+    { needs: 2, slotFreed: true, hint: false },
+    { needs: 2, slotFreed: false, hint: false },
+    { needs: 3, slotFreed: false, hint: true },
+    { needs: 3, slotFreed: false, hint: false },
+  ]);
+  assert.equal(h.readJson(path.join(root, '.state', 'retryable-failures.json')).needsCount, 3);
+  for (const deferred of [sidecar(502, 'signature_failed'), sidecar(502, 'publish_rejected', { tiktok_status_msg: THROTTLE })]) {
+    assert.deepEqual(await step(deferred), { needs: 0, slotFreed: false, hint: false });
+    assert.equal(h.exists(pick.claimPath), false, 'deferred clip not released');
+  }
+});
+
+s.check('deferred alerts are safety alerts: an unsent one fails the run, after the clip is released', async () => {
+  const fail = async () => { const e = new Error('x'); e.code = 'ECONNRESET'; throw e; };
+  for (const response of [sidecar(502, 'signature_failed'), sidecar(502, 'publish_rejected', { tiktok_status_msg: THROTTLE })]) {
+    const { root, pick } = await picked();
+    await assert.rejects(log(root, pick, response, { httpRequest: fail }), /Telegram alert failed/);
+    assert.equal(h.exists(pick.claimPath), false, 'clip not released before the alert');
+    assert.equal(h.exists(pick.slotMarker), true, 'slot freed');
+  }
 });
 
 s.check('dry run: released claim (no slot), dry_run row, even for simulate=auth_invalid, 400 or 500', async () => {

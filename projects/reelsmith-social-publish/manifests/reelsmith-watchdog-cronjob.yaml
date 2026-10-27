@@ -1,16 +1,16 @@
 # Watchdog for Reelsmith Social Publish: the 15-minute dispatcher (n8n workflow
-# SKLkX5qUDYLlWTxo, 12:00-20:45 SAST) and the tiktok-sidecar gatekeeper.
+# SKLkX5qUDYLlWTxo, 09:00-21:45 SAST) and the tiktok-sidecar gatekeeper.
 #
-# Runs 45 minutes after each posting slot (12:00, 15:00, 18:00) and once after
-# the last dispatcher tick (20:45). It reads execution_entity directly
+# Runs 45 minutes after each posting slot (09:00, 12:00, 15:00, 18:00, 21:00);
+# the 21:45 run coincides with the last dispatcher tick. It reads execution_entity directly
 # (independent of n8n's own health) and asks the sidecar for its state.
 #
 # Checks (every Telegram message carries only fixed strings, validated integers
 # and the workflow id; everything else is stripped, see clean()):
 #  a. failed executions (status error/crashed/canceled; an execution timeout
 #     may be recorded as canceled) in the last 4h. Reported on EVERY run. The
-#     12:45 run looks back 17h so executions finishing after the previous
-#     evening's 20:45 run are not missed.
+#     09:45 run looks back 13h (to 20:45) so the previous evening's 21:45 tick
+#     and anything finishing after the 21:45 run are not missed.
 #  b. GET /healthz/session: 401 => "cookie expired - run make refresh-cookies";
 #     502 => the sidecar cannot reach TikTok; 503 => no cookie on the sidecar;
 #     no answer (refused, timeout) => "sidecar down"; any other status =>
@@ -18,7 +18,7 @@
 #  c. GET /api/stats: any non-200 => "sidecar down"; hours_since_success > 48,
 #     no success on record, or paused_until set.
 #  d. zero executions of the workflow in the last 25h (inactive, or n8n down).
-# Ongoing conditions (b, c, d) are checked and reported only on the 12:45 run,
+# Ongoing conditions (b, c, d) are checked and reported only on the 09:45 run,
 # so they alert at most once a day; one run sends at most one message.
 #
 # TEST_ALERT=1 sends exactly one test message and exits 0 (see
@@ -53,7 +53,7 @@ spec:
   # was suspended. Set back to true only while the workflow is deactivated.
   suspend: false
   timeZone: Africa/Johannesburg
-  schedule: "45 12,15,18,20 * * *"
+  schedule: "45 9,12,15,18,21 * * *"
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 600   # don't fire a stale missed run after a host-off
   successfulJobsHistoryLimit: 3
@@ -106,7 +106,7 @@ spec:
                 - |
                   set -u
                   export LC_ALL=C
-                  DIGEST_HOUR=12   # the 12:45 run carries the daily digest of ongoing conditions
+                  DIGEST_HOUR=09   # the 09:45 run carries the daily digest; zero-padded like date +%H
                   STALE_HOURS=48
 
                   log() { printf '%s\n' "$*"; }
@@ -159,7 +159,7 @@ spec:
 
                   HOUR=$(TZ=SAST-2 date +%H)   # SAST is UTC+2 all year; the POSIX form needs no tzdata
                   DIGEST=0; [ "$HOUR" = "$DIGEST_HOUR" ] && DIGEST=1
-                  LOOKBACK=4; [ "$DIGEST" = 1 ] && LOOKBACK=17
+                  LOOKBACK=4; [ "$DIGEST" = 1 ] && LOOKBACK=13
                   NOW_ITEMS=; DAY_ITEMS=
                   add_now() { NOW_ITEMS="${NOW_ITEMS:+$NOW_ITEMS; }$1"; }
                   add_day() { DAY_ITEMS="${DAY_ITEMS:+$DAY_ITEMS; }$1"; }

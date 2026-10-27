@@ -27,6 +27,8 @@ const RETRYABLE_CODES = ['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EHOSTDO
 const JOB_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const NAME_RE = /^(?!\.)[\p{L}\p{N}_. -]{1,251}\.mp4$/u; // as Pick Due Clip
 const MAX_NAME_BYTES = 200;
+// The sidecar passes TikTok's message through only for this throttling refusal.
+const THROTTLE_MSG = 'You are posting too fast. Take a rest.';
 const SSH_EXEC = "ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker --";
 
 const pick = $('Pick Due Clip').first().json;
@@ -74,6 +76,7 @@ function transportFailure(err) {
 // -> {kind, status?, code, errorId, httpStatus}
 //    kind: posted | posted_elsewhere | dry_run | daily_cap | retryable | auth_invalid
 //          | needs_you (definitely not uploaded, this clip is set aside) | ambiguous (may have posted)
+//          | deferred (definitely not published, not the clip's fault: retried at a later slot)
 function classify(r) {
   if (r.statusCode === undefined && r.error !== undefined) {
     return { ...transportFailure(r.error), errorId: '', httpStatus: null };
@@ -94,7 +97,14 @@ function classify(r) {
   if (httpStatus === 413) return out('needs_you', 'too_large');
   if (httpStatus === 429) return out('daily_cap', 'daily_cap');
   if (httpStatus === 503) return out('retryable', 'unavailable');
-  // 500 internal, 502 publish_rejected/signature_failed, 504 timeout, anything unexpected
+  // 502 with these codes: the sidecar recorded the upload as failed and freed its
+  // ledger key, so nothing was published. TikTok refusing the post is about this
+  // clip, unless it says we post too fast; a signing failure is the sidecar's.
+  if (httpStatus === 502 && code === 'publish_rejected') {
+    return body.tiktok_status_msg === THROTTLE_MSG ? out('deferred', 'publish_rejected') : out('needs_you', 'publish_rejected');
+  }
+  if (httpStatus === 502 && code === 'signature_failed') return out('deferred', 'signature_failed');
+  // 500 internal, any other 502, 504 timeout, anything unexpected
   return out('ambiguous', 'http_' + (Number.isFinite(httpStatus) ? httpStatus : 'unknown'));
 }
 
@@ -164,7 +174,10 @@ const outcome = classify(res);
 
 // Consecutive-outcome counters: sidecar unavailable (count), TikTok session
 // invalid (authCount), clip refused as needs_you (needsCount, today only, so
-// an old streak never blocks a later day). Any other outcome resets each to 0.
+// an old streak never blocks a later day). Any other outcome resets each to 0,
+// except a TikTok refusal (publish_rejected): it is needs_you but neither counts
+// toward the needs_you streak nor ends it (it says nothing about the sidecar
+// contract, and never frees a slot).
 fs.mkdirSync(STATE_DIR, { recursive: true });
 let state = {};
 try {
@@ -174,21 +187,25 @@ try {
 }
 const retryCount = outcome.kind === 'retryable' ? (Number(state.count) || 0) + 1 : 0;
 const authCount = outcome.kind === 'auth_invalid' ? (Number(state.authCount) || 0) + 1 : 0;
+const tiktokRefused = outcome.kind === 'needs_you' && outcome.code === 'publish_rejected';
 const needsCount = outcome.kind === 'needs_you'
-  ? (state.needsDay === today ? Number(state.needsCount) || 0 : 0) + 1 : 0;
+  ? (state.needsDay === today ? Number(state.needsCount) || 0 : 0) + (tiktokRefused ? 0 : 1) : 0;
 
 // Released clips are retried by a later run: nothing reached TikTok (retryable,
-// auth_invalid, dry run) or today's cap was hit. A dry run never uploads, so even
+// auth_invalid, dry run), today's cap was hit, or TikTok did not publish for a
+// reason that is not the clip's (deferred). A dry run never uploads, so even
 // a "needs you" answer (e.g. simulate=auth_invalid) releases the clip there. A
 // real "posted" is always kept, whatever the mode.
-const releaseClip = ['retryable', 'auth_invalid', 'dry_run', 'daily_cap'].includes(outcome.kind)
+const releaseClip = ['retryable', 'auth_invalid', 'dry_run', 'daily_cap', 'deferred'].includes(outcome.kind)
   || (pick.dryRun === true && ['needs_you', 'ambiguous'].includes(outcome.kind));
-// The slot stays used when an upload may have reached TikTok (posted,
-// ambiguous) or the daily cap is hit; a definite "not uploaded" frees it for
-// the next 15-minute run. needs_you frees it only for the first 2 in a row, so
-// a systematic refusal sets aside at most 5 clips a day (2 + the 3 slots).
+// The slot stays used when an upload may have reached TikTok (posted, ambiguous),
+// TikTok refused it, it was deferred, or the daily cap is hit; any other definite
+// "not uploaded" frees it for the next 15-minute run. needs_you frees it only for
+// the first 2 of a streak (needsCount; any other outcome, a 503 included, ends the
+// streak, while a TikTok refusal neither counts toward it nor ends it), so a
+// systematic refusal costs at most 2 extra clips per streak beyond the slots.
 const releaseSlot = ['retryable', 'auth_invalid', 'dry_run', 'posted_elsewhere'].includes(outcome.kind)
-  || (outcome.kind === 'needs_you' && needsCount <= NEEDS_SLOT_RELEASES)
+  || (outcome.kind === 'needs_you' && !tiktokRefused && needsCount <= NEEDS_SLOT_RELEASES)
   || (pick.dryRun === true && outcome.kind !== 'posted');
 const claimStatus = {
   posted: 'posted', posted_elsewhere: 'posted_elsewhere', needs_you: 'needs_you', ambiguous: 'failed',
@@ -251,7 +268,7 @@ const line = (label, v) => (v ? `\n${label}: ${v}` : '');
 const detail = `${line('code', outcome.code)}${line('error_id', outcome.errorId)}${line('file', pick.filename)}`;
 const due = (n, first) => n >= first && (n - first) % REALERT_EVERY === 0;
 
-function releaseSteps(withLedger) {
+function releaseSteps(withLedger, fixLine) {
   if (pick.dryRun === true) return ''; // a dry run already released its claim
   const job = path.basename(String(pick.jobDir || ''));
   const file = String(pick.filename || '');
@@ -261,6 +278,7 @@ function releaseSteps(withLedger) {
   // NAME_RE allows no quote, so single quotes keep a name with spaces one KEY.
   const key = `'${job}/${file}'`;
   const release = `${SSH_EXEC} rm "${INBOX}/${job}/.claims/${file}.json"'`;
+  if (fixLine) return `\n${fixLine}\n${release}`;
   if (!withLedger) {
     return `\n1. Fix the clip (re-export it), or leave it set aside.\n2. To let n8n retry it, release the n8n claim:\n${release}`;
   }
@@ -279,6 +297,14 @@ const info = [];
 const infoDays = {};
 if (outcome.kind === 'auth_invalid' && due(authCount, AUTH_ALERT_AFTER)) {
   safety.push(`🔑 Reelsmith: TikTok session invalid (${authCount} in a row). Run \`make refresh-cookies\` in tiktok-sidecar; clips wait and retry every 15 min.` + detail);
+} else if (tiktokRefused) {
+  safety.push('Reelsmith: TikTok refused to publish it (not posted).' + detail
+    + releaseSteps(false, 'Check the caption (see ADR-0002) in the Mac export and let it sync, or leave it set aside; to retry, release the claim:'));
+} else if (outcome.kind === 'deferred') {
+  safety.push((outcome.code === 'signature_failed'
+    ? 'Reelsmith: the sidecar\'s signing helper failed (not posted). Check the signing helper in tiktok-sidecar.'
+    : 'Reelsmith: TikTok says "posting too fast" (not posted). Possible throttling: if it repeats, lower DAILY_CAP.')
+    + ' The clip is released for a later slot; this slot stays used.' + detail);
 } else if (outcome.kind === 'needs_you') {
   safety.push((outcome.code === 'ambiguous'
     ? 'Reelsmith: a clip is blocked by an earlier upload that may have posted (it will not be retried).'
@@ -307,6 +333,12 @@ if (outcome.kind === 'dry_run' && outcome.code === 'posting_disabled' && pick.dr
   && counters.postingDisabledAlertDay !== today) {
   info.push('Reelsmith: the sidecar has POSTING_ENABLED=false while the workflow is live; clips are released and retried every 15 min.');
   infoDays.postingDisabledAlertDay = today;
+}
+// The sidecar's daily cap is reached (a manual upload the same day, or the caps
+// not yet synced): the clip is released and the slot stays used, so say so once a day.
+if (outcome.kind === 'daily_cap' && counters.dailyCapAlertDay !== today) {
+  info.push('Reelsmith: today\'s upload cap is reached; clips wait for tomorrow (this slot is used).' + detail);
+  infoDays.dailyCapAlertDay = today;
 }
 const parts = [...safety, ...info];
 const alertText = parts.length ? (pick.dryRun === true ? '[dry run] ' : '') + parts.join('\n\n') : null;

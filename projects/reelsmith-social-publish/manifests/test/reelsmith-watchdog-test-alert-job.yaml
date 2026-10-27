@@ -64,7 +64,7 @@ spec:
             - |
               set -u
               export LC_ALL=C
-              DIGEST_HOUR=12   # the 12:45 run carries the daily digest of ongoing conditions
+              DIGEST_HOUR=09   # the 09:45 run carries the daily digest; zero-padded like date +%H
               STALE_HOURS=48
 
               log() { printf '%s\n' "$*"; }
@@ -117,7 +117,7 @@ spec:
 
               HOUR=$(TZ=SAST-2 date +%H)   # SAST is UTC+2 all year; the POSIX form needs no tzdata
               DIGEST=0; [ "$HOUR" = "$DIGEST_HOUR" ] && DIGEST=1
-              LOOKBACK=4; [ "$DIGEST" = 1 ] && LOOKBACK=17
+              LOOKBACK=4; [ "$DIGEST" = 1 ] && LOOKBACK=13
               NOW_ITEMS=; DAY_ITEMS=
               add_now() { NOW_ITEMS="${NOW_ITEMS:+$NOW_ITEMS; }$1"; }
               add_day() { DAY_ITEMS="${DAY_ITEMS:+$DAY_ITEMS; }$1"; }
