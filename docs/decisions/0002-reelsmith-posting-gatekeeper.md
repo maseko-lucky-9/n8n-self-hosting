@@ -119,12 +119,17 @@ refusal would lose clips that post on a second try.
 - **Why the slot stays used, and why another clip goes first.** The sidecar's 12-hour pause
   depends only on 2 failed attempts in a row, not on their spacing. Keeping the slot means the
   retry comes at least 160 minutes later (one attempt per slot), and the retry-after rule puts a
-  different clip in between, so a single refusal no longer leads straight to a second consecutive
-  failure. A set-aside at the 2nd refusal may still coincide with the 12-hour pause if the
-  attempt before it also failed.
-- **retryAfter** names the clip just released after a refusal. Pick Due Clip moves it one place
-  back within its video for the next pick only; Log Results drops it once a claim is kept and
-  keeps it while attempts are only released. Dry runs never set it.
+  different clip in between. That makes two failures in a row less likely; a retry never directly
+  follows its own refusal. A set-aside at the 2nd refusal may still coincide with the 12-hour
+  pause if the attempt before it also failed.
+- **retryAfter** names the clip just released after a refusal. While it is set, Pick Due Clip
+  moves that clip one place back within its video. It is dropped once an attempt posts, or when
+  the flagged clip itself reaches a final outcome; it lasts through released attempts (e.g. a
+  sidecar 503) and other clips' set-asides, not only the next pick. Dry runs never set it.
+- **Known limits.** If the refused clip is its video's only ready clip, it is retried at the next
+  attempt even when another video could go (documented and tested). Independent refusals still
+  produce consecutive-failure pairs at about the same rate; only a refusal tied to the clip
+  itself gets better.
 - **Lifetime of the count.** It is dropped once the clip's outcome is final (posted,
   posted_elsewhere, set aside, ambiguous) and kept while the clip is only released (sidecar busy,
   cookie, daily cap, deferred). Dry runs never read or change it. Only the newest 50 clips are kept.

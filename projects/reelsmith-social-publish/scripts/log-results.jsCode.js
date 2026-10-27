@@ -285,14 +285,18 @@ const counters = {
   ...(tracksRefusals ? { refusals: Object.fromEntries(refusals) } : {}),
 };
 // retryAfter: the clip just released after a refusal; Pick Due Clip puts another
-// clip of its video first. Kept while attempts are only released, dropped once a
-// claim is kept (the next attempt settled). Dry runs never touch it.
+// clip of its video first. Dropped once an attempt posts, or when the flagged clip
+// itself reaches a final outcome; it lasts through released attempts (e.g. a 503)
+// and through other clips' set-asides (a 400 frees the slot for the next run).
+// Dry runs never touch it.
 if (tracksRefusals) {
   if (retryRefused) counters.retryAfter = clipKey;
-  else if (!releaseClip || !isClipKey(state.retryAfter)) delete counters.retryAfter;
+  else if (outcome.kind === 'posted' || !isClipKey(state.retryAfter)
+    || (!releaseClip && state.retryAfter === clipKey)) delete counters.retryAfter;
 }
 // Accepted window: a crash after step 1 and before this write loses the refusal
-// count, so that clip gets one extra retry. Never a lost or doubled post.
+// count and the retryAfter flag, so that clip gets one extra retry, possibly at the
+// very next attempt. Never a lost or doubled post.
 writeJsonAtomic(RETRY_STATE, counters);
 
 // 3. One row per outcome in the job's results.log.csv (live column order; the

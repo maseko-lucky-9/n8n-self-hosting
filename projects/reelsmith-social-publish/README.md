@@ -301,10 +301,13 @@ manifest is never archived. The Telegram alert prints the exact commands for tha
   sets it aside with an alert: probably the clip itself; re-export it, then release the claim with
   the same command. Or leave it set aside. Either way the slot stays used: at most one upload
   attempt per slot. The sidecar also pauses posting for 12h after 2 failed attempts in a row, so
-  back-to-back refusals can cost the rest of the day's slots; putting another clip between a
-  refusal and its retry keeps a single refusal from becoming 2 in a row. The per-clip count lives in
-  `.state/retryable-failures.json` (`refusals`, the newest 50 clips, and `retryAfter`, the clip
-  waiting behind another) and is dropped once the clip's outcome is final. A refusal that says "You are posting too fast", and a 502
+  back-to-back refusals can cost the rest of the day's slots. Putting another clip between a
+  refusal and its retry makes two failures in a row less likely; a retry never directly follows
+  its own refusal. The per-clip count lives in `.state/retryable-failures.json` (`refusals`, the
+  newest 50 clips) and is dropped once the clip's outcome is final. The flag `retryAfter` (the
+  clip waiting behind another) is dropped once an attempt posts, or when the flagged clip itself
+  reaches a final outcome; it lasts through released attempts (e.g. a sidecar 503), not only the
+  next pick. A refusal that says "You are posting too fast", and a 502
   `signature_failed`, are not the clip's fault: the clip is released for a later slot and a
   Telegram alert says so.
 

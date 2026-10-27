@@ -599,6 +599,7 @@ s.check('refusals: a dry run never reads, counts or changes them', async () => {
   fs.writeFileSync(pick.claimPath, JSON.stringify({ status: 'claimed' }));
   await log(root, pick, sidecar(200, 'posted'));
   assert.deepEqual(readRefusals(root), seeded.refusals, 'a dry-run post cleared a live count');
+  assert.equal(h.readJson(statePath(root)).retryAfter, 'jobB/x.mp4', 'a dry-run post cleared the live flag');
   const fresh = await picked({ live: false });
   await log(fresh.root, fresh.pick, REFUSED);
   assert.equal('refusals' in h.readJson(statePath(fresh.root)), false);
@@ -648,14 +649,32 @@ s.check('retryAfter: only a counted refusal sets it (never throttling or a signi
   assert.equal(h.readJson(statePath(root)).retryAfter, KEY, 'a new refusal does not overwrite the flag');
 });
 
+s.check('retryAfter: other clips\' set-asides keep it; a post, or the flagged clip\'s own final outcome, drops it', async () => {
+  const { root, pick } = await picked();
+  const other = { ...pick, clip_key: 'jobA/02_clip.mp4', filename: '02_clip.mp4', claimPath: path.join(path.dirname(pick.claimPath), '02_clip.mp4.json') };
+  const flag = () => h.readJson(statePath(root)).retryAfter;
+  const run = async (p, response) => { reclaim(p); await log(root, p, response); return flag(); };
+  assert.equal(await run(pick, REFUSED), KEY);
+  assert.equal(await run(other, sidecar(400, 'bad_input')), KEY, 'a 400 on another clip (slot freed) dropped the flag');
+  assert.equal(await run(other, sidecar(409, 'duplicate')), KEY, 'a 409 duplicate on another clip dropped the flag');
+  assert.equal(await run(other, sidecar(504, 'timeout')), KEY, 'an ambiguous outcome on another clip dropped the flag');
+  assert.equal(await run(other, sidecar(200, 'posted')), undefined, 'a post did not drop the flag');
+  // the flagged clip's own final outcome (here its 2nd refusal) drops it too
+  const second = await picked();
+  seedState(second.root, { refusals: { [KEY]: 1 }, retryAfter: KEY });
+  await log(second.root, second.pick, REFUSED);
+  assert.equal('retryAfter' in h.readJson(statePath(second.root)), false, 'the flagged clip\'s final refusal did not drop the flag');
+});
+
 s.check('refusals: a clip without a <job>/<file> key is set aside at once (never retried without a count)', async () => {
   for (const key of ['', 'noslash.mp4', undefined]) {
     const { root, pick } = await picked();
-    const { out } = await log(root, { ...pick, clip_key: key }, REFUSED);
+    const { out, sent } = await log(root, { ...pick, clip_key: key }, REFUSED);
     assert.equal(out.outcome, 'needs_you', String(key));
     assert.equal(h.readJson(pick.claimPath).status, 'needs_you');
     assert.deepEqual(readRefusals(root), {});
     assert.equal('retryAfter' in h.readJson(statePath(root)), false);
+    assert.equal(sent[0].body.text.includes('twice'), false, 'refused once, not twice');
   }
 });
 

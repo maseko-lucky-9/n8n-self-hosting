@@ -852,9 +852,10 @@ s.check('multi-day: TikTok refusing every clip (502 publish_rejected): one attem
     const item = await dispatchRun(root, day.plus({ minutes: m }), refuse);
     if (item) tried.push(`${day.plus({ minutes: m }).toFormat('HH:mm')} ${item.filename}`);
   }
-  // 09:00 01 refused (retryAfter 01); 12:00 02 goes first, refused (retryAfter 02); 15:00 01 is
-  // retried, set aside (flag cleared); 18:00 02 retried, set aside; 21:00 03 refused once.
-  assert.deepEqual(tried, ['09:00 01_clip.mp4', '12:00 02_clip.mp4', '15:00 01_clip.mp4', '18:00 02_clip.mp4', '21:00 03_clip.mp4']);
+  // 09:00 01 refused (flag 01); 12:00 02 goes first, refused (flag 02); 15:00 01 retried and set
+  // aside (the flag stays on 02: only a post or 02's own final outcome drops it); 18:00 03 goes
+  // before 02, refused (flag 03); 21:00 02 retried and set aside (flag stays on 03).
+  assert.deepEqual(tried, ['09:00 01_clip.mp4', '12:00 02_clip.mp4', '15:00 01_clip.mp4', '18:00 03_clip.mp4', '21:00 02_clip.mp4']);
   assert.deepEqual(h.listClaims(root).filter((c) => c.data.status === 'needs_you').map((c) => c.data.clip_key).sort(),
     ['jobA/01_clip.mp4', 'jobA/02_clip.mp4']);
   const state = h.readJson(path.join(root, '.state', 'retryable-failures.json'));
@@ -935,6 +936,16 @@ s.check('refusal retry: Pick Due Clip only reads the flag; a junk or unknown fla
     assert.equal(item.json.clip_key, want, label);
     assert.equal(fs.readFileSync(path.join(root, '.state', 'retryable-failures.json'), 'utf8'), raw, `${label}: the flag was rewritten`);
   }
+});
+
+s.check('Pick Due Clip reads a state file that is not an object as empty (no "0" keys from a string)', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'jobA', { rows: [{ filename: '01_huge.mp4', size: 300 * 1048576 + 1 }], mtime: '2026-10-15T10:00:00' });
+  fs.mkdirSync(path.join(root, '.state'), { recursive: true });
+  const statePath = path.join(root, '.state', 'retryable-failures.json');
+  fs.writeFileSync(statePath, '"abc"');
+  await assert.rejects(pick(root, '2026-10-17T12:00:00'), /can never be posted/);
+  assert.deepEqual(h.readJson(statePath), { idleNoticeDay: '2026-10-17' });
 });
 
 s.check('Pick Due Clip\'s once-a-day state write keeps Log Results\' refusal counts', async () => {

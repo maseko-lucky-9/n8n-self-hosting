@@ -379,8 +379,8 @@ for (const m of manifests) {
 }
 // 4c. A clip TikTok refused once (Log Results' retryAfter) is retried after another
 // clip: it moves one place back within its video, for this pick only, unless it is
-// that video's only ready clip. Log Results clears the flag when the next attempt's
-// claim is kept; this node never writes it.
+// that video's only ready clip. Log Results drops the flag once an attempt posts or
+// the flagged clip reaches a final outcome; this node never writes it.
 // A junk flag (not a string, or no such ready clip) matches nothing: a no-op.
 const state = readState();
 {
