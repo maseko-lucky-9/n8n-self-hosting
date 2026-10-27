@@ -90,7 +90,8 @@ s.check('nodes, versions, schedule and connections', () => {
   const sched = node('Schedule');
   assert.equal(sched.type, 'n8n-nodes-base.scheduleTrigger');
   assert.equal(sched.typeVersion, 1);
-  assert.deepEqual(sched.parameters.rule.interval, [{ field: 'cronExpression', expression: '*/15 12-20 * * *' }]);
+  assert.deepEqual(sched.parameters.rule.interval, [{ field: 'cronExpression', expression: '*/15 9-21 * * *' }]);
+  assert.match(sched.notes, /^Every 15 min, 09:00-21:45 in /);
   for (const name of Object.keys(SCRIPTS)) {
     assert.equal(node(name).type, 'n8n-nodes-base.code');
     assert.equal(node(name).typeVersion, 2);
