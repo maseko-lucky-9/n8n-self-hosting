@@ -895,6 +895,15 @@ s.check('refusal retry: the only ready clip of its video is retried next', async
   assert.equal(h.readJson(path.join(h.inboxOf(root), 'jobA', '.claims', '01_clip.mp4.json')).status, 'posted');
 });
 
+s.check('refusal retry: the only ready clip of a video is retried next even when another video could go', async () => {
+  const root = h.makeRoot();
+  job(root, 'A', 1, '2026-10-16T10:00:00'); // newest manifest: first in the rotation
+  job(root, 'B', 1, '2026-10-15T10:00:00');
+  const sidecar = refusedOnce();
+  assert.equal((await dispatchRun(root, '2026-10-17T09:00:00', sidecar)).clip_key, 'A/01_clip.mp4');
+  assert.equal((await dispatchRun(root, '2026-10-17T12:00:00', sidecar)).clip_key, 'A/01_clip.mp4');
+});
+
 s.check('refusal retry: a released next attempt keeps the flag, so the refused clip still waits', async () => {
   const root = h.makeRoot();
   job(root, 'jobA', 3);

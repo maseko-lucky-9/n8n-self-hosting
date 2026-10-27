@@ -381,8 +381,9 @@ for (const m of manifests) {
 // clip: it moves one place back within its video, for this pick only, unless it is
 // that video's only ready clip. Log Results clears the flag when the next attempt's
 // claim is kept; this node never writes it.
+// A junk flag (not a string, or no such ready clip) matches nothing: a no-op.
 const state = readState();
-if (typeof state.retryAfter === 'string' && state.retryAfter.includes('/')) {
+{
   const i = candidates.findIndex((c) => `${c.m.job}/${c.clip.nfc}` === state.retryAfter);
   const next = i < 0 ? -1 : candidates.findIndex((c, k) => k > i && c.m.job === candidates[i].m.job);
   if (next >= 0) [candidates[i], candidates[next]] = [candidates[next], candidates[i]];
