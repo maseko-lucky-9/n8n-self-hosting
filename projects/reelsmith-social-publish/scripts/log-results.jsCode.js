@@ -1,8 +1,9 @@
 // Log Results: turns the sidecar's answer into ONE outcome for the picked clip.
 // Order matters: the claim (and slot) are settled on disk BEFORE any alert, so
-// a failed Telegram send can never leave a clip half-recorded; the send
-// failure then fails the run so the watchdog sees it. Canonical source:
-// scripts/log-results.jsCode.js.
+// a failed Telegram send can never leave a clip half-recorded; the failed send
+// of a safety message then fails the run, which the watchdog's failed-execution
+// check reports (a message gated off by NOTIFY_INFO is never sent, so never fails
+// the run). Canonical source: scripts/log-results.jsCode.js.
 const fs = require('fs');
 const path = require('path');
 
@@ -25,13 +26,15 @@ const REFUSALS_KEPT = 50;       // per-clip refusal counts kept in the state fil
 // which repeats the name in two ledger commands and the claim-release command,
 // stays under this cap (Telegram's own limit is 4096).
 const ALERT_MAX_CHARS = 2000;
-// Only two kinds of message are always sent: "uploaded as Only me" (the owner's one
-// manual step) and a clip refused for bad input or size (400/413: the homelab desk
-// cannot see those). Every other notice (first refusal, set-aside after two
-// refusals, throttle or signing failure, unknown outcome, sidecar unavailable,
-// session invalid, daily cap, kill switch, manifest problems) is covered by the
-// homelab desk's alerts and is sent only when this is true. Claims, slots, counters
-// and result rows are the same either way: only the outgoing message is gated.
+// Three kinds of message are always sent: "uploaded as Only me" (the owner's one
+// manual step), a clip refused for bad input or size (400/413: the homelab desk cannot
+// see those), and an unknown upload outcome (a timed-out or unexpected answer may still
+// be on TikTok as Only me, and only the owner can check). Every other notice (first
+// refusal, set-aside after two refusals, throttle or signing failure, a clip blocked by
+// an earlier unknown upload, sidecar unavailable, session invalid, daily cap, kill
+// switch, manifest problems) is covered by the homelab desk's alerts and is sent only
+// when this is true. Claims, slots, counters and result rows are the same either way:
+// only the outgoing message is gated.
 const NOTIFY_INFO = false;
 const HEADER = 'timestamp,filename,title,tiktok_post_id,tiktok_post_url,youtube_video_id,youtube_status,error,tiktok_status\n';
 // Failures before the request left n8n: connect and DNS errors. Anything later
@@ -386,7 +389,7 @@ if (outcome.kind === 'auth_invalid' && due(authCount, AUTH_ALERT_AFTER)) {
     + (needsCount > NEEDS_SLOT_RELEASES ? '\n3+ clips refused in a row: check the sidecar contract.' : '')
     + detail + releaseSteps(outcome.code === 'ambiguous'), clipFault);
 } else if (outcome.kind === 'ambiguous') {
-  queue(safety, 'Reelsmith: upload outcome unknown (it may have posted).' + detail + releaseSteps(true));
+  queue(safety, 'Reelsmith: upload outcome unknown (it may have posted).' + detail + releaseSteps(true), true);
 } else if (outcome.kind === 'retryable' && due(retryCount, RETRY_ALERT_AFTER)) {
   queue(safety, `Reelsmith: sidecar unavailable ${retryCount} times in a row; clips are waiting.` + detail);
 }

@@ -1,31 +1,45 @@
-# Watchdog for Reelsmith Social Publish: the Mac-asleep backstop. The homelab desk
-# (OpenClaw, runs on the Mac) watches the whole publish workflow; this CronJob keeps
-# only the two faults that must still reach the owner while the Mac is asleep, one
-# check once a day at 09:45 SAST (ADR-0002, amendment 2026-10-28; plan section A2b):
-#  - the tiktok-sidecar does not answer or is unhealthy => "sidecar down" /
-#    "sidecar session check failed";
-#  - the TikTok cookie is invalid => "cookie expired - run make refresh-cookies"
-#    (401), or "no cookie on the sidecar" (503).
-# It asks GET /healthz/session (the sidecar caches it; no forced refresh). A 502 (the
-# sidecar is up but cannot reach TikTok) is not a cookie fault and stays silent.
-# Dropped, because the desk owns them: failed executions of the workflow, "no
-# executions in 25h", no success for 48h, a paused sidecar, and the per-slot runs.
-# One run sends at most one message; every message carries only fixed strings, validated
-# integers and the sidecar's HTTP status (everything else is stripped, see clean()).
+# Watchdog for Reelsmith Social Publish: the 15-minute dispatcher (n8n workflow
+# SKLkX5qUDYLlWTxo, 09:00-21:45 SAST) and the tiktok-sidecar gatekeeper. It is the
+# Mac-asleep backstop: the homelab desk (OpenClaw, on the Mac) watches the workflow
+# too, but nothing in the cluster reads n8n's execution state except this job.
+#
+# Runs 45 minutes after each posting slot (09:00, 12:00, 15:00, 18:00, 21:00);
+# the 21:45 run coincides with the last dispatcher tick. It reads execution_entity directly
+# (independent of n8n's own health) and asks the sidecar for its state.
+#
+# Checks (every Telegram message carries only fixed strings, validated integers
+# and the workflow id; everything else is stripped, see clean()):
+#  a. failed executions (status error/crashed/canceled; an execution timeout
+#     may be recorded as canceled) in the last 4h. Reported on EVERY run. The
+#     09:45 run looks back 13h (to 20:45) so the previous evening's 21:45 tick
+#     and anything finishing after the 21:45 run are not missed.
+#  b. GET /healthz/session, on the 09:45 run only (so at most once a day):
+#     401 => "cookie expired - run make refresh-cookies"; 503 => no cookie on the
+#     sidecar; 502 => "sidecar cannot reach TikTok"; no answer (refused, timeout)
+#     => "sidecar down"; any other status => "sidecar session check failed".
+# Dropped on 2026-10-28 (ADR-0002 amendment; the desk owns them): the "no executions
+# in 25h" check, the /api/stats checks (no success for 48h, paused, stats unreadable)
+# and the daily digest list. One run sends at most one message.
 #
 # TEST_ALERT=1 sends exactly one test message and exits 0 (see
 # ../test/reelsmith-watchdog-test-alert-job.yaml). A failed send exits 1 and
 # prints only the HTTP status, never the URL (it contains the bot token).
 #
-# Self-test: ../scripts/watchdog.selftest.sh runs this script against a stub wget.
-# Keep the Job copy of the script identical (the self-test checks it).
+# Self-test: ../scripts/watchdog.selftest.sh runs this script against stub psql
+# and wget. Keep the Job copy of the script identical (the self-test checks it).
 #
 # Secrets (NEVER in git):
+#  - reelsmith-watchdog-db / password  -> read-only role n8n_watchdog (SELECT on
+#    execution_entity only). Created out-of-band; to re-create it, generate the
+#    password on the homelab and keep it off argv (stdin only):
+#      PW=$(openssl rand -hex 24)
+#      printf "DO \$do\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='n8n_watchdog') THEN CREATE ROLE n8n_watchdog LOGIN; END IF; END \$do\$;\nALTER ROLE n8n_watchdog LOGIN PASSWORD '%s';\nGRANT CONNECT ON DATABASE n8n TO n8n_watchdog; GRANT USAGE ON SCHEMA public TO n8n_watchdog; GRANT SELECT ON execution_entity TO n8n_watchdog;\n" "$PW" \
+#        | kubectl exec -i -n n8n-live <pg-pod> -c postgres -- psql -U postgres -d n8n -v ON_ERROR_STOP=1 -f -
+#      printf '%s' "$PW" | kubectl create secret generic reelsmith-watchdog-db -n n8n-live --from-file=password=/dev/stdin
+#    ponytail: a direct k8s Secret, not ESO/Vault-managed like the others here.
+#      Trivially re-creatable read-only cred; promote to an ExternalSecret if it
+#      ever needs to survive a namespace rebuild unattended.
 #  - reelsmith-telegram / bot_token, chat_id  -> existing ESO-synced alert creds.
-# No longer used here: the read-only Postgres role n8n_watchdog and the
-# reelsmith-watchdog-db Secret (and the reelsmith-watchdog-to-postgres NetworkPolicy)
-# from when this job read execution_entity. They are left in place; retire them in a
-# separate change.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -36,10 +50,10 @@ metadata:
     app.kubernetes.io/component: reelsmith-watchdog
 spec:
   # Switched on 2026-10-24: six uploads failed in a row with no alert while this
-  # was suspended. Set back to true only while the sidecar is deliberately down.
+  # was suspended. Set back to true only while the workflow is deactivated.
   suspend: false
   timeZone: Africa/Johannesburg
-  schedule: "45 9 * * *"
+  schedule: "45 9,12,15,18,21 * * *"
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 600   # don't fire a stale missed run after a host-off
   successfulJobsHistoryLimit: 3
@@ -67,17 +81,21 @@ spec:
               type: RuntimeDefault
           containers:
             - name: watchdog
-              # Ships busybox wget; nothing is installed at runtime (the image is kept so its
-              # digest does not change; it no longer needs psql).
+              # Ships psql and busybox wget; nothing is installed at runtime.
               # Pinned by digest (the multi-arch index of 16-alpine on 2026-10-24).
               image: postgres:16-alpine@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36
               env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef: { name: reelsmith-watchdog-db, key: password }
                 - name: TG_TOKEN
                   valueFrom:
                     secretKeyRef: { name: reelsmith-telegram, key: bot_token }
                 - name: TG_CHAT
                   valueFrom:
                     secretKeyRef: { name: reelsmith-telegram, key: chat_id }
+                - name: WF_ID
+                  value: "SKLkX5qUDYLlWTxo"
                 # Short in-cluster name, resolved through the pod's DNS search path.
                 - name: SIDECAR_URL
                   value: "http://tiktok-sidecar.n8n-live.svc:8000"
@@ -88,6 +106,7 @@ spec:
                 - |
                   set -u
                   export LC_ALL=C
+                  DIGEST_HOUR=09   # the 09:45 run also probes the sidecar and looks back further; zero-padded like date +%H
 
                   log() { printf '%s\n' "$*"; }
                   die() { log "FATAL: $*"; exit 1; }
@@ -133,29 +152,52 @@ spec:
                     exit 0
                   fi
 
+                  valid "${WF_ID:-}" 'A-Za-z0-9' '[A-Za-z0-9]{1,32}' || die "WF_ID is missing or malformed"
                   valid "${ACCOUNT:-}" 'a-z0-9_-' '[a-z0-9_-]{1,32}' || die "ACCOUNT is missing or malformed"
                   valid "${SIDECAR_URL:-}" 'A-Za-z0-9.:/-' 'http://[A-Za-z0-9.-]+:[0-9]{1,5}' || die "SIDECAR_URL is missing or malformed"
 
-                  ITEMS=
-                  add() { ITEMS="${ITEMS:+$ITEMS; }$1"; }
+                  HOUR=$(TZ=SAST-2 date +%H)   # SAST is UTC+2 all year; the POSIX form needs no tzdata
+                  DIGEST=0; [ "$HOUR" = "$DIGEST_HOUR" ] && DIGEST=1
+                  LOOKBACK=4; [ "$DIGEST" = 1 ] && LOOKBACK=13
+                  NOW_ITEMS=; DAY_ITEMS=
+                  add_now() { NOW_ITEMS="${NOW_ITEMS:+$NOW_ITEMS; }$1"; }
+                  add_day() { DAY_ITEMS="${DAY_ITEMS:+$DAY_ITEMS; }$1"; }
 
-                  # Only the two faults the homelab desk cannot report when the Mac is asleep: the
-                  # sidecar is down, or the TikTok cookie is invalid. The probe is the sidecar's
-                  # cached session check (no forced refresh). Everything else (failed executions,
-                  # stale or paused posting, TikTok refusals) is watched by the desk.
-                  fetch "$SIDECAR_URL/healthz/session?account=$ACCOUNT"
-                  case $STATUS in
-                    200) ;;
-                    401) add "cookie expired - run make refresh-cookies" ;;
-                    503) add "no cookie on the sidecar - run make refresh-cookies (session check HTTP 503)" ;;
-                    000) add "sidecar down (session check HTTP 000)" ;;
-                    502) ;;   # the sidecar is up but cannot reach TikTok: not a cookie fault, the desk covers it
-                    *) add "sidecar session check failed (HTTP $STATUS)" ;;
-                  esac
-                  log "session=$STATUS"
+                  # (a) failed executions in the lookback window. Nothing else in the cluster reads n8n's
+                  # execution state, so this check stays on every run.
+                  export PGCONNECT_TIMEOUT=10 PGOPTIONS='-c statement_timeout=10000'
+                  RES=$(psql -X -h postgres-service -U n8n_watchdog -d n8n -tA -c \
+                    "SELECT count(*) FILTER (WHERE status IN ('error','crashed','canceled')) \
+                     ||'|'|| COALESCE((max(id) FILTER (WHERE status IN ('error','crashed','canceled')))::text, '0') \
+                     FROM execution_entity WHERE \"workflowId\"='$WF_ID' AND \"startedAt\" > now() - interval '$LOOKBACK hours';")
+                  if valid "$RES" '0-9|' '[0-9]{1,9}\|[0-9]{1,12}'; then
+                    ERRS=${RES%%|*}; LAST_ID=${RES#*|}
+                    [ "$ERRS" -gt 0 ] && add_now "$ERRS failed execution(s) of workflow $WF_ID in the last ${LOOKBACK}h, latest id $LAST_ID"
+                    log "hour=$HOUR lookback=${LOOKBACK}h failed=$ERRS"
+                  else
+                    add_now "n8n database query failed"
+                    log "hour=$HOUR database query failed"
+                  fi
 
-                  if [ -z "$ITEMS" ]; then log "ok: no alert"; exit 0; fi
-                  send "Reelsmith watchdog: $ITEMS"
+                  if [ "$DIGEST" = 1 ]; then
+                    # (b) the sidecar is down, or the TikTok cookie is invalid: the once-a-day backstop for
+                    # the Mac-asleep case. The sidecar caches the probe (no forced refresh).
+                    fetch "$SIDECAR_URL/healthz/session?account=$ACCOUNT"
+                    case $STATUS in
+                      200) ;;
+                      401) add_day "cookie expired - run make refresh-cookies" ;;
+                      502) add_day "sidecar cannot reach TikTok (session check HTTP 502)" ;;
+                      503) add_day "no cookie on the sidecar - run make refresh-cookies (session check HTTP 503)" ;;
+                      000) add_day "sidecar down (session check HTTP 000)" ;;
+                      *) add_day "sidecar session check failed (HTTP $STATUS)" ;;
+                    esac
+                    log "session=$STATUS"
+                  fi
+
+                  MSG=$NOW_ITEMS
+                  if [ "$DIGEST" = 1 ] && [ -n "$DAY_ITEMS" ]; then MSG="${MSG:+$MSG; }daily: $DAY_ITEMS"; fi
+                  if [ -z "$MSG" ]; then log "ok: no alert"; exit 0; fi
+                  send "Reelsmith watchdog: $MSG"
               resources:
                 requests: { cpu: 50m, memory: 64Mi }   # namespace LimitRange min cpu = 50m
                 limits: { cpu: 200m, memory: 128Mi }

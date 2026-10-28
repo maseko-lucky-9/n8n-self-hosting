@@ -64,6 +64,7 @@ spec:
             - |
               set -u
               export LC_ALL=C
+              DIGEST_HOUR=09   # the 09:45 run also probes the sidecar and looks back further; zero-padded like date +%H
 
               log() { printf '%s\n' "$*"; }
               die() { log "FATAL: $*"; exit 1; }
@@ -109,29 +110,52 @@ spec:
                 exit 0
               fi
 
+              valid "${WF_ID:-}" 'A-Za-z0-9' '[A-Za-z0-9]{1,32}' || die "WF_ID is missing or malformed"
               valid "${ACCOUNT:-}" 'a-z0-9_-' '[a-z0-9_-]{1,32}' || die "ACCOUNT is missing or malformed"
               valid "${SIDECAR_URL:-}" 'A-Za-z0-9.:/-' 'http://[A-Za-z0-9.-]+:[0-9]{1,5}' || die "SIDECAR_URL is missing or malformed"
 
-              ITEMS=
-              add() { ITEMS="${ITEMS:+$ITEMS; }$1"; }
+              HOUR=$(TZ=SAST-2 date +%H)   # SAST is UTC+2 all year; the POSIX form needs no tzdata
+              DIGEST=0; [ "$HOUR" = "$DIGEST_HOUR" ] && DIGEST=1
+              LOOKBACK=4; [ "$DIGEST" = 1 ] && LOOKBACK=13
+              NOW_ITEMS=; DAY_ITEMS=
+              add_now() { NOW_ITEMS="${NOW_ITEMS:+$NOW_ITEMS; }$1"; }
+              add_day() { DAY_ITEMS="${DAY_ITEMS:+$DAY_ITEMS; }$1"; }
 
-              # Only the two faults the homelab desk cannot report when the Mac is asleep: the
-              # sidecar is down, or the TikTok cookie is invalid. The probe is the sidecar's
-              # cached session check (no forced refresh). Everything else (failed executions,
-              # stale or paused posting, TikTok refusals) is watched by the desk.
-              fetch "$SIDECAR_URL/healthz/session?account=$ACCOUNT"
-              case $STATUS in
-                200) ;;
-                401) add "cookie expired - run make refresh-cookies" ;;
-                503) add "no cookie on the sidecar - run make refresh-cookies (session check HTTP 503)" ;;
-                000) add "sidecar down (session check HTTP 000)" ;;
-                502) ;;   # the sidecar is up but cannot reach TikTok: not a cookie fault, the desk covers it
-                *) add "sidecar session check failed (HTTP $STATUS)" ;;
-              esac
-              log "session=$STATUS"
+              # (a) failed executions in the lookback window. Nothing else in the cluster reads n8n's
+              # execution state, so this check stays on every run.
+              export PGCONNECT_TIMEOUT=10 PGOPTIONS='-c statement_timeout=10000'
+              RES=$(psql -X -h postgres-service -U n8n_watchdog -d n8n -tA -c \
+                "SELECT count(*) FILTER (WHERE status IN ('error','crashed','canceled')) \
+                 ||'|'|| COALESCE((max(id) FILTER (WHERE status IN ('error','crashed','canceled')))::text, '0') \
+                 FROM execution_entity WHERE \"workflowId\"='$WF_ID' AND \"startedAt\" > now() - interval '$LOOKBACK hours';")
+              if valid "$RES" '0-9|' '[0-9]{1,9}\|[0-9]{1,12}'; then
+                ERRS=${RES%%|*}; LAST_ID=${RES#*|}
+                [ "$ERRS" -gt 0 ] && add_now "$ERRS failed execution(s) of workflow $WF_ID in the last ${LOOKBACK}h, latest id $LAST_ID"
+                log "hour=$HOUR lookback=${LOOKBACK}h failed=$ERRS"
+              else
+                add_now "n8n database query failed"
+                log "hour=$HOUR database query failed"
+              fi
 
-              if [ -z "$ITEMS" ]; then log "ok: no alert"; exit 0; fi
-              send "Reelsmith watchdog: $ITEMS"
+              if [ "$DIGEST" = 1 ]; then
+                # (b) the sidecar is down, or the TikTok cookie is invalid: the once-a-day backstop for
+                # the Mac-asleep case. The sidecar caches the probe (no forced refresh).
+                fetch "$SIDECAR_URL/healthz/session?account=$ACCOUNT"
+                case $STATUS in
+                  200) ;;
+                  401) add_day "cookie expired - run make refresh-cookies" ;;
+                  502) add_day "sidecar cannot reach TikTok (session check HTTP 502)" ;;
+                  503) add_day "no cookie on the sidecar - run make refresh-cookies (session check HTTP 503)" ;;
+                  000) add_day "sidecar down (session check HTTP 000)" ;;
+                  *) add_day "sidecar session check failed (HTTP $STATUS)" ;;
+                esac
+                log "session=$STATUS"
+              fi
+
+              MSG=$NOW_ITEMS
+              if [ "$DIGEST" = 1 ] && [ -n "$DAY_ITEMS" ]; then MSG="${MSG:+$MSG; }daily: $DAY_ITEMS"; fi
+              if [ -z "$MSG" ]; then log "ok: no alert"; exit 0; fi
+              send "Reelsmith watchdog: $MSG"
           resources:
             requests: { cpu: 50m, memory: 64Mi }   # namespace LimitRange min cpu = 50m
             limits: { cpu: 200m, memory: 128Mi }

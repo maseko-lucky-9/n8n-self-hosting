@@ -4,7 +4,7 @@
 // every outcome row of the plan's table, the atomic claim write, claim-before-
 // alert ordering, alert failure -> thrown run, and the dry-run release.
 //   node log-results.selfcheck.js   -> exit 0 on pass, 1 on any failure.
-// NOTIFY_INFO ships false (only "posted" and 400/413 clip faults are sent). Checks
+// NOTIFY_INFO ships false (only "posted", 400/413 clip faults and an unknown outcome are sent). Checks
 // that assert a message's text open the gate explicitly with `notify: true`; the
 // gate-closed behaviour is checked from the shipped default (see "NOTIFY_INFO").
 const assert = require('node:assert/strict');
@@ -93,10 +93,10 @@ const TABLE = [
   ['connect timeout (ETIMEDOUT)', transport('ETIMEDOUT', 'connect ETIMEDOUT 127.0.0.1:8000'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
   ['connect EHOSTUNREACH', transport('EHOSTUNREACH', 'connect EHOSTUNREACH 127.0.0.1:8000'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
   ['ENETUNREACH (code only)', transport('ENETUNREACH', ''), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
-  ['read ETIMEDOUT (after sending)', transport('ETIMEDOUT', 'read ETIMEDOUT'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: etimedout/, row: 'failed' }],
-  ['EPIPE', transport('EPIPE', 'write EPIPE'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: epipe/, row: 'failed' }],
-  ['HTTP timeout (ECONNABORTED)', transport('ECONNABORTED', 'timeout of 673000ms exceeded'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: timeout/, row: 'failed' }],
-  ['ECONNRESET', transport('ECONNRESET', 'socket hang up'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: econnreset/, row: 'failed' }],
+  ['read ETIMEDOUT (after sending)', transport('ETIMEDOUT', 'read ETIMEDOUT'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: etimedout/, row: 'failed' }],
+  ['EPIPE', transport('EPIPE', 'write EPIPE'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: epipe/, row: 'failed' }],
+  ['HTTP timeout (ECONNABORTED)', transport('ECONNABORTED', 'timeout of 673000ms exceeded'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: timeout/, row: 'failed' }],
+  ['ECONNRESET', transport('ECONNRESET', 'socket hang up'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: econnreset/, row: 'failed' }],
   // TikTok refused the post: not published, the slot stays used. The 1st refusal of a
   // clip releases it for a later slot; the 2nd (state: already refused once) sets it aside.
   ['502 publish_rejected', sidecar(502, 'publish_rejected', { tiktok_status_code: 5, tiktok_status_msg: null }), { kind: 'refused_retry', claim: null, slot: true, alert: new RegExp('^' + RETRY_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$'), row: 'refused_retry' }],
@@ -106,14 +106,14 @@ const TABLE = [
   ['502 publish_rejected, throttled', sidecar(502, 'publish_rejected', { tiktok_status_msg: THROTTLE }), { kind: 'deferred', claim: null, slot: true, alert: /^Reelsmith: TikTok says "posting too fast" \(not posted\)[\s\S]*released for a later slot; this slot stays used\.\ncode: publish_rejected\nerror_id: err-123\nfile: 01_clip\.mp4$/, row: 'deferred' }],
   ['502 signature_failed', sidecar(502, 'signature_failed'), { kind: 'deferred', claim: null, slot: true, alert: /^Reelsmith: the sidecar's signing helper failed \(not posted\)[\s\S]*released for a later slot; this slot stays used\.\ncode: signature_failed\nerror_id: err-123\nfile: 01_clip\.mp4$/, row: 'deferred' }],
   // Every other 502, and those codes on any other status, may have posted.
-  ['502 other code', sidecar(502, 'upload_failed'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: upload_failed/, row: 'failed' }],
-  ['502 no JSON body', http(502, 'Bad Gateway'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: http_502/, row: 'failed' }],
-  ['500 publish_rejected', sidecar(500, 'publish_rejected', { tiktok_status_msg: THROTTLE }), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: publish_rejected/, row: 'failed' }],
-  ['504 signature_failed', sidecar(504, 'signature_failed'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: signature_failed/, row: 'failed' }],
-  ['500 internal', sidecar(500, 'internal'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: internal/, row: 'failed' }],
-  ['504 timeout', sidecar(504, 'timeout'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: timeout/, row: 'failed' }],
+  ['502 other code', sidecar(502, 'upload_failed'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: upload_failed/, row: 'failed' }],
+  ['502 no JSON body', http(502, 'Bad Gateway'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: http_502/, row: 'failed' }],
+  ['500 publish_rejected', sidecar(500, 'publish_rejected', { tiktok_status_msg: THROTTLE }), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: publish_rejected/, row: 'failed' }],
+  ['504 signature_failed', sidecar(504, 'signature_failed'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: signature_failed/, row: 'failed' }],
+  ['500 internal', sidecar(500, 'internal'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: internal/, row: 'failed' }],
+  ['504 timeout', sidecar(504, 'timeout'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: timeout/, row: 'failed' }],
   ['200 posting_disabled (real run, kill switch off)', http(200, { status: 'dry_run', code: 'posting_disabled' }), { kind: 'dry_run', claim: null, slot: false, alert: /^Reelsmith: the sidecar has POSTING_ENABLED=false while the workflow is live/, row: 'dry_run' }],
-  ['read EHOSTUNREACH (established socket)', transport('EHOSTUNREACH', 'read EHOSTUNREACH'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: ehostunreach/, row: 'failed' }],
+  ['read EHOSTUNREACH (established socket)', transport('EHOSTUNREACH', 'read EHOSTUNREACH'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: ehostunreach/, row: 'failed' }],
   ['EHOSTUNREACH (code only)', transport('EHOSTUNREACH', ''), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
 ];
 
@@ -145,9 +145,11 @@ for (const [name, response, want] of TABLE) {
 // The shipped default: NOTIFY_INFO is false. Only "posted" and a 400/413 clip fault are
 // sent; every other row of the table stays silent, with the claim, slot, counters and
 // result row exactly as when the gate is open.
+const names = ['read ETIMEDOUT (after sending)', 'EPIPE', 'HTTP timeout (ECONNABORTED)', 'ECONNRESET', '502 other code', '502 no JSON body',
+  '500 publish_rejected', '504 signature_failed', '500 internal', '504 timeout', 'read EHOSTUNREACH (established socket)'];
 const ALWAYS_SENT = TABLE.filter(([, , want]) => want.kept).map(([name]) => name);
-s.check('NOTIFY_INFO ships false and only posted, 400 bad_input and 413 too_large are always sent', () => {
-  assert.deepEqual(ALWAYS_SENT, ['200 posted', '400 bad_input', '413 too_large']);
+s.check('NOTIFY_INFO ships false; always sent: posted, 400 bad_input, 413 too_large and every unknown (ambiguous) outcome', () => {
+  assert.deepEqual(ALWAYS_SENT, ['200 posted', '400 bad_input', '413 too_large', ...names]);
   assert.equal(fs.readFileSync(path.join(__dirname, 'log-results.jsCode.js'), 'utf8').split('const NOTIFY_INFO = false;').length, 2);
 });
 
@@ -180,7 +182,7 @@ for (const [name, response, want] of TABLE) {
 s.check('default: a gated message never needs Telegram: a failing or unconfigured send neither throws nor is attempted', async () => {
   let calls = 0;
   const fail = async () => { calls += 1; const e = new Error('x'); e.code = 'ECONNRESET'; throw e; };
-  for (const response of [sidecar(504, 'timeout'), sidecar(401, 'auth_invalid'), sidecar(409, 'ambiguous'), sidecar(502, 'signature_failed')]) {
+  for (const response of [sidecar(502, 'publish_rejected', { tiktok_status_msg: THROTTLE }), sidecar(401, 'auth_invalid'), sidecar(409, 'ambiguous'), sidecar(502, 'signature_failed')]) {
     const { root, pick } = await picked();
     const r = await log(root, pick, response, { notify: false, httpRequest: fail });
     assert.equal(r.out.alerted, false);
@@ -188,7 +190,10 @@ s.check('default: a gated message never needs Telegram: a failing or unconfigure
     await log(nothing.root, nothing.pick, response, { notify: false, env: {} }); // TELEGRAM_* unset: still no throw
   }
   assert.equal(calls, 0);
-  // The always-sent ones still fail the run when they cannot be sent (400) or are only logged (posted).
+  // The always-sent ones still fail the run when they cannot be sent (400, unknown outcome) or are only logged (posted).
+  const unknown = await picked();
+  await assert.rejects(log(unknown.root, unknown.pick, sidecar(504, 'timeout'), { notify: false, httpRequest: fail }), /Telegram alert failed/);
+  assert.equal(h.readJson(unknown.pick.claimPath).status, 'failed', 'claim recorded before the failed send');
   const bad = await picked();
   await assert.rejects(log(bad.root, bad.pick, sidecar(400, 'bad_input'), { notify: false, httpRequest: fail }), /Telegram alert failed/);
   const logs = [];

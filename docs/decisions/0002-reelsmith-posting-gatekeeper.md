@@ -42,7 +42,7 @@ workflow, its scripts and the Kubernetes manifests), so it records where that de
 
 - Real uploads stay off until go-live step 7 flips `POSTING_ENABLED` in a reviewed manifest
   change. The go-live runbook and rollback are in `projects/reelsmith-social-publish/README.md`.
-- The watchdog CronJob ships suspended and is switched on after the first real post (since 2026-10-28 it only checks the sidecar and the cookie, see the last amendment).
+- The watchdog CronJob ships suspended and is switched on after the first real post (since 2026-10-28 its checks are trimmed, see the last amendment).
 - n8n needs no memory increase for big clips; the sidecar's limit rises to 1.5Gi instead.
 
 ## Amendment 2026-10-27: five slots, and a TikTok refusal is not "may have posted"
@@ -144,21 +144,26 @@ to the desk's existing agents, so the raw per-event messages are duplicates. Pla
 the owner's plan "Reelsmith upload monitoring on the OpenClaw homelab desk", section A2b (Telegram budget: about 3 "Only me" notices
 a day, plus at most 1 other desk message a week).
 
-- **Log Results** keeps two messages: "uploaded as Only me, set it to Everyone" (the owner's
-  decision on 2026-10-26: it is the one action they must take) and a 400/413 clip fault (the desk
-  cannot see why a clip is bad). First refusal, set-aside after two refusals, throttling,
-  signing failure, unknown outcome, sidecar unavailable, session invalid, daily cap, kill switch
-  and manifest problems sit behind the constant `NOTIFY_INFO`, shipped as `false`. The gate is on
-  the outgoing message only: claims, slots, counters and rows are unchanged, so no outcome logic
-  moved. A gated notice never fails the run.
-- **The watchdog** is cut to sidecar down and cookie invalid, once a day at 09:45 (the
-  Mac-asleep backstop; Alertmanager's critical alerts are the other). Failed executions, "no
-  executions in 25h", no success for 48h and a paused sidecar are dropped, as are the four
-  other daily runs, which only carried the failed-execution check. It no longer reads
-  `execution_entity`, so the `n8n_watchdog` role, the `reelsmith-watchdog-db` Secret and the
-  `reelsmith-watchdog-to-postgres` NetworkPolicy are unused and are retired in a separate change.
+- **Log Results** keeps three messages: "uploaded as Only me, set it to Everyone" (the owner's
+  decision on 2026-10-26: it is the one action they must take), a 400/413 clip fault (the desk
+  cannot see why a clip is bad), and an unknown upload outcome (a timeout or unexpected answer:
+  the clip may be on TikTok as Only me, and only the owner can check). First refusal, set-aside
+  after two refusals, throttling, signing failure, a clip blocked by an earlier unknown upload,
+  sidecar unavailable, session invalid, daily cap, kill switch and manifest problems sit behind
+  the constant `NOTIFY_INFO`, shipped as `false`. The gate is on the outgoing message only:
+  claims, slots, counters and rows are unchanged, so no outcome logic moved. A gated notice
+  never fails the run.
+- **The watchdog** keeps its per-run failed-execution check: nothing else reads n8n's execution
+  state, and the Reelsmith alert rules do not either. The 09:45 run still reports the sidecar
+  down or the cookie invalid, as before (the Mac-asleep backstop). Dropped, because the desk owns
+  them: the `/api/stats` checks (no success for 48h, paused, stats unreadable) and "no
+  executions in 25h". Once the A2 alert rules are live, Alertmanager's critical alerts are a
+  second backstop for the sidecar and the session.
 - **Rollback.** Set `NOTIFY_INFO` to `true` and rebuild the workflow to get every message back;
   `git revert` restores the old watchdog.
+- **Ordering.** Merge and deploy only after the A2 alert rules are loaded and sidecar 0.5.0 is
+  being scraped; until then the desk has nothing to watch with and the gated messages are the
+  only signal.
 - **Deploy.** The workflow JSON needs the owner's n8n API key and the CronJob a manual sync of
   `reelsmith-social-publish`, outside a slot and the 20 minutes after it.
 
