@@ -45,7 +45,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: watchdog
-          # Ships psql and busybox wget; nothing is installed at runtime.
+          # Ships busybox wget; nothing is installed at runtime.
           # Same digest as the CronJob.
           image: postgres:16-alpine@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36
           # Only the Telegram secret: the test path never touches the database
@@ -64,8 +64,6 @@ spec:
             - |
               set -u
               export LC_ALL=C
-              DIGEST_HOUR=09   # the 09:45 run carries the daily digest; zero-padded like date +%H
-              STALE_HOURS=48
 
               log() { printf '%s\n' "$*"; }
               die() { log "FATAL: $*"; exit 1; }
@@ -111,75 +109,29 @@ spec:
                 exit 0
               fi
 
-              valid "${WF_ID:-}" 'A-Za-z0-9' '[A-Za-z0-9]{1,32}' || die "WF_ID is missing or malformed"
               valid "${ACCOUNT:-}" 'a-z0-9_-' '[a-z0-9_-]{1,32}' || die "ACCOUNT is missing or malformed"
               valid "${SIDECAR_URL:-}" 'A-Za-z0-9.:/-' 'http://[A-Za-z0-9.-]+:[0-9]{1,5}' || die "SIDECAR_URL is missing or malformed"
 
-              HOUR=$(TZ=SAST-2 date +%H)   # SAST is UTC+2 all year; the POSIX form needs no tzdata
-              DIGEST=0; [ "$HOUR" = "$DIGEST_HOUR" ] && DIGEST=1
-              LOOKBACK=4; [ "$DIGEST" = 1 ] && LOOKBACK=13
-              NOW_ITEMS=; DAY_ITEMS=
-              add_now() { NOW_ITEMS="${NOW_ITEMS:+$NOW_ITEMS; }$1"; }
-              add_day() { DAY_ITEMS="${DAY_ITEMS:+$DAY_ITEMS; }$1"; }
+              ITEMS=
+              add() { ITEMS="${ITEMS:+$ITEMS; }$1"; }
 
-              # (a) failed executions in the lookback window, (d) all executions in 25h.
-              export PGCONNECT_TIMEOUT=10 PGOPTIONS='-c statement_timeout=10000'
-              RES=$(psql -X -h postgres-service -U n8n_watchdog -d n8n -tA -c \
-                "SELECT count(*) FILTER (WHERE status IN ('error','crashed','canceled') AND \"startedAt\" > now() - interval '$LOOKBACK hours') \
-                 ||'|'|| COALESCE((max(id) FILTER (WHERE status IN ('error','crashed','canceled') AND \"startedAt\" > now() - interval '$LOOKBACK hours'))::text, '0') \
-                 ||'|'|| count(*) \
-                 FROM execution_entity WHERE \"workflowId\"='$WF_ID' AND \"startedAt\" > now() - interval '25 hours';")
-              if valid "$RES" '0-9|' '[0-9]{1,9}\|[0-9]{1,12}\|[0-9]{1,9}'; then
-                ERRS=${RES%%|*}; REST=${RES#*|}; LAST_ID=${REST%%|*}; TOTAL=${REST#*|}
-                [ "$ERRS" -gt 0 ] && add_now "$ERRS failed execution(s) of workflow $WF_ID in the last ${LOOKBACK}h, latest id $LAST_ID"
-                [ "$TOTAL" -eq 0 ] && add_day "no executions of workflow $WF_ID in 25h - inactive or n8n down"
-                log "hour=$HOUR lookback=${LOOKBACK}h failed=$ERRS executions_25h=$TOTAL"
-              else
-                add_now "n8n database query failed"
-                log "hour=$HOUR database query failed"
-              fi
+              # Only the two faults the homelab desk cannot report when the Mac is asleep: the
+              # sidecar is down, or the TikTok cookie is invalid. The probe is the sidecar's
+              # cached session check (no forced refresh). Everything else (failed executions,
+              # stale or paused posting, TikTok refusals) is watched by the desk.
+              fetch "$SIDECAR_URL/healthz/session?account=$ACCOUNT"
+              case $STATUS in
+                200) ;;
+                401) add "cookie expired - run make refresh-cookies" ;;
+                503) add "no cookie on the sidecar - run make refresh-cookies (session check HTTP 503)" ;;
+                000) add "sidecar down (session check HTTP 000)" ;;
+                502) ;;   # the sidecar is up but cannot reach TikTok: not a cookie fault, the desk covers it
+                *) add "sidecar session check failed (HTTP $STATUS)" ;;
+              esac
+              log "session=$STATUS"
 
-              if [ "$DIGEST" = 1 ]; then
-                # (b) cookie session probe (the sidecar caches it; no forced refresh).
-                fetch "$SIDECAR_URL/healthz/session?account=$ACCOUNT"
-                case $STATUS in
-                  200) ;;
-                  401) add_day "cookie expired - run make refresh-cookies" ;;
-                  502) add_day "sidecar cannot reach TikTok (session check HTTP 502)" ;;
-                  503) add_day "no cookie on the sidecar - run make refresh-cookies (session check HTTP 503)" ;;
-                  000) add_day "sidecar down (session check HTTP 000)" ;;
-                  *) add_day "sidecar session check failed (HTTP $STATUS)" ;;
-                esac
-                log "session=$STATUS"
-                # (c) posting state.
-                fetch "$SIDECAR_URL/api/stats?account=$ACCOUNT"
-                if [ "$STATUS" != 200 ]; then
-                  add_day "sidecar down (stats HTTP $STATUS)"
-                else
-                  flat=$(printf '%s' "$BODY" | tr -d '\r\n')
-                  hrs=$(printf '%s' "$flat" | sed -n 's/.*"hours_since_success"[[:space:]]*:[[:space:]]*\([^,}[:space:]]*\).*/\1/p')
-                  paused=$(printf '%s' "$flat" | sed -n 's/.*"paused_until"[[:space:]]*:[[:space:]]*\([^,}[:space:]]*\).*/\1/p')
-                  unreadable=0
-                  if [ "$hrs" = null ]; then
-                    add_day "no successful post on record"
-                  elif is_int "${hrs%%.*}"; then
-                    [ "${hrs%%.*}" -gt "$STALE_HOURS" ] && add_day "no successful post for ${hrs%%.*}h"
-                  else
-                    unreadable=1
-                  fi
-                  case $paused in
-                    null) ;;
-                    '') unreadable=1 ;;
-                    *) add_day "posting paused after repeated failures" ;;
-                  esac
-                  [ "$unreadable" = 1 ] && add_day "sidecar stats unreadable"
-                fi
-              fi
-
-              MSG=$NOW_ITEMS
-              if [ "$DIGEST" = 1 ] && [ -n "$DAY_ITEMS" ]; then MSG="${MSG:+$MSG; }daily: $DAY_ITEMS"; fi
-              if [ -z "$MSG" ]; then log "ok: no alert"; exit 0; fi
-              send "Reelsmith watchdog: $MSG"
+              if [ -z "$ITEMS" ]; then log "ok: no alert"; exit 0; fi
+              send "Reelsmith watchdog: $ITEMS"
           resources:
             requests: { cpu: 50m, memory: 64Mi }   # namespace LimitRange min cpu = 50m
             limits: { cpu: 200m, memory: 128Mi }

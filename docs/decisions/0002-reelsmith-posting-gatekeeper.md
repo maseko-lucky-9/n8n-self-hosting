@@ -42,7 +42,7 @@ workflow, its scripts and the Kubernetes manifests), so it records where that de
 
 - Real uploads stay off until go-live step 7 flips `POSTING_ENABLED` in a reviewed manifest
   change. The go-live runbook and rollback are in `projects/reelsmith-social-publish/README.md`.
-- The watchdog CronJob ships suspended and is switched on after the first real post.
+- The watchdog CronJob ships suspended and is switched on after the first real post (since 2026-10-28 it only checks the sidecar and the cookie, see the last amendment).
 - n8n needs no memory increase for big clips; the sidecar's limit rises to 1.5Gi instead.
 
 ## Amendment 2026-10-27: five slots, and a TikTok refusal is not "may have posted"
@@ -134,6 +134,33 @@ refusal would lose clips that post on a second try.
   posted_elsewhere, set aside, ambiguous) and kept while the clip is only released (sidecar busy,
   cookie, daily cap, deferred). Dry runs never read or change it. Only the newest 50 clips are kept.
 - The `needs_you` streak is unchanged: a refusal neither counts toward it nor ends it.
+
+## Amendment 2026-10-28: the homelab desk owns the alerts; Telegram keeps only what it cannot
+
+**Why.** The owner was checking every upload by hand and received about 8 to 10 Telegram messages
+a day from Log Results and the watchdog. The homelab desk (OpenClaw, on the Mac) now diagnoses
+every upload, failure, pause and set-aside clip from the sidecar's metrics and hands real faults
+to the desk's existing agents, so the raw per-event messages are duplicates. Plan:
+the owner's plan "Reelsmith upload monitoring on the OpenClaw homelab desk", section A2b (Telegram budget: about 3 "Only me" notices
+a day, plus at most 1 other desk message a week).
+
+- **Log Results** keeps two messages: "uploaded as Only me, set it to Everyone" (the owner's
+  decision on 2026-10-26: it is the one action they must take) and a 400/413 clip fault (the desk
+  cannot see why a clip is bad). First refusal, set-aside after two refusals, throttling,
+  signing failure, unknown outcome, sidecar unavailable, session invalid, daily cap, kill switch
+  and manifest problems sit behind the constant `NOTIFY_INFO`, shipped as `false`. The gate is on
+  the outgoing message only: claims, slots, counters and rows are unchanged, so no outcome logic
+  moved. A gated notice never fails the run.
+- **The watchdog** is cut to sidecar down and cookie invalid, once a day at 09:45 (the
+  Mac-asleep backstop; Alertmanager's critical alerts are the other). Failed executions, "no
+  executions in 25h", no success for 48h and a paused sidecar are dropped, as are the four
+  other daily runs, which only carried the failed-execution check. It no longer reads
+  `execution_entity`, so the `n8n_watchdog` role, the `reelsmith-watchdog-db` Secret and the
+  `reelsmith-watchdog-to-postgres` NetworkPolicy are unused and are retired in a separate change.
+- **Rollback.** Set `NOTIFY_INFO` to `true` and rebuild the workflow to get every message back;
+  `git revert` restores the old watchdog.
+- **Deploy.** The workflow JSON needs the owner's n8n API key and the CronJob a manual sync of
+  `reelsmith-social-publish`, outside a slot and the 20 minutes after it.
 
 ## Related
 

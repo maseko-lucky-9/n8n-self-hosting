@@ -25,6 +25,14 @@ const REFUSALS_KEPT = 50;       // per-clip refusal counts kept in the state fil
 // which repeats the name in two ledger commands and the claim-release command,
 // stays under this cap (Telegram's own limit is 4096).
 const ALERT_MAX_CHARS = 2000;
+// Only two kinds of message are always sent: "uploaded as Only me" (the owner's one
+// manual step) and a clip refused for bad input or size (400/413: the homelab desk
+// cannot see those). Every other notice (first refusal, set-aside after two
+// refusals, throttle or signing failure, unknown outcome, sidecar unavailable,
+// session invalid, daily cap, kill switch, manifest problems) is covered by the
+// homelab desk's alerts and is sent only when this is true. Claims, slots, counters
+// and result rows are the same either way: only the outgoing message is gated.
+const NOTIFY_INFO = false;
 const HEADER = 'timestamp,filename,title,tiktok_post_id,tiktok_post_url,youtube_video_id,youtube_status,error,tiktok_status\n';
 // Failures before the request left n8n: connect and DNS errors. Anything later
 // (read ETIMEDOUT, read EHOSTUNREACH, ECONNRESET, EPIPE, the HTTP timeout) may
@@ -345,56 +353,65 @@ function releaseSteps(withLedger, fixLine) {
 
 // safety: the run fails if these cannot be sent. info: once-a-day notices; a
 // failed send is logged and retried by the next run (its day stays unmarked).
+// A message goes out only if it is `always` or NOTIFY_INFO is true (see its comment);
+// a day marker is set only for a notice that was queued.
 const safety = [];
 const info = [];
 const infoDays = {};
+function queue(list, text, always = false) {
+  if (!always && !NOTIFY_INFO) return false;
+  list.push(text);
+  return true;
+}
+// 400 and 413 are about this clip and invisible to the desk: always told.
+const clipFault = outcome.kind === 'needs_you' && (outcome.httpStatus === 400 || outcome.httpStatus === 413);
 if (outcome.kind === 'auth_invalid' && due(authCount, AUTH_ALERT_AFTER)) {
-  safety.push(`🔑 Reelsmith: TikTok session invalid (${authCount} in a row). Run \`make refresh-cookies\` in tiktok-sidecar; clips wait and retry every 15 min.` + detail);
+  queue(safety, `🔑 Reelsmith: TikTok session invalid (${authCount} in a row). Run \`make refresh-cookies\` in tiktok-sidecar; clips wait and retry every 15 min.` + detail);
 } else if (retryRefused) {
   // Routine (about 2 a day): informational, a failed send is only logged.
-  info.push(`Reelsmith: TikTok refused it (not posted); it will be retried at a later slot (refusal ${refusalCount} of ${REFUSAL_LIMIT}).` + detail);
+  queue(info, `Reelsmith: TikTok refused it (not posted); it will be retried at a later slot (refusal ${refusalCount} of ${REFUSAL_LIMIT}).` + detail);
 } else if (tiktokRefused) {
-  safety.push(`Reelsmith: TikTok refused to publish it${refusalCount >= REFUSAL_LIMIT ? ' twice' : ''} (not posted)`
+  queue(safety, `Reelsmith: TikTok refused to publish it${refusalCount >= REFUSAL_LIMIT ? ' twice' : ''} (not posted)`
     + (pick.dryRun === true ? ' (dry run: the clip is released).' : '; it is set aside.') + detail
     + releaseSteps(false, 'Probably this clip: re-export it, or leave it set aside; to retry, release the claim:'));
 } else if (outcome.kind === 'deferred') {
-  safety.push((outcome.code === 'signature_failed'
+  queue(safety, (outcome.code === 'signature_failed'
     ? 'Reelsmith: the sidecar\'s signing helper failed (not posted). Check the signing helper in tiktok-sidecar.'
     : 'Reelsmith: TikTok says "posting too fast" (not posted). Possible throttling: if it repeats, lower DAILY_CAP.')
     + ' The clip is released for a later slot; this slot stays used.' + detail);
 } else if (outcome.kind === 'needs_you') {
-  safety.push((outcome.code === 'ambiguous'
+  queue(safety, (outcome.code === 'ambiguous'
     ? 'Reelsmith: a clip is blocked by an earlier upload that may have posted (it will not be retried).'
     : 'Reelsmith: a clip was refused (not posted, will not be retried).')
     + (needsCount > NEEDS_SLOT_RELEASES ? '\n3+ clips refused in a row: check the sidecar contract.' : '')
-    + detail + releaseSteps(outcome.code === 'ambiguous'));
+    + detail + releaseSteps(outcome.code === 'ambiguous'), clipFault);
 } else if (outcome.kind === 'ambiguous') {
-  safety.push('Reelsmith: upload outcome unknown (it may have posted).' + detail + releaseSteps(true));
+  queue(safety, 'Reelsmith: upload outcome unknown (it may have posted).' + detail + releaseSteps(true));
 } else if (outcome.kind === 'retryable' && due(retryCount, RETRY_ALERT_AFTER)) {
-  safety.push(`Reelsmith: sidecar unavailable ${retryCount} times in a row; clips are waiting.` + detail);
+  queue(safety, `Reelsmith: sidecar unavailable ${retryCount} times in a row; clips are waiting.` + detail);
 }
 // Every upload is Only me (the sidecar passes --visibility=1): tell the owner so they can publish it.
-// Informational: the claim is already settled, so a failed send is only logged.
+// Informational: the claim is already settled, so a failed send is only logged. Always sent.
 if (outcome.kind === 'posted') {
-  info.push(`Reelsmith: uploaded as Only me. Set it to Everyone in TikTok Studio when you are ready.${line('file', pick.filename)}`);
+  queue(info, `Reelsmith: uploaded as Only me. Set it to Everyone in TikTok Studio when you are ready.${line('file', pick.filename)}`, true);
 }
 // Unusable manifests or clips Pick Due Clip reported: once per SAST day, a count only.
 const manifestIssues = Array.isArray(pick.manifestErrors) ? pick.manifestErrors.length : 0;
-if (manifestIssues > 0 && counters.manifestAlertDay !== today) {
-  info.push(`Reelsmith: ${manifestIssues} manifest problem(s) (an unreadable manifest, or clips that can never be posted as they are); see .state/notices.json or the Pick Due Clip output in today's n8n executions.`);
+if (manifestIssues > 0 && counters.manifestAlertDay !== today
+  && queue(info, `Reelsmith: ${manifestIssues} manifest problem(s) (an unreadable manifest, or clips that can never be posted as they are); see .state/notices.json or the Pick Due Clip output in today's n8n executions.`)) {
   infoDays.manifestAlertDay = today;
 }
 // The kill switch is off while the workflow runs live: every clip is released
 // and retried every 15 min, so say so once a day.
 if (outcome.kind === 'dry_run' && outcome.code === 'posting_disabled' && pick.dryRun !== true
-  && counters.postingDisabledAlertDay !== today) {
-  info.push('Reelsmith: the sidecar has POSTING_ENABLED=false while the workflow is live; clips are released and retried every 15 min.');
+  && counters.postingDisabledAlertDay !== today
+  && queue(info, 'Reelsmith: the sidecar has POSTING_ENABLED=false while the workflow is live; clips are released and retried every 15 min.')) {
   infoDays.postingDisabledAlertDay = today;
 }
 // The sidecar's daily cap is reached (a manual upload the same day, or the caps
 // not yet synced): the clip is released and the slot stays used, so say so once a day.
-if (outcome.kind === 'daily_cap' && counters.dailyCapAlertDay !== today) {
-  info.push('Reelsmith: today\'s upload cap is reached; clips wait for tomorrow (this slot is used).' + detail);
+if (outcome.kind === 'daily_cap' && counters.dailyCapAlertDay !== today
+  && queue(info, 'Reelsmith: today\'s upload cap is reached; clips wait for tomorrow (this slot is used).' + detail)) {
   infoDays.dailyCapAlertDay = today;
 }
 const parts = [...safety, ...info];
