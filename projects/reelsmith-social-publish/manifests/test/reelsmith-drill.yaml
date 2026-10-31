@@ -1,0 +1,39 @@
+---
+# Critical-path drill: proves a critical Reelsmith alert goes from Prometheus through
+# Alertmanager to Telegram, without touching the cookie. Applied by hand for a few minutes
+# after the metrics-and-alerts sync (README "Deploy", step 4), then deleted; never synced
+# (ArgoCD reads manifests/ non-recursively). It fires at its first evaluation (`vector(1)`,
+# no `for:`), so the message arrives within about 2 minutes: one 60 s rule evaluation plus
+# Alertmanager's 30 s group wait.
+# Its own alert name, ReelsmithDrill, because Alertmanager groups by [namespace, alertname]
+# and the homelab desk keys an incident on alertname + namespace: an extra label would not
+# keep a drill apart from a real alert. The desk allowlists ReelsmithDrill for its drills.
+# Severity critical, so it takes the same Alertmanager route as ReelsmithSessionInvalid.
+#   ssh homelab 'microk8s kubectl create -f -' < manifests/test/reelsmith-drill.yaml
+#   ssh homelab 'microk8s kubectl -n n8n-live delete prometheusrule reelsmith-drill'
+# Checked by `promtool check rules` in tests/run-promtool-tests.sh, and its name by
+# scripts/monitoring.selfcheck.js.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: reelsmith-drill
+  namespace: n8n-live
+  labels:
+    app.kubernetes.io/name: tiktok-sidecar
+    app.kubernetes.io/part-of: reelsmith-social-publish
+    release: kube-prom-stack
+spec:
+  groups:
+    - name: reelsmith.drill
+      rules:
+        - alert: ReelsmithDrill
+          expr: vector(1)
+          labels:
+            severity: critical
+            namespace: n8n-live
+          annotations:
+            summary: DRILL - ReelsmithDrill, nothing is wrong
+            description: >-
+              DRILL, nothing is wrong: this tests that a critical Reelsmith alert reaches
+              Telegram. Delete the PrometheusRule reelsmith-drill in n8n-live once this
+              message has arrived.

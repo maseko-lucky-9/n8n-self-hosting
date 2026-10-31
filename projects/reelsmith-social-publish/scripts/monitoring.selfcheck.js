@@ -7,7 +7,8 @@
 //    reach 9100, and nothing new reaches the upload API on 8000;
 //  - the PrometheusRule holds exactly the 11 alert names the homelab desk allowlists, each
 //    with the static namespace label and its severity, and no annotation that would break
-//    Alertmanager's HTML Telegram template.
+//    Alertmanager's HTML Telegram template; every selector pins job and namespace;
+//  - the hand-applied drill (manifests/test/reelsmith-drill.yaml) is named ReelsmithDrill.
 //   node monitoring.selfcheck.js   -> exit 0 on pass, 1 on any failure.
 const assert = require('node:assert/strict');
 const path = require('path');
@@ -102,6 +103,12 @@ s.check('only Prometheus reaches the metrics port, and nothing new reaches the A
   assert.equal(metricsRules, 1, 'expected exactly one ingress rule for the metrics port');
 });
 
+const noHtmlBreakers = (r) => {
+  for (const [key, text] of Object.entries(r.annotations || {})) {
+    assert.equal(/[<>&]/.test(text), false, `${r.alert}: ${key} has <, > or & (breaks the HTML Telegram message)`);
+  }
+};
+
 s.check('reelsmith-alerts holds exactly the 11 alerts the desk allowlists, each labelled', () => {
   const pr = one(inNs('PrometheusRule').filter((d) => d.metadata.name === 'reelsmith-alerts'), 'PrometheusRule reelsmith-alerts');
   assert.equal(pr.metadata.labels.release, 'kube-prom-stack');
@@ -111,10 +118,34 @@ s.check('reelsmith-alerts holds exactly the 11 alerts the desk allowlists, each 
   for (const r of rules) {
     assert.equal(r.labels.namespace, NAMESPACE, `${r.alert}: static namespace label`);
     assert.equal(r.labels.severity, CRITICAL.includes(r.alert) ? 'critical' : 'warning', `${r.alert}: severity`);
-    for (const [key, text] of Object.entries(r.annotations || {})) {
-      assert.equal(/[<>&]/.test(text), false, `${r.alert}: ${key} has <, > or & (breaks the HTML Telegram message)`);
+    noHtmlBreakers(r);
+  }
+});
+
+s.check('every selector in reelsmith-alerts pins job and namespace', () => {
+  const pr = one(inNs('PrometheusRule').filter((d) => d.metadata.name === 'reelsmith-alerts'), 'PrometheusRule reelsmith-alerts');
+  for (const r of pr.spec.groups.flatMap((g) => g.rules)) {
+    const metrics = [...r.expr.matchAll(/\b(up|reelsmith_[a-z0-9_]+)\b(\{[^}]*\})?/g)];
+    assert.ok(metrics.length > 0, `${r.alert}: no metric selector found`);
+    for (const [whole, name, selector] of metrics) {
+      // A same-named Service in another namespace must neither raise nor hide an alert.
+      assert.ok(selector, `${r.alert}: ${name} has no label selector`);
+      assert.ok(selector.includes(`job="${SIDECAR}"`) && selector.includes(`namespace="${NAMESPACE}"`),
+        `${r.alert}: ${whole} does not pin job and namespace`);
     }
   }
+});
+
+s.check('the hand-applied drill uses its own alert name, ReelsmithDrill', () => {
+  // Alertmanager groups by [namespace, alertname] and the desk keys an incident on
+  // alertname + namespace, so a drill named like a real alert would be one with it.
+  const drills = h.loadManifests(path.join(MANIFESTS_DIR, 'test')).filter((d) => d.kind === 'PrometheusRule');
+  const drill = one(drills.filter((d) => d.metadata.name === 'reelsmith-drill'), 'PrometheusRule reelsmith-drill in manifests/test/');
+  const rule = one(drill.spec.groups.flatMap((g) => g.rules), 'drill rule');
+  assert.equal(rule.alert, 'ReelsmithDrill');
+  assert.equal(rule.labels.severity, 'critical', 'the drill must take the critical route');
+  assert.equal(rule.labels.namespace, NAMESPACE);
+  noHtmlBreakers(rule);
 });
 
 s.run();

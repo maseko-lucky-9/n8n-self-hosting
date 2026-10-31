@@ -77,7 +77,7 @@ Schedule (*/15 9-21 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Sid
 | Workflow export | `workflow/reelsmith-social-publish.json`, built by `scripts/build-workflow.js` from the `scripts/*.jsCode.js` files |
 | Workflow deploy | `scripts/deploy-workflow.sh` (n8n API; never automatic) |
 | Kubernetes manifests | `manifests/`, synced by ArgoCD |
-| One-off test objects (TEST_ALERT Job, cookies chown Job, ReelsmithSessionInvalid drill rule) | `manifests/test/`, applied by hand, never synced |
+| One-off test objects (TEST_ALERT Job, cookies chown Job, the `ReelsmithDrill` rule) | `manifests/test/`, applied by hand, never synced |
 | ArgoCD Application | `homelab-infra/argocd/applications/reelsmith-social-publish.yaml`: **manual sync**, a non-recursive directory source on `manifests/`. Merging here deploys nothing until you sync |
 | Sidecar code and image | `tiktok-sidecar` repo, image `localhost:32000/reelsmith/tiktok-sidecar:0.5.0`, deployed by digest |
 | Alert rules | `manifests/reelsmith-alerts-prometheusrule.yaml` ([Alerts](#alerts)); promtool unit tests in `tests/` |
@@ -164,8 +164,9 @@ cannot reach you. It runs at 09:45, 12:45, 15:45, 18:45 and 21:45 SAST (the Cron
 
 Dropped on 2026-10-28, because the desk owns them: the `/api/stats` checks (no success for 48h,
 none on record, posting paused, stats unreadable) and "no executions in 25h". Once the Reelsmith
-alert rules are live (plan section A2), Alertmanager's critical alerts for the sidecar and the
-session are a second backstop; until then this watchdog is the only one.
+alert rules are live (plan section A2), Alertmanager's critical alert for the sidecar is a second
+backstop. For the session it is not independent: the 09:45 session probe is what lets
+`ReelsmithSessionInvalid` see a dead cookie that is still on disk (see [Alerts](#alerts)).
 
 Messages carry only fixed text, validated integers and the workflow id. A failed send exits 1 and
 prints only the HTTP status. The CronJob was switched on 2026-10-24 (it shipped suspended until the first upload).
@@ -192,24 +193,38 @@ one is a desk change too.
 | `ReelsmithAmbiguousUpload` | warning | an upload outcome is unresolved for 5 min (`make ledger-resolve`) |
 | `ReelsmithThrottled` | warning | TikTok said "posting too fast" in the last 30 min; stays up 2 h more |
 | `ReelsmithDispatcherSilent` | warning | no `/api/upload` request for 3.5 h, 10:00-22:00 SAST, unless paused, posting off, or no clip ready |
-| `ReelsmithNoPostToday` | warning | nothing posted by 13:00 SAST (until 22:00), unless paused, posting off, a probe said the session is invalid, or no clip ready |
+| `ReelsmithNoPostToday` | warning | nothing posted by 13:00 SAST (until 22:00), unless the daily attempt cap is used, posting off, a probe said the session is invalid, or no clip ready. The failures pause does **not** silence it |
 | `ReelsmithClipsSetAside` | warning | a clip is set aside (`needs_you`) for 15 min |
 | `ReelsmithBacklogLow` | warning | fewer than 10 clips ready to post for 1 h |
 
-- **The session.** `session_valid` is the latest probe: 1, 0, or -1 (unknown, after every restart
-  and whenever nothing has probed). Only 0 pages; -1 must not. A dead cookie can also hide behind a
-  stale 1, because nothing probes in steady state. That gap is covered by `cookie_present`, by any
-  `auth_invalid` reply (so `ReelsmithSessionInvalid` fires within about 5 minutes of the first
-  refused upload, and clears up to an hour after the last), and by `ReelsmithNoPostToday`, which
-  -1 and 1 do not silence.
+- **The session: `ReelsmithSessionInvalid` is only as fast as the probe cadence.**
+  `session_valid` is the latest probe: 1, 0, or -1 (unknown, after every restart and before any
+  probe). Only 0 pages; -1 must not. A cookie that dies while its file is still on disk changes
+  nothing the rule can see until a probe runs: `session_valid` keeps its last verdict,
+  `cookie_present` stays 1, and the sidecar answers `auth_invalid` only when the cookie file is
+  unusable, after a probe already said invalid, or when the uploader output looks like an auth
+  failure and a fresh probe confirms it. TikTok's refusal of the publish request for a dead
+  session (status code 7 on 2026-10-30) is classed `publish_rejected` and triggers no probe. After
+  the sync the only routine probe is the watchdog's 09:45 SAST run, so **a cookie that dies just
+  after it pages about 24 hours later, no sooner than the watchdog**. Until then the earlier
+  signals are warnings: `ReelsmithPaused` (two refusals in a row) and `ReelsmithNoPostToday` at
+  13:00 SAST, which the failures pause does not silence. The fix is a sidecar change (probe after
+  a `publish_rejected` verdict, and once at startup); it is not part of this change and waits for
+  the owner's go-ahead. `tests/reelsmith-outage-2026-10-30.test.yml` replays the 30 Oct timeline
+  and pins this gap.
 - **Time windows** are written in UTC (`hour()`), because Prometheus has no time zones: SAST is
   UTC+2, so 10:00-22:00 SAST is `hour() >= 8 and hour() < 20`. Only the two dispatcher rules have
   one; a lasting state (paused, set aside, low backlog) stays one alert instead of resolving every
   night and firing again every morning.
+- **Selectors** pin `job="tiktok-sidecar"` and `namespace="n8n-live"`, so a same-named Service in
+  another namespace can neither raise nor hide an alert (`absent()` included).
 - **Tests.** `tests/reelsmith-alerts.test.yml` (promtool, run in CI by the `promtool` job) covers
-  every rule, every `unless`, the window edges, the namespace label and the throttle edge.
-  `scripts/monitoring.selfcheck.js` checks the port wiring, that only Prometheus reaches 9100
-  (both selectors in one `from` element) and nothing new reaches 8000, and the exact alert names.
+  every rule, every `unless`, the window edges, the namespace pin and the throttle edge;
+  `tests/reelsmith-outage-2026-10-30.test.yml` replays the 30 Oct outage with the operator's full
+  label set and a pod restart. `scripts/monitoring.selfcheck.js` checks the port wiring, that only
+  Prometheus reaches 9100 (both selectors in one `from` element) and nothing new reaches 8000, the
+  exact alert names, each rule's static namespace label and severity, the namespace pin in every
+  selector, and the drill's name.
 
 ## Deploy
 
@@ -246,6 +261,12 @@ one is a desk change too.
      The Deployment is Recreate: a restart during an upload leaves it ambiguous. In the plan's
      order this sync comes after the homelab-infra null route for Reelsmith warnings (A3b);
      before it, the warnings reach Telegram as well.
+   - **Deploy the workflow in the same window** (step 2, the #79+ workflow). Until it is live, n8n
+     runs the pre-#79 schedule (`*/15 12-20`, slots 12:00, 15:00 and 18:00 SAST), and
+     `ReelsmithDispatcherSilent` false-fires every day (unless paused or out of clips): from 10:05
+     SAST (the last request was the previous day's 18:00 slot) until the 12:00 slot, and again
+     from about 21:35 SAST (3.5 h after the 18:00 slot) until 22:00. Plan item 4 already orders
+     the sync and the workflow deploy together.
    - **Sync** as in step 1, then check the pod runs the 0.5.0 digest:
      `ssh homelab 'microk8s kubectl -n n8n-live get pods -l app.kubernetes.io/name=tiktok-sidecar -o jsonpath="{.items[*].spec.containers[0].image}"'`.
    - **Verify the scrape and the rules.** Each command below is read-only and runs in the
@@ -260,13 +281,16 @@ one is a desk change too.
      - the API is still closed to Prometheus: `wget -T 5 -O /dev/null http://tiktok-sidecar.n8n-live.svc:8000/healthz`
        times out (a NetworkPolicy drop is a timeout, not a refusal);
      - the values match `/api/stats` (posted today, paused, posting enabled) and the ledger.
-   - **ReelsmithSessionInvalid drill**, right after, still outside a slot:
-     `ssh homelab 'microk8s kubectl create -f -' < manifests/test/reelsmith-session-invalid-drill.yaml`.
-     It fires at the next rule evaluation; the Telegram message "CRITICAL: ReelsmithSessionInvalid"
-     (description "DRILL, nothing is wrong") should arrive within about 2 minutes. Note the
-     delay, then delete it:
-     `ssh homelab 'microk8s kubectl -n n8n-live delete prometheusrule reelsmith-session-invalid-drill'`
-     (a resolved message follows). The desk may open an incident for it; close its ClickUp task.
+   - **Critical-path drill (`ReelsmithDrill`)**, right after, still outside a slot:
+     `ssh homelab 'microk8s kubectl create -f -' < manifests/test/reelsmith-drill.yaml`.
+     It has its own alert name, because Alertmanager groups by namespace and alertname and the
+     desk keys an incident the same way, so a drill named like a real alert would be one with
+     it. It is critical, so it takes the same route as `ReelsmithSessionInvalid`. It fires at the
+     next rule evaluation; the Telegram message "CRITICAL: ReelsmithDrill" (description "DRILL,
+     nothing is wrong") should arrive within about 2 minutes. Note the delay, then delete it:
+     `ssh homelab 'microk8s kubectl -n n8n-live delete prometheusrule reelsmith-drill'`
+     (a resolved message follows). The desk allowlists `ReelsmithDrill` for its own drills; if
+     it opens an incident, close it.
    - **Rollback:** revert this change in a PR and sync, outside a slot as above. The ledger stays
      readable: 0.5.0 adds no row field and no status, only the code value `publish_throttled`,
      and 0.4.0 reads `code` as free text (tiktok-sidecar PR #5 tests a rollback reader).
@@ -441,7 +465,9 @@ revert the Deployment change and sync: root can still read files owned by 10001 
   watchdog miss its deadline, so it is deferred.
 - The sidecar and cookie checks run only at 09:45. If the homelab is off then, that day's checks are
   skipped; failed executions are still reported on the later runs. Once the Reelsmith alert rules are
-  live (plan section A2), Alertmanager's critical alerts for the sidecar and the session cover the gap.
+  live (plan section A2), `ReelsmithSidecarDown` covers the sidecar. It does not cover the session:
+  with no 09:45 probe, `ReelsmithSessionInvalid` sees a dead cookie only if the cookie file is
+  unusable (see [Alerts](#alerts)).
 - The web uploader returns no TikTok post id, so the ledger's `posted` row is the record.
 - The Only-me notice is informational: if Telegram is down when a clip uploads, the notice is lost
   (the ledger and TikTok Studio still show the clip).

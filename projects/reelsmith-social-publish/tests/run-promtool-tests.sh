@@ -4,7 +4,7 @@
 # plain rule groups, not PrometheusRule objects, so the .spec of
 # ../manifests/reelsmith-alerts-prometheusrule.yaml (synced by ArgoCD) is first extracted to
 # reelsmith-alerts.yml next to a copy of the tests. `promtool check rules` lints it and the
-# hand-applied drill rule (../manifests/test/reelsmith-session-invalid-drill.yaml), then
+# hand-applied drill rule (../manifests/test/reelsmith-drill.yaml), then
 # `promtool test rules` runs every test file. Needs yq (mikefarah v4) and docker; touches no
 # cluster. From the repo root (CI runs exactly this):
 #   sh projects/reelsmith-social-publish/tests/run-promtool-tests.sh
@@ -20,7 +20,7 @@ case "$(yq --version 2>&1)" in
 esac
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 yq '.spec' "$here/../manifests/reelsmith-alerts-prometheusrule.yaml" > "$tmp/reelsmith-alerts.yml"
-yq '.spec' "$here/../manifests/test/reelsmith-session-invalid-drill.yaml" > "$tmp/reelsmith-drill.yml"
+yq '.spec' "$here/../manifests/test/reelsmith-drill.yaml" > "$tmp/reelsmith-drill.yml"
 cp "$here"/*.test.yml "$tmp/"
 cd "$tmp"
 # The image runs as nobody, and mktemp's directory is 0700: run promtool as the caller so it

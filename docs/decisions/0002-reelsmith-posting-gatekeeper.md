@@ -187,14 +187,23 @@ homelab desk", section A2.
 - **Alerts.** The PrometheusRule `reelsmith-alerts` holds 11 alerts (README, "Alerts"). Three are
   critical and page Telegram through Alertmanager whether or not the desk is awake: sidecar down,
   session invalid, ledger unreadable. Eight are warnings for the desk, which allowlists the names
-  exactly. Every rule sets `namespace: n8n-live` statically, because `absent()` returns no
-  namespace and Alertmanager groups by alertname and namespace.
-- **The session.** `ReelsmithSessionInvalid` fires on a probe verdict of 0, a cookie file without
-  a session, or any `auth_invalid` reply in the last hour, after 5 minutes. A verdict of -1
-  (unknown, after every restart) never pages by itself, and a stale 1 hides a dead cookie that
-  nothing probed; the cookie check, the reply counter and `ReelsmithNoPostToday` cover that gap.
-  An upload refused as `auth_invalid` (dead or missing cookie) now pages about 5 minutes after
-  the first refusal; on 2026-10-30 nothing did.
+  exactly. Every rule sets `namespace: n8n-live` statically (Alertmanager groups by alertname and
+  namespace), and every selector pins `job="tiktok-sidecar"` and `namespace="n8n-live"`, so a
+  same-named Service elsewhere can neither raise nor hide an alert.
+- **The session, and its limit.** `ReelsmithSessionInvalid` fires on a probe verdict of 0, a
+  cookie file without a session, or any `auth_invalid` reply in the last hour, after 5 minutes.
+  A verdict of -1 (unknown, after every restart) never pages by itself. **The rule is only as
+  fast as the probe cadence.** A cookie that dies while its file is still on disk is invisible
+  until a probe runs: the verdict stays at its last value, the cookie file still loads, and the
+  sidecar answers `auth_invalid` only after a probe has said invalid. TikTok's refusal for a dead
+  session (status code 7 on 2026-10-30) is classed `publish_rejected` and triggers no probe.
+  After the sync the only routine probe is the watchdog's 09:45 SAST run, so the worst case is
+  about 24 hours, the same as the watchdog: the 30 Oct class is NOT caught within minutes by
+  this change. The earlier signals are warnings: `ReelsmithPaused` after two refusals, and
+  `ReelsmithNoPostToday` at 13:00 SAST, which the failures pause does not silence. The fix is a
+  sidecar change (probe after a `publish_rejected` verdict, and once at startup), not part of
+  this change and awaiting the owner's go-ahead. `tests/reelsmith-outage-2026-10-30.test.yml`
+  replays the timeline and pins the gap.
 - **Time windows** are UTC in PromQL (SAST is UTC+2 all year). Only the two dispatcher rules have
   one (10:00-22:00 and 13:00-22:00 SAST); lasting states stay one alert rather than resolving each
   night.
@@ -203,13 +212,16 @@ homelab desk", section A2.
   PrometheusRule in every namespace (selectors `{}`, checked 2026-10-31); the objects still carry
   `release: kube-prom-stack` in case the selector is narrowed to the chart default.
 - **What stays with the watchdog.** Failed n8n executions: the rules see only what the sidecar
-  exports. Its 09:45 sidecar and cookie checks remain the backstop; these critical alerts are a
-  second one.
+  exports. Its 09:45 sidecar and cookie checks remain the backstop. The critical alerts are a
+  second one for a sidecar that is down or a ledger that is unreadable; for the session they are
+  no faster than the watchdog's probe (above).
 - **Deploy.** Merging deploys nothing. The owner syncs `reelsmith-social-publish` outside a slot
   and the 20 minutes after it, once the sidecar log shows no upload in flight, then checks that
   the target is up on 9100, that the 11 rules are loaded, that `:9100/api/upload` answers 404 and
-  that 8000 stays closed to Prometheus, and runs the ReelsmithSessionInvalid drill
-  (`manifests/test/reelsmith-session-invalid-drill.yaml`). Commands: README, "Deploy" step 4.
+  that 8000 stays closed to Prometheus, and runs the critical-path drill: the alert
+  `ReelsmithDrill` from `manifests/test/reelsmith-drill.yaml`, a name of its own so it cannot
+  merge with a real alert. The #79+ workflow is deployed in the same window, or
+  `ReelsmithDispatcherSilent` false-fires on the old schedule. Commands: README, "Deploy" step 4.
 
 ## Related
 

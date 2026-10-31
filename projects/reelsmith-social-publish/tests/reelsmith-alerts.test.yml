@@ -3,8 +3,11 @@
 #
 # Time: a test starts at the Unix epoch, so eval_time IS the UTC clock (480m = 08:00 UTC =
 # 10:00 SAST; SAST is UTC+2 all year). Timestamps in the input are Unix seconds on that clock.
-# Labels: the input series carry only job="tiktok-sidecar", never a namespace, so the
-# `namespace: n8n-live` in every expected alert can only come from the rule's static label.
+# Labels: the rules pin job="tiktok-sidecar" and namespace="n8n-live", so the input series
+# carry just those two (the full operator label set is replayed in
+# reelsmith-outage-2026-10-30.test.yml). Series with job="tiktok-sidecar" in another
+# namespace must neither raise nor hide an alert. The rules' static namespace label is
+# asserted by scripts/monitoring.selfcheck.js; here every expected alert names it.
 # promtool compares only firing alerts; one still in its `for:` is pending and expected as [].
 rule_files:
   - reelsmith-alerts.yml
@@ -13,21 +16,21 @@ tests:
   - name: healthy day, nothing fires
     interval: 1m
     input_series:
-      - {series: 'up{job="tiktok-sidecar"}', values: '1x1260'}
-      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '1x1260'}
-      - {series: 'reelsmith_cookie_present{job="tiktok-sidecar"}', values: '1x1260'}
-      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="auth_invalid"}', values: '0x1260'}
-      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="posted"}', values: '0+1x1260'}
-      - {series: 'reelsmith_ledger_ok{job="tiktok-sidecar"}', values: '1x1260'}
-      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x1260'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x1260'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x1260'}
-      - {series: 'reelsmith_unresolved_ambiguous{job="tiktok-sidecar"}', values: '0x1260'}
-      - {series: 'reelsmith_last_throttle_timestamp_seconds{job="tiktok-sidecar"}', values: '0x1260'}
-      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar"}', values: '0+60x1260'}
-      - {series: 'reelsmith_posted_today{job="tiktok-sidecar"}', values: '2x1260'}
-      - {series: 'reelsmith_clips_set_aside{job="tiktok-sidecar"}', values: '0x1260'}
-      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x1260'}
+      - {series: 'up{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x1260'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x1260'}
+      - {series: 'reelsmith_cookie_present{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x1260'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",namespace="n8n-live",code="auth_invalid"}', values: '0x1260'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",namespace="n8n-live",code="posted"}', values: '0+1x1260'}
+      - {series: 'reelsmith_ledger_ok{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x1260'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="failures"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="attempt_cap"}', values: '0x1260'}
+      - {series: 'reelsmith_unresolved_ambiguous{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x1260'}
+      - {series: 'reelsmith_last_throttle_timestamp_seconds{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x1260'}
+      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar",namespace="n8n-live"}', values: '0+60x1260'}
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar",namespace="n8n-live"}', values: '2x1260'}
+      - {series: 'reelsmith_clips_set_aside{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x1260'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '20x1260'}
     alert_rule_test:
       - {eval_time: 70m, alertname: ReelsmithSidecarDown, exp_alerts: []}
       - {eval_time: 70m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
@@ -47,7 +50,7 @@ tests:
   - name: SidecarDown fires on up == 0 after 5m
     interval: 1m
     input_series:
-      - {series: 'up{job="tiktok-sidecar"}', values: '1x9 0x30'}
+      - {series: 'up{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x9 0x30'}
     alert_rule_test:
       - {eval_time: 9m, alertname: ReelsmithSidecarDown, exp_alerts: []}
       - {eval_time: 14m, alertname: ReelsmithSidecarDown, exp_alerts: []}
@@ -59,10 +62,12 @@ tests:
               summary: The Reelsmith TikTok sidecar is down
               description: "Prometheus has not scraped tiktok-sidecar on port 9100 for 5 minutes (or has no target for it). Nothing can be uploaded. Check the pod: ssh homelab 'microk8s kubectl -n n8n-live get pods -l app.kubernetes.io/name=tiktok-sidecar' then its events and logs."
 
-  - name: SidecarDown fires on absent(up) while other targets are up
+  # A same-named Service scraped in another namespace must not hide the absent() clause.
+  - name: SidecarDown fires on absent(up) while other targets are up, same-named ones included
     interval: 1m
     input_series:
       - {series: 'up{job="some-other-target"}', values: '1x30'}
+      - {series: 'up{job="tiktok-sidecar",namespace="elsewhere"}', values: '1x30'}
     alert_rule_test:
       - {eval_time: 4m, alertname: ReelsmithSidecarDown, exp_alerts: []}
       - eval_time: 5m
@@ -74,7 +79,7 @@ tests:
   - name: SidecarDown fires when the target vanishes (absent after the 5m lookback)
     interval: 1m
     input_series:
-      - {series: 'up{job="tiktok-sidecar"}', values: '1x10'}
+      - {series: 'up{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x10'}
       - {series: 'up{job="some-other-target"}', values: '1x40'}
     alert_rule_test:
       - {eval_time: 14m, alertname: ReelsmithSidecarDown, exp_alerts: []}
@@ -88,9 +93,9 @@ tests:
   - name: SessionInvalid fires on session_valid == 0 after 5m
     interval: 1m
     input_series:
-      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '1x9 0x30'}
-      - {series: 'reelsmith_cookie_present{job="tiktok-sidecar"}', values: '1x40'}
-      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="auth_invalid"}', values: '0x40'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x9 0x30'}
+      - {series: 'reelsmith_cookie_present{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x40'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",namespace="n8n-live",code="auth_invalid"}', values: '0x40'}
     alert_rule_test:
       - {eval_time: 14m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
       - eval_time: 15m
@@ -104,9 +109,9 @@ tests:
   - name: SessionInvalid fires on cookie_present == 0 while the probe verdict is unknown (-1)
     interval: 1m
     input_series:
-      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '-1x40'}
-      - {series: 'reelsmith_cookie_present{job="tiktok-sidecar"}', values: '1x9 0x30'}
-      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="auth_invalid"}', values: '0x40'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar",namespace="n8n-live"}', values: '-1x40'}
+      - {series: 'reelsmith_cookie_present{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x9 0x30'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",namespace="n8n-live",code="auth_invalid"}', values: '0x40'}
     alert_rule_test:
       - {eval_time: 14m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
       - eval_time: 15m
@@ -122,9 +127,9 @@ tests:
   - name: SessionInvalid fires on an auth_invalid reply and clears an hour later
     interval: 1m
     input_series:
-      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '-1x200'}
-      - {series: 'reelsmith_cookie_present{job="tiktok-sidecar"}', values: '1x200'}
-      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="auth_invalid"}', values: '0x59 1x140'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar",namespace="n8n-live"}', values: '-1x200'}
+      - {series: 'reelsmith_cookie_present{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x200'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",namespace="n8n-live",code="auth_invalid"}', values: '0x59 1x140'}
     alert_rule_test:
       - {eval_time: 59m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
       - {eval_time: 64m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
@@ -145,11 +150,11 @@ tests:
   - name: SessionInvalid does NOT fire for session_valid == -1 alone
     interval: 1m
     input_series:
-      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '-1x200'}
-      - {series: 'reelsmith_cookie_present{job="tiktok-sidecar"}', values: '1x200'}
-      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="auth_invalid"}', values: '0x200'}
-      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="posted"}', values: '0+1x200'}
-      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="publish_rejected"}', values: '0+1x200'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar",namespace="n8n-live"}', values: '-1x200'}
+      - {series: 'reelsmith_cookie_present{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x200'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",namespace="n8n-live",code="auth_invalid"}', values: '0x200'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",namespace="n8n-live",code="posted"}', values: '0+1x200'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",namespace="n8n-live",code="publish_rejected"}', values: '0+1x200'}
     alert_rule_test:
       - {eval_time: 10m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
       - {eval_time: 90m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
@@ -159,7 +164,7 @@ tests:
   - name: LedgerUnreadable fires on ledger_ok == 0 after 5m
     interval: 1m
     input_series:
-      - {series: 'reelsmith_ledger_ok{job="tiktok-sidecar"}', values: '1x9 0x30'}
+      - {series: 'reelsmith_ledger_ok{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x9 0x30'}
     alert_rule_test:
       - {eval_time: 14m, alertname: ReelsmithLedgerUnreadable, exp_alerts: []}
       - eval_time: 15m
@@ -173,7 +178,7 @@ tests:
   - name: PostingDisabled fires on posting_enabled == 0 after 15m
     interval: 1m
     input_series:
-      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x9 0x40'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x9 0x40'}
     alert_rule_test:
       - {eval_time: 24m, alertname: ReelsmithPostingDisabled, exp_alerts: []}
       - eval_time: 25m
@@ -187,8 +192,8 @@ tests:
   - name: Paused fires once per active reason after 5m
     interval: 1m
     input_series:
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x9 1x30'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x19 1x20'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="failures"}', values: '0x9 1x30'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="attempt_cap"}', values: '0x19 1x20'}
     alert_rule_test:
       - {eval_time: 14m, alertname: ReelsmithPaused, exp_alerts: []}
       - eval_time: 15m
@@ -209,7 +214,7 @@ tests:
   - name: AmbiguousUpload fires on an unresolved outcome after 5m
     interval: 1m
     input_series:
-      - {series: 'reelsmith_unresolved_ambiguous{job="tiktok-sidecar"}', values: '0x9 2x30'}
+      - {series: 'reelsmith_unresolved_ambiguous{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x9 2x30'}
     alert_rule_test:
       - {eval_time: 14m, alertname: ReelsmithAmbiguousUpload, exp_alerts: []}
       - eval_time: 15m
@@ -226,7 +231,7 @@ tests:
   - name: Throttled is edge-triggered and kept firing for 2h
     interval: 1m
     input_series:
-      - {series: 'reelsmith_last_throttle_timestamp_seconds{job="tiktok-sidecar"}', values: '0x99 6000x300'}
+      - {series: 'reelsmith_last_throttle_timestamp_seconds{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x99 6000x300'}
     alert_rule_test:
       - {eval_time: 99m, alertname: ReelsmithThrottled, exp_alerts: []}
       - eval_time: 100m
@@ -253,7 +258,7 @@ tests:
   - name: Throttled does not reset at midnight SAST
     interval: 1m
     input_series:
-      - {series: 'reelsmith_last_throttle_timestamp_seconds{job="tiktok-sidecar"}', values: '0x1309 78600x200'}
+      - {series: 'reelsmith_last_throttle_timestamp_seconds{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x1309 78600x200'}
     alert_rule_test:
       - eval_time: 1325m
         alertname: ReelsmithThrottled
@@ -273,11 +278,11 @@ tests:
   - name: DispatcherSilent window opens at 10:00 SAST and closes at 22:00 SAST
     interval: 1m
     input_series:
-      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar"}', values: '0x1260'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x1260'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x1260'}
-      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x1260'}
-      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x1260'}
+      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="failures"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="attempt_cap"}', values: '0x1260'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x1260'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '20x1260'}
     alert_rule_test:
       - {eval_time: 479m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
       - {eval_time: 484m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
@@ -300,11 +305,11 @@ tests:
   - name: DispatcherSilent needs more than 3.5h of silence
     interval: 1m
     input_series:
-      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar"}', values: '0+60x499 30000x500'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x1000'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x1000'}
-      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x1000'}
-      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x1000'}
+      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar",namespace="n8n-live"}', values: '0+60x499 30000x500'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="failures"}', values: '0x1000'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="attempt_cap"}', values: '0x1000'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x1000'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '20x1000'}
     alert_rule_test:
       - {eval_time: 715m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
       - eval_time: 716m
@@ -316,11 +321,11 @@ tests:
   - name: DispatcherSilent unless paused (failures, then attempt_cap)
     interval: 1m
     input_series:
-      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar"}', values: '0x1260'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '1x799 0x460'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x799 1x460'}
-      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x1260'}
-      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x1260'}
+      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="failures"}', values: '1x799 0x460'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="attempt_cap"}', values: '0x799 1x460'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x1260'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '20x1260'}
     alert_rule_test:
       - {eval_time: 600m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
       - {eval_time: 1000m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
@@ -328,22 +333,22 @@ tests:
   - name: DispatcherSilent unless posting is switched off
     interval: 1m
     input_series:
-      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar"}', values: '0x1260'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x1260'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x1260'}
-      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '0x1260'}
-      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x1260'}
+      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="failures"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="attempt_cap"}', values: '0x1260'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x1260'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '20x1260'}
     alert_rule_test:
       - {eval_time: 600m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
 
   - name: DispatcherSilent unless no clip is ready
     interval: 1m
     input_series:
-      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar"}', values: '0x1260'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x1260'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x1260'}
-      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x1260'}
-      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '0x1260'}
+      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="failures"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="attempt_cap"}', values: '0x1260'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x1260'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x1260'}
     alert_rule_test:
       - {eval_time: 600m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
 
@@ -351,12 +356,12 @@ tests:
   - name: NoPostToday window opens at 13:00 SAST and closes at 22:00 SAST
     interval: 1m
     input_series:
-      - {series: 'reelsmith_posted_today{job="tiktok-sidecar"}', values: '0x1260'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x1260'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x1260'}
-      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x1260'}
-      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '1x1260'}
-      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x1260'}
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="failures"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="attempt_cap"}', values: '0x1260'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x1260'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x1260'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '20x1260'}
     alert_rule_test:
       - {eval_time: 659m, alertname: ReelsmithNoPostToday, exp_alerts: []}
       - {eval_time: 674m, alertname: ReelsmithNoPostToday, exp_alerts: []}
@@ -366,7 +371,7 @@ tests:
           - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
             exp_annotations: &no_post_today
               summary: Nothing has been posted to TikTok today
-              description: "No clip has posted today by 13:00 SAST, although posting is on, not paused, clips are ready, and no session probe has said invalid. The session may still be dead without a probe saying so: check the sidecar log for auth_invalid and the recent executions of Reelsmith Social Publish."
+              description: "No clip has posted today by 13:00 SAST, although posting is on, the daily attempt cap is not reached, clips are ready, and no session probe has said invalid. The session may be dead without a probe saying so (TikTok then refuses each upload as publish_rejected, status code 7, and two refusals pause posting): check ledger.failures.jsonl and the sidecar log, then run make refresh-cookies in tiktok-sidecar if the session is dead."
       - eval_time: 1199m
         alertname: ReelsmithNoPostToday
         exp_alerts:
@@ -378,12 +383,12 @@ tests:
   - name: NoPostToday still fires when the session verdict is unknown (-1)
     interval: 1m
     input_series:
-      - {series: 'reelsmith_posted_today{job="tiktok-sidecar"}', values: '0x800'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x800'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x800'}
-      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x800'}
-      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '-1x800'}
-      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x800'}
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="failures"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="attempt_cap"}', values: '0x800'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x800'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar",namespace="n8n-live"}', values: '-1x800'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '20x800'}
     alert_rule_test:
       - eval_time: 700m
         alertname: ReelsmithNoPostToday
@@ -391,52 +396,89 @@ tests:
           - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
             exp_annotations: *no_post_today
 
-  - name: NoPostToday unless paused (failures, then attempt_cap)
+  # The failures pause (two refusals in a row) with nothing posted is the stall this rule is
+  # for: a dead session refused as publish_rejected looks exactly like this.
+  - name: NoPostToday is NOT silenced by the failures pause
     interval: 1m
     input_series:
-      - {series: 'reelsmith_posted_today{job="tiktok-sidecar"}', values: '0x1260'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '1x899 0x360'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x899 1x360'}
-      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x1260'}
-      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '1x1260'}
-      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x1260'}
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="failures"}', values: '1x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="attempt_cap"}', values: '0x800'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x800'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x800'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '20x800'}
+    alert_rule_test:
+      - eval_time: 700m
+        alertname: ReelsmithNoPostToday
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: *no_post_today
+
+  - name: NoPostToday unless the attempt-cap pause
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="failures"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="attempt_cap"}', values: '1x800'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x800'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x800'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '20x800'}
     alert_rule_test:
       - {eval_time: 700m, alertname: ReelsmithNoPostToday, exp_alerts: []}
-      - {eval_time: 1000m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+
+  # Silencers from a same-named job in another namespace do not count.
+  - name: NoPostToday ignores silencers from another namespace
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="attempt_cap"}', values: '0x800'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x800'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x800'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '20x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="elsewhere",reason="attempt_cap"}', values: '1x800'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="elsewhere"}', values: '0x800'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar",namespace="elsewhere"}', values: '0x800'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="elsewhere"}', values: '0x800'}
+    alert_rule_test:
+      - eval_time: 700m
+        alertname: ReelsmithNoPostToday
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: *no_post_today
 
   - name: NoPostToday unless posting is switched off
     interval: 1m
     input_series:
-      - {series: 'reelsmith_posted_today{job="tiktok-sidecar"}', values: '0x800'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x800'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x800'}
-      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '0x800'}
-      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '1x800'}
-      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x800'}
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="failures"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="attempt_cap"}', values: '0x800'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x800'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x800'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '20x800'}
     alert_rule_test:
       - {eval_time: 700m, alertname: ReelsmithNoPostToday, exp_alerts: []}
 
   - name: NoPostToday unless a probe said the session is invalid
     interval: 1m
     input_series:
-      - {series: 'reelsmith_posted_today{job="tiktok-sidecar"}', values: '0x800'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x800'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x800'}
-      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x800'}
-      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '0x800'}
-      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x800'}
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="failures"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="attempt_cap"}', values: '0x800'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x800'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x800'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '20x800'}
     alert_rule_test:
       - {eval_time: 700m, alertname: ReelsmithNoPostToday, exp_alerts: []}
 
   - name: NoPostToday unless no clip is ready
     interval: 1m
     input_series:
-      - {series: 'reelsmith_posted_today{job="tiktok-sidecar"}', values: '0x800'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x800'}
-      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x800'}
-      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x800'}
-      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '1x800'}
-      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '0x800'}
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="failures"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",namespace="n8n-live",reason="attempt_cap"}', values: '0x800'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x800'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x800'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x800'}
     alert_rule_test:
       - {eval_time: 700m, alertname: ReelsmithNoPostToday, exp_alerts: []}
 
@@ -444,7 +486,7 @@ tests:
   - name: ClipsSetAside fires on a needs_you claim after 15m
     interval: 1m
     input_series:
-      - {series: 'reelsmith_clips_set_aside{job="tiktok-sidecar"}', values: '0x9 3x40'}
+      - {series: 'reelsmith_clips_set_aside{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x9 3x40'}
     alert_rule_test:
       - {eval_time: 24m, alertname: ReelsmithClipsSetAside, exp_alerts: []}
       - eval_time: 25m
@@ -459,7 +501,7 @@ tests:
   - name: BacklogLow fires under 10 ready clips after 1h
     interval: 1m
     input_series:
-      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '10x100 9x100'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '10x100 9x100'}
     alert_rule_test:
       - {eval_time: 100m, alertname: ReelsmithBacklogLow, exp_alerts: []}
       - {eval_time: 160m, alertname: ReelsmithBacklogLow, exp_alerts: []}
