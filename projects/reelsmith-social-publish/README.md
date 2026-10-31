@@ -211,7 +211,10 @@ one is a desk change too.
   13:00 SAST, which the failures pause does not silence. The fix is a sidecar change (probe after
   a `publish_rejected` verdict, and once at startup); it is not part of this change and waits for
   the owner's go-ahead. `tests/reelsmith-outage-2026-10-30.test.yml` replays the 30 Oct timeline
-  and pins this gap.
+  and pins this gap. The wait is at least about 24 hours: a probe that reaches no verdict, or a
+  skipped 09:45 run, leaves the last verdict in place. A restart during an outage also clears the
+  alert (the new pod reports -1 until the next probe, so a RESOLVED goes out while the cookie is
+  still dead); the startup probe in the same sidecar fix is what closes that.
 - **Time windows** are written in UTC (`hour()`), because Prometheus has no time zones: SAST is
   UTC+2, so 10:00-22:00 SAST is `hour() >= 8 and hour() < 20`. Only the two dispatcher rules have
   one; a lasting state (paused, set aside, low backlog) stays one alert instead of resolving every

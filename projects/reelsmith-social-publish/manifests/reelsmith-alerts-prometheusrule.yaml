@@ -77,6 +77,9 @@ spec:
         # ReelsmithNoPostToday (13:00 SAST, not silenced by the failures pause). The fix is a
         # sidecar change (probe after a publish_rejected verdict, and once at startup); it is
         # NOT part of this change and waits for the owner's go-ahead.
+        # A restart during an outage clears this alert too (the new pod reports -1 until the
+        # next probe, so a RESOLVED goes out while the cookie is still dead); the startup
+        # probe in the same sidecar fix is what closes that.
         # The counter clause keeps the alert up to an hour after the last auth_invalid reply,
         # even once the cookie is fixed. `max without (code)` gives it the gauges' label set,
         # so one condition or several make one alert, not two.

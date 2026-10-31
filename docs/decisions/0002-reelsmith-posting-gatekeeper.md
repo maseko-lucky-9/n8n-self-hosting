@@ -158,7 +158,8 @@ a day, plus at most 1 other desk message a week).
   down or the cookie invalid, as before (the Mac-asleep backstop). Dropped, because the desk owns
   them: the `/api/stats` checks (no success for 48h, paused, stats unreadable) and "no
   executions in 25h". Once the A2 alert rules are live, Alertmanager's critical alerts are a
-  second backstop for the sidecar and the session.
+  second backstop for the sidecar; for the session the alert is only as fast as the 09:45 probe
+  (see the 2026-10-31 amendment).
 - **Rollback.** Set `NOTIFY_INFO` to `true` and rebuild the workflow to get every message back;
   `git revert` restores the old watchdog.
 - **Ordering.** Merge and deploy only after the A2 alert rules are loaded and sidecar 0.5.0 is
@@ -198,12 +199,15 @@ homelab desk", section A2.
   sidecar answers `auth_invalid` only after a probe has said invalid. TikTok's refusal for a dead
   session (status code 7 on 2026-10-30) is classed `publish_rejected` and triggers no probe.
   After the sync the only routine probe is the watchdog's 09:45 SAST run, so the worst case is
-  about 24 hours, the same as the watchdog: the 30 Oct class is NOT caught within minutes by
+  at least about 24 hours (a probe that reaches no verdict, or a skipped 09:45 run, leaves the
+  last verdict in place and adds another day), the same as the watchdog: the 30 Oct class is NOT caught within minutes by
   this change. The earlier signals are warnings: `ReelsmithPaused` after two refusals, and
   `ReelsmithNoPostToday` at 13:00 SAST, which the failures pause does not silence. The fix is a
   sidecar change (probe after a `publish_rejected` verdict, and once at startup), not part of
   this change and awaiting the owner's go-ahead. `tests/reelsmith-outage-2026-10-30.test.yml`
-  replays the timeline and pins the gap.
+  replays the timeline and pins the gap. A restart during an outage also clears the alert: the new
+  pod reports session_valid -1 until the next probe, so Alertmanager sends a RESOLVED while the
+  cookie is still dead; only the startup probe in the sidecar fix closes that.
 - **Time windows** are UTC in PromQL (SAST is UTC+2 all year). Only the two dispatcher rules have
   one (10:00-22:00 and 13:00-22:00 SAST); lasting states stay one alert rather than resolving each
   night.
