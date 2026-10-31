@@ -23,8 +23,11 @@ yq '.spec' "$here/../manifests/reelsmith-alerts-prometheusrule.yaml" > "$tmp/ree
 yq '.spec' "$here/../manifests/test/reelsmith-session-invalid-drill.yaml" > "$tmp/reelsmith-drill.yml"
 cp "$here"/*.test.yml "$tmp/"
 cd "$tmp"
-docker run --rm -v "$tmp":/t:ro -w /t --entrypoint promtool "$image" \
+# The image runs as nobody, and mktemp's directory is 0700: run promtool as the caller so it
+# can read the mount on Linux (Docker Desktop on macOS hides the difference).
+user="$(id -u):$(id -g)"
+docker run --rm --user "$user" -v "$tmp":/t:ro -w /t --entrypoint promtool "$image" \
     check rules reelsmith-alerts.yml reelsmith-drill.yml
 # shellcheck disable=SC2046 # one argument per test file; the names have no spaces
-docker run --rm -v "$tmp":/t:ro -w /t --entrypoint promtool "$image" \
+docker run --rm --user "$user" -v "$tmp":/t:ro -w /t --entrypoint promtool "$image" \
     test rules $(ls -- *.test.yml)
