@@ -184,6 +184,16 @@ function byteExactFs() {
   return shim;
 }
 
+// Every document in <dir>/*.yaml (not recursive, like the ArgoCD source), via
+// python3 + PyYAML (no JS YAML dependency).
+function loadManifests(dir) {
+  const { execFileSync } = require('child_process');
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.yaml')).map((f) => path.join(dir, f));
+  const py = 'import json, sys, yaml\n'
+    + 'print(json.dumps([d for f in sys.argv[1:] for d in yaml.safe_load_all(open(f)) if d]))';
+  return JSON.parse(execFileSync('python3', ['-I', '-c', py, ...files], { encoding: 'utf8' }));
+}
+
 // A tiny test runner: named async checks, every failure reported, exit 1 on any.
 function suite(title) {
   const checks = [];
@@ -242,5 +252,5 @@ if (require.main === module && process.argv[2] === '--child') {
 
 module.exports = {
   TZ, DateTime, setNow, loadNode, runNode, makeRoot, inboxOf, addJob, toCsv, MANIFEST_HEADER,
-  readJson, exists, listClaims, listSlots, byteExactFs, suite, runPickInChildren,
+  readJson, exists, listClaims, listSlots, byteExactFs, loadManifests, suite, runPickInChildren,
 };

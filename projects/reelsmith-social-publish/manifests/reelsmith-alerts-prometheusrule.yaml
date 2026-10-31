@@ -1,0 +1,245 @@
+---
+# Reelsmith alert rules (ADR-0002, amendment 2026-10-31), evaluated by the live Prometheus
+# (kube-prom-stack in observability) on the sidecar's :9100 scrape
+# (tiktok-sidecar-servicemonitor.yaml). Unit tests: tests/reelsmith-alerts.test.yml, run by
+# `sh projects/reelsmith-social-publish/tests/run-promtool-tests.sh` (and in CI).
+#
+# - The homelab desk allowlists these 11 alert names EXACTLY. A renamed or added alert is
+#   dropped by the desk without a word: change the desk's allowlist in the same breath.
+# - Every rule sets `namespace: n8n-live` as a static label. Scraped series carry it already,
+#   but absent() returns only its selector's labels, and Alertmanager groups (and the desk
+#   keys an incident) by alertname + namespace. promtool asserts it on every alert.
+# - Severity is critical (pages Telegram even while the Mac and its desk sleep) or warning
+#   (for the desk); never info.
+# - hour() is UTC. SAST is UTC+2 all year (no DST since 1944), so the posting day
+#   09:00-22:00 SAST is `hour() >= 7 and hour() < 20`, and a window that starts later in the
+#   SAST day starts at a later UTC hour (10:00 SAST = 8, 13:00 SAST = 11).
+# - Only the two rules that measure the dispatcher's activity carry a time window. The other
+#   warnings describe a lasting state; a window would resolve them at 22:00 SAST and fire them
+#   again at 09:00, opening a new desk incident every day for one condition.
+# - Every selector names job="tiktok-sidecar" (the Service name, which the ServiceMonitor
+#   gives as job), so a series from any other target can neither raise nor hide these alerts.
+# - When the ledger cannot be read the sidecar exports reelsmith_ledger_ok 0 and drops every
+#   ledger series (paused, posted_today, last_*_timestamp, unresolved_ambiguous) and
+#   backlog_ready; when the inbox cannot be read it drops clips_set_aside and backlog_ready.
+#   A rule on a dropped series goes quiet and ReelsmithLedgerUnreadable speaks for it. With
+#   the sidecar down every series is gone and ReelsmithSidecarDown speaks.
+# - Descriptions reach Telegram inside Alertmanager's HTML template: never write a
+#   less-than, greater-than or ampersand in one, or Telegram rejects the whole message.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: reelsmith-alerts
+  namespace: n8n-live
+  labels:
+    app.kubernetes.io/name: tiktok-sidecar
+    app.kubernetes.io/part-of: reelsmith-social-publish
+    # The live Prometheus loads every PrometheusRule (ruleSelector and ruleNamespaceSelector
+    # are both {}, verified 2026-10-31); this is the label the chart's default selector wants.
+    release: kube-prom-stack
+spec:
+  groups:
+    - name: reelsmith.rules
+      rules:
+        # No scrape for 5m, or no target at all (ServiceMonitor or Service gone). A restart
+        # (sync, make refresh-cookies) is a short Recreate outage and stays under 5m.
+        - alert: ReelsmithSidecarDown
+          expr: up{job="tiktok-sidecar"} == 0 or absent(up{job="tiktok-sidecar"})
+          for: 5m
+          labels:
+            severity: critical
+            namespace: n8n-live
+          annotations:
+            summary: The Reelsmith TikTok sidecar is down
+            description: >-
+              Prometheus has not scraped tiktok-sidecar on port 9100 for 5 minutes (or has no
+              target for it). Nothing can be uploaded. Check the pod:
+              ssh homelab 'microk8s kubectl -n n8n-live get pods -l app.kubernetes.io/name=tiktok-sidecar'
+              then its events and logs.
+
+        # The outage class found on 2026-10-31: the cookie died and uploads were refused for
+        # ~24h with no alert.
+        # reelsmith_session_valid is the latest session probe: 1 valid, 0 invalid, -1 unknown.
+        # Only 0 pages. -1 is the state after every restart (make refresh-cookies included)
+        # and whenever nothing has been probed, so it must not page by itself. And 1 can be
+        # stale: nothing probes in steady state and there is no verdict-age series, so a
+        # cookie can die while the gauge still says 1. That gap is covered by
+        # reelsmith_cookie_present (the cookie file loads and has a sessionid; no network
+        # call), by any auth_invalid reply in the last hour, and by ReelsmithNoPostToday,
+        # which -1 and 1 do not silence. Because of the 1h window the alert stays up to an
+        # hour after the last auth_invalid reply, even once the cookie is fixed. `max
+        # without (code)` gives the counter clause the gauges' label set, so one condition
+        # or several make one alert, not two.
+        - alert: ReelsmithSessionInvalid
+          expr: >-
+            reelsmith_session_valid{job="tiktok-sidecar"} == 0
+            or reelsmith_cookie_present{job="tiktok-sidecar"} == 0
+            or max without (code) (increase(reelsmith_requests_total{job="tiktok-sidecar", code="auth_invalid"}[1h])) > 0
+          for: 5m
+          labels:
+            severity: critical
+            namespace: n8n-live
+          annotations:
+            summary: The TikTok session is invalid; run make refresh-cookies
+            description: >-
+              The TikTok session cookie is dead or missing: the session probe said invalid,
+              the cookie file has no session, or an upload was refused as auth_invalid in the
+              last hour. Every upload is refused until it is replaced. On the Mac, in the
+              tiktok-sidecar repo, run make refresh-cookies (log in, it replaces the Secret
+              and restarts the sidecar). The alert clears up to 1 hour after the last
+              auth_invalid reply.
+
+        - alert: ReelsmithLedgerUnreadable
+          expr: reelsmith_ledger_ok{job="tiktok-sidecar"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            namespace: n8n-live
+          annotations:
+            summary: The Reelsmith posting ledger cannot be read
+            description: >-
+              The sidecar cannot read its posting ledger (ledger.jsonl on the cookies PVC) and
+              refuses every upload. After a crash, a torn last line is set aside with make
+              ledger-repair in the tiktok-sidecar repo.
+
+        - alert: ReelsmithPostingDisabled
+          expr: reelsmith_posting_enabled{job="tiktok-sidecar"} == 0
+          for: 15m
+          labels:
+            severity: warning
+            namespace: n8n-live
+          annotations:
+            summary: Reelsmith posting is switched off
+            description: >-
+              POSTING_ENABLED is not true on the sidecar, so every upload request is a dry run.
+              Expected only during a rollback: set it back to true in
+              tiktok-sidecar-deployment.yaml and sync reelsmith-social-publish.
+
+        # One alert per active reason: failures (2 failed uploads in a row, a 12h pause) or
+        # attempt_cap (ATTEMPT_CAP uploads today, until SAST midnight).
+        - alert: ReelsmithPaused
+          expr: reelsmith_paused{job="tiktok-sidecar"} == 1
+          for: 5m
+          labels:
+            severity: warning
+            namespace: n8n-live
+          annotations:
+            summary: Reelsmith posting is paused
+            description: >-
+              The sidecar has paused posting. Its reason label says why: failures (2 failed
+              uploads in a row, a 12 hour pause) or attempt_cap (the daily attempt cap is
+              used, until midnight SAST). The failed runs are in ledger.failures.jsonl on the
+              cookies PVC.
+
+        # In-flight uploads are not counted (the sidecar leaves out the upload that holds
+        # its lock), so this is an outcome nobody has resolved yet.
+        - alert: ReelsmithAmbiguousUpload
+          expr: reelsmith_unresolved_ambiguous{job="tiktok-sidecar"} > 0
+          for: 5m
+          labels:
+            severity: warning
+            namespace: n8n-live
+          annotations:
+            summary: A Reelsmith upload may have posted and is unresolved
+            description: >-
+              {{ $value }} upload(s) ended without a known outcome (timeout, restart or crash)
+              and may be on TikTok as Only me. Each blocks its clip until resolved: check
+              TikTok Studio, then make ledger-resolve KEY=job/file.mp4 OUTCOME=posted or
+              OUTCOME=not_posted in the tiktok-sidecar repo.
+
+        # Edge-triggered on the timestamp of the newest publish_throttled ledger row, so it
+        # never wraps at midnight the way a today-counter would. True for 30 minutes after
+        # the row, then held for 2h more by keep_firing_for. A timestamp of 0 means never
+        # throttled, and is excluded explicitly rather than by time() being large.
+        - alert: ReelsmithThrottled
+          expr: >-
+            time() - reelsmith_last_throttle_timestamp_seconds{job="tiktok-sidecar"} < 1800
+            and reelsmith_last_throttle_timestamp_seconds{job="tiktok-sidecar"} > 0
+          for: 0m
+          keep_firing_for: 2h
+          labels:
+            severity: warning
+            namespace: n8n-live
+          annotations:
+            summary: TikTok said Reelsmith is posting too fast
+            description: >-
+              TikTok refused an upload with You are posting too fast (ledger code
+              publish_throttled) in the last 30 minutes; the alert stays up 2 hours after
+              that. The clip was released for a later slot. Repeated throttling means
+              DAILY_CAP should come down.
+
+        # No /api/upload request for 3.5h (slots are 3h apart) between 10:00 and 22:00 SAST:
+        # hour() 8 to 20 UTC. 10:00, not 09:00: at 09:00 the last request is the previous
+        # evening's, and the 09:00 slot gets an hour to call. The sidecar starts the clock at
+        # its own start, so a restart is not a silence. Silenced when no request is due:
+        # paused (either reason), posting switched off, or no clip ready.
+        - alert: ReelsmithDispatcherSilent
+          expr: >-
+            time() - reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar"} > 12600
+            and on () (hour() >= 8 and hour() < 20)
+            unless on () (reelsmith_paused{job="tiktok-sidecar"} == 1)
+            unless on () (reelsmith_posting_enabled{job="tiktok-sidecar"} == 0)
+            unless on () (reelsmith_backlog_ready{job="tiktok-sidecar"} == 0)
+          for: 5m
+          labels:
+            severity: warning
+            namespace: n8n-live
+          annotations:
+            summary: The Reelsmith dispatcher has not called the sidecar for 3.5 hours
+            description: >-
+              No upload request reached the sidecar for over 3.5 hours between 10:00 and 22:00
+              SAST, although posting is on, not paused, and clips are ready. The n8n workflow
+              Reelsmith Social Publish is probably not running: check it is published and look
+              at its recent executions.
+
+        # Nothing posted by 13:00 SAST (hour() 11 UTC: the 09:00 and 12:00 slots have both
+        # passed), until 22:00 SAST (hour() 20), when the dispatcher has stopped and the
+        # sidecar's day is about to reset. Silenced by the causes that already explain it:
+        # paused, posting off, a probe that said invalid (ReelsmithSessionInvalid pages), or
+        # no clip ready. session_valid -1 (unknown) or a stale 1 does NOT silence it: this
+        # is the backstop for a dead cookie that nothing has probed.
+        - alert: ReelsmithNoPostToday
+          expr: >-
+            reelsmith_posted_today{job="tiktok-sidecar"} == 0
+            and on () (hour() >= 11 and hour() < 20)
+            unless on () (reelsmith_paused{job="tiktok-sidecar"} == 1)
+            unless on () (reelsmith_posting_enabled{job="tiktok-sidecar"} == 0)
+            unless on () (reelsmith_session_valid{job="tiktok-sidecar"} == 0)
+            unless on () (reelsmith_backlog_ready{job="tiktok-sidecar"} == 0)
+          for: 15m
+          labels:
+            severity: warning
+            namespace: n8n-live
+          annotations:
+            summary: Nothing has been posted to TikTok today
+            description: >-
+              No clip has posted today by 13:00 SAST, although posting is on, not paused,
+              clips are ready, and no session probe has said invalid. The session may still be
+              dead without a probe saying so: check the sidecar log for auth_invalid and the
+              recent executions of Reelsmith Social Publish.
+
+        - alert: ReelsmithClipsSetAside
+          expr: reelsmith_clips_set_aside{job="tiktok-sidecar"} > 0
+          for: 15m
+          labels:
+            severity: warning
+            namespace: n8n-live
+          annotations:
+            summary: Reelsmith clips are set aside for you
+            description: >-
+              {{ $value }} clip(s) are set aside (claim status needs_you) and will not post
+              until you act. See When a clip is set aside in
+              projects/reelsmith-social-publish/README.md.
+
+        # About 2 days of posts at 5 a day. 1h: the inbox changes only when the Mac syncs.
+        - alert: ReelsmithBacklogLow
+          expr: reelsmith_backlog_ready{job="tiktok-sidecar"} < 10
+          for: 1h
+          labels:
+            severity: warning
+            namespace: n8n-live
+          annotations:
+            summary: Fewer than 10 Reelsmith clips are ready to post
+            description: >-
+              Only {{ $value }} clip(s) are ready to post, about 2 days at 5 a day. Export more
+              from Reelsmith on the Mac (they reach the cluster through Syncthing).

@@ -1,0 +1,30 @@
+---
+# Prometheus (kube-prom-stack in observability) scrapes the sidecar's metrics
+# port every 30 s. The job label is the Service name, `tiktok-sidecar`, which
+# every rule in reelsmith-alerts-prometheusrule.yaml selects on. A scrape reads
+# the ledger, the read-only inbox and the cookie file; it never calls TikTok.
+# The live Prometheus selects every ServiceMonitor in every namespace
+# (serviceMonitorSelector and serviceMonitorNamespaceSelector are both {},
+# verified 2026-10-31); `release: kube-prom-stack` is the label the chart's
+# default selector wants, so this stays selected if the selector is narrowed.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: tiktok-sidecar
+  namespace: n8n-live
+  labels:
+    app.kubernetes.io/name: tiktok-sidecar
+    app.kubernetes.io/part-of: reelsmith-social-publish
+    release: kube-prom-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tiktok-sidecar
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+  namespaceSelector:
+    matchNames:
+      - n8n-live

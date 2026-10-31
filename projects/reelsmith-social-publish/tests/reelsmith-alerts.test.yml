@@ -1,0 +1,472 @@
+# promtool tests for manifests/reelsmith-alerts-prometheusrule.yaml (the Reelsmith alerts).
+# Run from the repo root: sh projects/reelsmith-social-publish/tests/run-promtool-tests.sh
+#
+# Time: a test starts at the Unix epoch, so eval_time IS the UTC clock (480m = 08:00 UTC =
+# 10:00 SAST; SAST is UTC+2 all year). Timestamps in the input are Unix seconds on that clock.
+# Labels: the input series carry only job="tiktok-sidecar", never a namespace, so the
+# `namespace: n8n-live` in every expected alert can only come from the rule's static label.
+# promtool compares only firing alerts; one still in its `for:` is pending and expected as [].
+rule_files:
+  - reelsmith-alerts.yml
+evaluation_interval: 1m
+tests:
+  - name: healthy day, nothing fires
+    interval: 1m
+    input_series:
+      - {series: 'up{job="tiktok-sidecar"}', values: '1x1260'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '1x1260'}
+      - {series: 'reelsmith_cookie_present{job="tiktok-sidecar"}', values: '1x1260'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="auth_invalid"}', values: '0x1260'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="posted"}', values: '0+1x1260'}
+      - {series: 'reelsmith_ledger_ok{job="tiktok-sidecar"}', values: '1x1260'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x1260'}
+      - {series: 'reelsmith_unresolved_ambiguous{job="tiktok-sidecar"}', values: '0x1260'}
+      - {series: 'reelsmith_last_throttle_timestamp_seconds{job="tiktok-sidecar"}', values: '0x1260'}
+      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar"}', values: '0+60x1260'}
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar"}', values: '2x1260'}
+      - {series: 'reelsmith_clips_set_aside{job="tiktok-sidecar"}', values: '0x1260'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x1260'}
+    alert_rule_test:
+      - {eval_time: 70m, alertname: ReelsmithSidecarDown, exp_alerts: []}
+      - {eval_time: 70m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+      - {eval_time: 70m, alertname: ReelsmithLedgerUnreadable, exp_alerts: []}
+      - {eval_time: 70m, alertname: ReelsmithPostingDisabled, exp_alerts: []}
+      - {eval_time: 70m, alertname: ReelsmithPaused, exp_alerts: []}
+      - {eval_time: 70m, alertname: ReelsmithAmbiguousUpload, exp_alerts: []}
+      - {eval_time: 70m, alertname: ReelsmithThrottled, exp_alerts: []}
+      - {eval_time: 70m, alertname: ReelsmithClipsSetAside, exp_alerts: []}
+      - {eval_time: 70m, alertname: ReelsmithBacklogLow, exp_alerts: []}
+      - {eval_time: 600m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 1199m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 700m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+      - {eval_time: 1199m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+
+  # ---- ReelsmithSidecarDown ---------------------------------------------------------------
+  - name: SidecarDown fires on up == 0 after 5m
+    interval: 1m
+    input_series:
+      - {series: 'up{job="tiktok-sidecar"}', values: '1x9 0x30'}
+    alert_rule_test:
+      - {eval_time: 9m, alertname: ReelsmithSidecarDown, exp_alerts: []}
+      - {eval_time: 14m, alertname: ReelsmithSidecarDown, exp_alerts: []}
+      - eval_time: 15m
+        alertname: ReelsmithSidecarDown
+        exp_alerts:
+          - exp_labels: {severity: critical, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: &sidecar_down
+              summary: The Reelsmith TikTok sidecar is down
+              description: "Prometheus has not scraped tiktok-sidecar on port 9100 for 5 minutes (or has no target for it). Nothing can be uploaded. Check the pod: ssh homelab 'microk8s kubectl -n n8n-live get pods -l app.kubernetes.io/name=tiktok-sidecar' then its events and logs."
+
+  - name: SidecarDown fires on absent(up) while other targets are up
+    interval: 1m
+    input_series:
+      - {series: 'up{job="some-other-target"}', values: '1x30'}
+    alert_rule_test:
+      - {eval_time: 4m, alertname: ReelsmithSidecarDown, exp_alerts: []}
+      - eval_time: 5m
+        alertname: ReelsmithSidecarDown
+        exp_alerts:
+          - exp_labels: {severity: critical, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: *sidecar_down
+
+  - name: SidecarDown fires when the target vanishes (absent after the 5m lookback)
+    interval: 1m
+    input_series:
+      - {series: 'up{job="tiktok-sidecar"}', values: '1x10'}
+      - {series: 'up{job="some-other-target"}', values: '1x40'}
+    alert_rule_test:
+      - {eval_time: 14m, alertname: ReelsmithSidecarDown, exp_alerts: []}
+      - eval_time: 25m
+        alertname: ReelsmithSidecarDown
+        exp_alerts:
+          - exp_labels: {severity: critical, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: *sidecar_down
+
+  # ---- ReelsmithSessionInvalid --------------------------------------------------------------
+  - name: SessionInvalid fires on session_valid == 0 after 5m
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '1x9 0x30'}
+      - {series: 'reelsmith_cookie_present{job="tiktok-sidecar"}', values: '1x40'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="auth_invalid"}', values: '0x40'}
+    alert_rule_test:
+      - {eval_time: 14m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+      - eval_time: 15m
+        alertname: ReelsmithSessionInvalid
+        exp_alerts:
+          - exp_labels: {severity: critical, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: &session_invalid
+              summary: The TikTok session is invalid; run make refresh-cookies
+              description: "The TikTok session cookie is dead or missing: the session probe said invalid, the cookie file has no session, or an upload was refused as auth_invalid in the last hour. Every upload is refused until it is replaced. On the Mac, in the tiktok-sidecar repo, run make refresh-cookies (log in, it replaces the Secret and restarts the sidecar). The alert clears up to 1 hour after the last auth_invalid reply."
+
+  - name: SessionInvalid fires on cookie_present == 0 while the probe verdict is unknown (-1)
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '-1x40'}
+      - {series: 'reelsmith_cookie_present{job="tiktok-sidecar"}', values: '1x9 0x30'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="auth_invalid"}', values: '0x40'}
+    alert_rule_test:
+      - {eval_time: 14m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+      - eval_time: 15m
+        alertname: ReelsmithSessionInvalid
+        exp_alerts:
+          - exp_labels: {severity: critical, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: *session_invalid
+
+  # The gauges look fine (verdict unknown after a restart, cookie file present), but one
+  # upload was refused as auth_invalid at 60m. Fires 5m later, as ONE alert without a code
+  # label, and clears once the last 0 before that reply has left the 1h window (ranges are
+  # left-open in Prometheus 3: at 119m the window (59m, 119m] holds only 1s).
+  - name: SessionInvalid fires on an auth_invalid reply and clears an hour later
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '-1x200'}
+      - {series: 'reelsmith_cookie_present{job="tiktok-sidecar"}', values: '1x200'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="auth_invalid"}', values: '0x59 1x140'}
+    alert_rule_test:
+      - {eval_time: 59m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+      - {eval_time: 64m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+      - eval_time: 65m
+        alertname: ReelsmithSessionInvalid
+        exp_alerts:
+          - exp_labels: {severity: critical, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: *session_invalid
+      - eval_time: 118m
+        alertname: ReelsmithSessionInvalid
+        exp_alerts:
+          - exp_labels: {severity: critical, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: *session_invalid
+      - {eval_time: 119m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+
+  # -1 (unknown: after a restart, or nothing probed) must not page by itself, and replies
+  # with other codes (posted, publish_rejected) are not auth failures.
+  - name: SessionInvalid does NOT fire for session_valid == -1 alone
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '-1x200'}
+      - {series: 'reelsmith_cookie_present{job="tiktok-sidecar"}', values: '1x200'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="auth_invalid"}', values: '0x200'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="posted"}', values: '0+1x200'}
+      - {series: 'reelsmith_requests_total{job="tiktok-sidecar",code="publish_rejected"}', values: '0+1x200'}
+    alert_rule_test:
+      - {eval_time: 10m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+      - {eval_time: 90m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+      - {eval_time: 200m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+
+  # ---- ReelsmithLedgerUnreadable, PostingDisabled, Paused, AmbiguousUpload ------------------
+  - name: LedgerUnreadable fires on ledger_ok == 0 after 5m
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_ledger_ok{job="tiktok-sidecar"}', values: '1x9 0x30'}
+    alert_rule_test:
+      - {eval_time: 14m, alertname: ReelsmithLedgerUnreadable, exp_alerts: []}
+      - eval_time: 15m
+        alertname: ReelsmithLedgerUnreadable
+        exp_alerts:
+          - exp_labels: {severity: critical, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations:
+              summary: The Reelsmith posting ledger cannot be read
+              description: "The sidecar cannot read its posting ledger (ledger.jsonl on the cookies PVC) and refuses every upload. After a crash, a torn last line is set aside with make ledger-repair in the tiktok-sidecar repo."
+
+  - name: PostingDisabled fires on posting_enabled == 0 after 15m
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x9 0x40'}
+    alert_rule_test:
+      - {eval_time: 24m, alertname: ReelsmithPostingDisabled, exp_alerts: []}
+      - eval_time: 25m
+        alertname: ReelsmithPostingDisabled
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations:
+              summary: Reelsmith posting is switched off
+              description: "POSTING_ENABLED is not true on the sidecar, so every upload request is a dry run. Expected only during a rollback: set it back to true in tiktok-sidecar-deployment.yaml and sync reelsmith-social-publish."
+
+  - name: Paused fires once per active reason after 5m
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x9 1x30'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x19 1x20'}
+    alert_rule_test:
+      - {eval_time: 14m, alertname: ReelsmithPaused, exp_alerts: []}
+      - eval_time: 15m
+        alertname: ReelsmithPaused
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar, reason: failures}
+            exp_annotations: &paused
+              summary: Reelsmith posting is paused
+              description: "The sidecar has paused posting. Its reason label says why: failures (2 failed uploads in a row, a 12 hour pause) or attempt_cap (the daily attempt cap is used, until midnight SAST). The failed runs are in ledger.failures.jsonl on the cookies PVC."
+      - eval_time: 25m
+        alertname: ReelsmithPaused
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar, reason: failures}
+            exp_annotations: *paused
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar, reason: attempt_cap}
+            exp_annotations: *paused
+
+  - name: AmbiguousUpload fires on an unresolved outcome after 5m
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_unresolved_ambiguous{job="tiktok-sidecar"}', values: '0x9 2x30'}
+    alert_rule_test:
+      - {eval_time: 14m, alertname: ReelsmithAmbiguousUpload, exp_alerts: []}
+      - eval_time: 15m
+        alertname: ReelsmithAmbiguousUpload
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations:
+              summary: A Reelsmith upload may have posted and is unresolved
+              description: "2 upload(s) ended without a known outcome (timeout, restart or crash) and may be on TikTok as Only me. Each blocks its clip until resolved: check TikTok Studio, then make ledger-resolve KEY=job/file.mp4 OUTCOME=posted or OUTCOME=not_posted in the tiktok-sidecar repo."
+
+  # ---- ReelsmithThrottled -------------------------------------------------------------------
+  # Never throttled (timestamp 0) until a publish_throttled row at 100m (6000 s). Fires at
+  # once (for: 0m), the condition holds until 130m (30 min), keep_firing_for holds it 2h more.
+  - name: Throttled is edge-triggered and kept firing for 2h
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_last_throttle_timestamp_seconds{job="tiktok-sidecar"}', values: '0x99 6000x300'}
+    alert_rule_test:
+      - {eval_time: 99m, alertname: ReelsmithThrottled, exp_alerts: []}
+      - eval_time: 100m
+        alertname: ReelsmithThrottled
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: &throttled
+              summary: TikTok said Reelsmith is posting too fast
+              description: "TikTok refused an upload with You are posting too fast (ledger code publish_throttled) in the last 30 minutes; the alert stays up 2 hours after that. The clip was released for a later slot. Repeated throttling means DAILY_CAP should come down."
+      - eval_time: 129m
+        alertname: ReelsmithThrottled
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: *throttled
+      - eval_time: 249m
+        alertname: ReelsmithThrottled
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: *throttled
+      - {eval_time: 251m, alertname: ReelsmithThrottled, exp_alerts: []}
+
+  # A throttle at 23:50 SAST (21:50 UTC = 1310m) keeps firing past midnight SAST (22:00 UTC):
+  # it is a timestamp, not a counter that resets with the day.
+  - name: Throttled does not reset at midnight SAST
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_last_throttle_timestamp_seconds{job="tiktok-sidecar"}', values: '0x1309 78600x200'}
+    alert_rule_test:
+      - eval_time: 1325m
+        alertname: ReelsmithThrottled
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: *throttled
+      - eval_time: 1450m
+        alertname: ReelsmithThrottled
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: *throttled
+      - {eval_time: 1470m, alertname: ReelsmithThrottled, exp_alerts: []}
+
+  # ---- ReelsmithDispatcherSilent ------------------------------------------------------------
+  # The last request was at 00:00 UTC, so the silence is over 3.5h all morning; only the window
+  # (08:00-20:00 UTC = 10:00-22:00 SAST) decides.
+  - name: DispatcherSilent window opens at 10:00 SAST and closes at 22:00 SAST
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x1260'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x1260'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x1260'}
+    alert_rule_test:
+      - {eval_time: 479m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 484m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - eval_time: 485m
+        alertname: ReelsmithDispatcherSilent
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: &dispatcher_silent
+              summary: The Reelsmith dispatcher has not called the sidecar for 3.5 hours
+              description: "No upload request reached the sidecar for over 3.5 hours between 10:00 and 22:00 SAST, although posting is on, not paused, and clips are ready. The n8n workflow Reelsmith Social Publish is probably not running: check it is published and look at its recent executions."
+      - eval_time: 1199m
+        alertname: ReelsmithDispatcherSilent
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: *dispatcher_silent
+      - {eval_time: 1200m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+
+  # Requests every minute until the last one at 500m: silent for over 3.5h (12600 s) only from
+  # 711m, firing from 716m.
+  - name: DispatcherSilent needs more than 3.5h of silence
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar"}', values: '0+60x499 30000x500'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x1000'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x1000'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x1000'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x1000'}
+    alert_rule_test:
+      - {eval_time: 715m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - eval_time: 716m
+        alertname: ReelsmithDispatcherSilent
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: *dispatcher_silent
+
+  - name: DispatcherSilent unless paused (failures, then attempt_cap)
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '1x799 0x460'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x799 1x460'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x1260'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x1260'}
+    alert_rule_test:
+      - {eval_time: 600m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 1000m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+
+  - name: DispatcherSilent unless posting is switched off
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x1260'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '0x1260'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x1260'}
+    alert_rule_test:
+      - {eval_time: 600m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+
+  - name: DispatcherSilent unless no clip is ready
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x1260'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x1260'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '0x1260'}
+    alert_rule_test:
+      - {eval_time: 600m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+
+  # ---- ReelsmithNoPostToday -----------------------------------------------------------------
+  - name: NoPostToday window opens at 13:00 SAST and closes at 22:00 SAST
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x1260'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x1260'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '1x1260'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x1260'}
+    alert_rule_test:
+      - {eval_time: 659m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+      - {eval_time: 674m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+      - eval_time: 675m
+        alertname: ReelsmithNoPostToday
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: &no_post_today
+              summary: Nothing has been posted to TikTok today
+              description: "No clip has posted today by 13:00 SAST, although posting is on, not paused, clips are ready, and no session probe has said invalid. The session may still be dead without a probe saying so: check the sidecar log for auth_invalid and the recent executions of Reelsmith Social Publish."
+      - eval_time: 1199m
+        alertname: ReelsmithNoPostToday
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: *no_post_today
+      - {eval_time: 1200m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+
+  # The backstop for a dead cookie nobody probed: an unknown verdict does not silence it.
+  - name: NoPostToday still fires when the session verdict is unknown (-1)
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x800'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x800'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '-1x800'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x800'}
+    alert_rule_test:
+      - eval_time: 700m
+        alertname: ReelsmithNoPostToday
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations: *no_post_today
+
+  - name: NoPostToday unless paused (failures, then attempt_cap)
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar"}', values: '0x1260'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '1x899 0x360'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x899 1x360'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x1260'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '1x1260'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x1260'}
+    alert_rule_test:
+      - {eval_time: 700m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+      - {eval_time: 1000m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+
+  - name: NoPostToday unless posting is switched off
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x800'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '0x800'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '1x800'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x800'}
+    alert_rule_test:
+      - {eval_time: 700m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+
+  - name: NoPostToday unless a probe said the session is invalid
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x800'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x800'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '0x800'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '20x800'}
+    alert_rule_test:
+      - {eval_time: 700m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+
+  - name: NoPostToday unless no clip is ready
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_posted_today{job="tiktok-sidecar"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="failures"}', values: '0x800'}
+      - {series: 'reelsmith_paused{job="tiktok-sidecar",reason="attempt_cap"}', values: '0x800'}
+      - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar"}', values: '1x800'}
+      - {series: 'reelsmith_session_valid{job="tiktok-sidecar"}', values: '1x800'}
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '0x800'}
+    alert_rule_test:
+      - {eval_time: 700m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+
+  # ---- ReelsmithClipsSetAside, ReelsmithBacklogLow ------------------------------------------
+  - name: ClipsSetAside fires on a needs_you claim after 15m
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_clips_set_aside{job="tiktok-sidecar"}', values: '0x9 3x40'}
+    alert_rule_test:
+      - {eval_time: 24m, alertname: ReelsmithClipsSetAside, exp_alerts: []}
+      - eval_time: 25m
+        alertname: ReelsmithClipsSetAside
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations:
+              summary: Reelsmith clips are set aside for you
+              description: "3 clip(s) are set aside (claim status needs_you) and will not post until you act. See When a clip is set aside in projects/reelsmith-social-publish/README.md."
+
+  # 10 ready clips is enough; 9 (from 101m) fires after 1h.
+  - name: BacklogLow fires under 10 ready clips after 1h
+    interval: 1m
+    input_series:
+      - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar"}', values: '10x100 9x100'}
+    alert_rule_test:
+      - {eval_time: 100m, alertname: ReelsmithBacklogLow, exp_alerts: []}
+      - {eval_time: 160m, alertname: ReelsmithBacklogLow, exp_alerts: []}
+      - eval_time: 161m
+        alertname: ReelsmithBacklogLow
+        exp_alerts:
+          - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
+            exp_annotations:
+              summary: Fewer than 10 Reelsmith clips are ready to post
+              description: "Only 9 clip(s) are ready to post, about 2 days at 5 a day. Export more from Reelsmith on the Mac (they reach the cluster through Syncthing)."

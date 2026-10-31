@@ -77,6 +77,8 @@ ALLOW='^n8n-sheets@prudentia-n8n\.iam\.gserviceaccount\.com$
 ^kv/secret/n8n/(live|local)/[a-z-]+$
 ^secret/n8n/(live|local)/[a-z-]+$
 ^0f0cddada0abb51c4fe6126c645088bdd49ac5ecc125bc302debbb7a56a045be$
+^3ad31c4106510be5f20e130125bbc11380833132cad8a3c2b426b01171d2f876$
+^4a61322ac1103a0e3aea2a61ef1718422a48fa046441f299d71e660a3bc71ae9$
 ^f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36$
 ^73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662$
 ^5fb5438b300a430f0636b60924939defb84f965b15ad7ae16acf5a2ac9c9e5c3$'

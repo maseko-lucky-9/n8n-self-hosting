@@ -94,15 +94,23 @@ spec:
       containers:
         - name: tiktok-sidecar
           # Pinned by digest (go-live step 2). The in-cluster registry has no auth, so
-          # any pod that reaches it could push a different :0.4.0. This is the 0.4.0
-          # image built from tiktok-sidecar ee8f504 (linux/amd64 plus BuildKit's
-          # provenance entry). To ship a new version: `make remote-ship TAG=<new>` in
-          # tiktok-sidecar, read the digest from the registry, and change this line in a PR.
-          image: localhost:32000/reelsmith/tiktok-sidecar@sha256:0f0cddada0abb51c4fe6126c645088bdd49ac5ecc125bc302debbb7a56a045be
+          # any pod that reaches it could push a different :0.5.0. This is the 0.5.0
+          # image from tiktok-sidecar main 8262556 (PR #5: GET /metrics on :9100;
+          # linux/amd64 plus BuildKit's provenance entry). To ship a new version:
+          # `make remote-ship TAG=<new>` in tiktok-sidecar, read the digest from the
+          # registry, and change this line in a PR.
+          image: localhost:32000/reelsmith/tiktok-sidecar@sha256:3ad31c4106510be5f20e130125bbc11380833132cad8a3c2b426b01171d2f876
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8000
+              protocol: TCP
+            # Prometheus metrics (GET /metrics only) on a listener of their own, so
+            # the scrape NetworkPolicy never opens the upload API on 8000. 9100 is the
+            # image's METRICS_PORT default (sidecar/config.py), so no env is set. An
+            # unprivileged port: uid 10001 with every capability dropped can bind it.
+            - name: metrics
+              containerPort: 9100
               protocol: TCP
           env:
             - name: MOCK_UPLOAD

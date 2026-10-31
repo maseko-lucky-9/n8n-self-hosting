@@ -55,7 +55,22 @@ jobs:
         run: bash watchdog.selftest.sh
 
       - name: Shellcheck the scripts this project owns
-        run: shellcheck deploy-workflow.sh watchdog.selftest.sh ../../../scripts/disclosure-sweep.sh ../../../scripts/disclosure-sweep.selftest.sh
+        run: shellcheck deploy-workflow.sh watchdog.selftest.sh ../tests/run-promtool-tests.sh ../../../scripts/disclosure-sweep.sh ../../../scripts/disclosure-sweep.selftest.sh
 
       - name: Disclosure sweep selftest
         run: bash ../../../scripts/disclosure-sweep.selftest.sh
+
+  # Unit tests for the Reelsmith alert rules (manifests/reelsmith-alerts-prometheusrule.yaml).
+  # The runner image ships yq (mikefarah v4, which the script insists on) and docker; promtool
+  # comes from prom/prometheus:v3.10.0, the live Prometheus version, pinned by digest in the script.
+  promtool:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: promtool check + test rules
+        run: sh projects/reelsmith-social-publish/tests/run-promtool-tests.sh

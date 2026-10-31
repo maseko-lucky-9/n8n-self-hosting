@@ -77,10 +77,11 @@ Schedule (*/15 9-21 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Sid
 | Workflow export | `workflow/reelsmith-social-publish.json`, built by `scripts/build-workflow.js` from the `scripts/*.jsCode.js` files |
 | Workflow deploy | `scripts/deploy-workflow.sh` (n8n API; never automatic) |
 | Kubernetes manifests | `manifests/`, synced by ArgoCD |
-| One-off TEST_ALERT Job | `manifests/test/`, applied by hand, never synced |
+| One-off test objects (TEST_ALERT Job, cookies chown Job, ReelsmithSessionInvalid drill rule) | `manifests/test/`, applied by hand, never synced |
 | ArgoCD Application | `homelab-infra/argocd/applications/reelsmith-social-publish.yaml`: **manual sync**, a non-recursive directory source on `manifests/`. Merging here deploys nothing until you sync |
-| Sidecar code and image | `tiktok-sidecar` repo, image `localhost:32000/reelsmith/tiktok-sidecar:0.4.0`, deployed by digest |
-| Self-checks | `cd scripts && npm ci && npm run selfcheck` (dispatcher); `bash scripts/watchdog.selftest.sh` (watchdog); from the repo root, `bash scripts/disclosure-sweep.selftest.sh` (disclosure sweep) |
+| Sidecar code and image | `tiktok-sidecar` repo, image `localhost:32000/reelsmith/tiktok-sidecar:0.5.0`, deployed by digest |
+| Alert rules | `manifests/reelsmith-alerts-prometheusrule.yaml` ([Alerts](#alerts)); promtool unit tests in `tests/` |
+| Self-checks | `cd scripts && npm ci && npm run selfcheck` (dispatcher, manifests); `bash scripts/watchdog.selftest.sh` (watchdog); from the repo root, `bash scripts/disclosure-sweep.selftest.sh` (disclosure sweep) and `sh projects/reelsmith-social-publish/tests/run-promtool-tests.sh` (alert rules; needs docker and mikefarah yq v4) |
 
 ### Manifests
 
@@ -89,8 +90,10 @@ Schedule (*/15 9-21 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Sid
 | `pvc-reelsmith-inbox.yaml` | Syncthing's PVC (`syncthing-reelsmith-pvc`); n8n mounts it at `/data/reelsmith-inbox`, the sidecar mounts its `reelsmith-inbox` folder at `/inbox` |
 | `syncthing-deployment.yaml`, `syncthing-networkpolicy.yaml` | Syncthing receiver (NodePort 32200) |
 | `tiktok-sidecar-deployment.yaml` | the gatekeeper; settings are env vars (`POSTING_ENABLED`, `DAILY_CAP`, `ATTEMPT_CAP`, `MAX_CLIP_MB`, `INBOX_DIR`, `LEDGER_PATH`) |
-| `tiktok-sidecar-service.yaml`, `tiktok-sidecar-pvc.yaml` | Service on 8000; cookies and ledger PVC |
-| `tiktok-sidecar-networkpolicy.yaml` | ingress to the sidecar from n8n, the n8n worker and the watchdog; egress from n8n to the sidecar |
+| `tiktok-sidecar-service.yaml`, `tiktok-sidecar-pvc.yaml` | Service on 8000 (API) and 9100 (metrics); cookies and ledger PVC |
+| `tiktok-sidecar-networkpolicy.yaml` | ingress to the sidecar from n8n, the n8n worker and the watchdog on 8000, and from Prometheus on 9100 only; egress from n8n to the sidecar; the sidecar's own egress |
+| `tiktok-sidecar-servicemonitor.yaml` | Prometheus scrapes the sidecar's `/metrics` on 9100 every 30 s (job `tiktok-sidecar`) |
+| `reelsmith-alerts-prometheusrule.yaml` | the 11 Reelsmith alerts ([Alerts](#alerts)) |
 | `reelsmith-watchdog-cronjob.yaml`, `reelsmith-watchdog-networkpolicy.yaml` | the watchdog (below) and its path to Postgres |
 | `external-secret-telegram.yaml` | Telegram alert credentials |
 | `external-secret-youtube.yaml` | unused since YouTube was dropped; removal is deferred |
@@ -169,6 +172,45 @@ prints only the HTTP status. The CronJob was switched on 2026-10-24 (it shipped 
 `bash scripts/watchdog.selftest.sh` runs the script against stub `psql`/`wget` and checks every
 decision.
 
+## Alerts
+
+Since sidecar 0.5.0, Prometheus scrapes the sidecar's `GET /metrics` on its own port, 9100, every
+30 s (`tiktok-sidecar-servicemonitor.yaml`). The metrics listener serves nothing else, and only
+the Prometheus pod in `observability` may reach it, so the scrape never opens the upload API on
+8000. The PrometheusRule `reelsmith-alerts` turns the metrics into 11 alerts. Critical ones page
+Telegram through Alertmanager even while the Mac is asleep; warnings are for the homelab desk
+(ADR-0002, amendment 2026-10-31). The desk allowlists these names exactly, so renaming or adding
+one is a desk change too.
+
+| Alert | Severity | Fires when |
+|---|---|---|
+| `ReelsmithSidecarDown` | critical | no successful scrape, or no target at all, for 5 min |
+| `ReelsmithSessionInvalid` | critical | for 5 min: the session probe said invalid (`session_valid` 0), or the cookie file has no session (`cookie_present` 0), or an upload was refused as `auth_invalid` in the last hour. Fix: `make refresh-cookies` in tiktok-sidecar |
+| `ReelsmithLedgerUnreadable` | critical | the ledger cannot be read for 5 min (every upload is refused) |
+| `ReelsmithPostingDisabled` | warning | `POSTING_ENABLED` is not true for 15 min |
+| `ReelsmithPaused` | warning | the failure pause or the attempt-cap pause is on for 5 min (one alert per `reason`) |
+| `ReelsmithAmbiguousUpload` | warning | an upload outcome is unresolved for 5 min (`make ledger-resolve`) |
+| `ReelsmithThrottled` | warning | TikTok said "posting too fast" in the last 30 min; stays up 2 h more |
+| `ReelsmithDispatcherSilent` | warning | no `/api/upload` request for 3.5 h, 10:00-22:00 SAST, unless paused, posting off, or no clip ready |
+| `ReelsmithNoPostToday` | warning | nothing posted by 13:00 SAST (until 22:00), unless paused, posting off, a probe said the session is invalid, or no clip ready |
+| `ReelsmithClipsSetAside` | warning | a clip is set aside (`needs_you`) for 15 min |
+| `ReelsmithBacklogLow` | warning | fewer than 10 clips ready to post for 1 h |
+
+- **The session.** `session_valid` is the latest probe: 1, 0, or -1 (unknown, after every restart
+  and whenever nothing has probed). Only 0 pages; -1 must not. A dead cookie can also hide behind a
+  stale 1, because nothing probes in steady state. That gap is covered by `cookie_present`, by any
+  `auth_invalid` reply (so `ReelsmithSessionInvalid` fires within about 5 minutes of the first
+  refused upload, and clears up to an hour after the last), and by `ReelsmithNoPostToday`, which
+  -1 and 1 do not silence.
+- **Time windows** are written in UTC (`hour()`), because Prometheus has no time zones: SAST is
+  UTC+2, so 10:00-22:00 SAST is `hour() >= 8 and hour() < 20`. Only the two dispatcher rules have
+  one; a lasting state (paused, set aside, low backlog) stays one alert instead of resolving every
+  night and firing again every morning.
+- **Tests.** `tests/reelsmith-alerts.test.yml` (promtool, run in CI by the `promtool` job) covers
+  every rule, every `unless`, the window edges, the namespace label and the throttle edge.
+  `scripts/monitoring.selfcheck.js` checks the port wiring, that only Prometheus reaches 9100
+  (both selectors in one `from` element) and nothing new reaches 8000, and the exact alert names.
+
 ## Deploy
 
 1. **Manifests.** Merge the PR, review the diff (`argocd app diff reelsmith-social-publish`
@@ -193,6 +235,41 @@ decision.
 3. **The inbox mount on n8n** (`/data/reelsmith-inbox` on the main and worker pods) comes from
    `values-live.yaml`. Change it through a PR and an `n8n-live` sync (`docs/runbook.md` §4),
    never with Helm.
+4. **Metrics and alerts (sidecar 0.5.0).** The image pin, the metrics port, the ServiceMonitor,
+   the scrape NetworkPolicy and `reelsmith-alerts` go live together in one manual sync of
+   `reelsmith-social-publish`; merging deploys nothing. Everything else merged since the last
+   sync goes with it, so read the whole diff.
+   - **When.** Outside a slot and the 20 minutes after it (09:00, 12:00, 15:00, 18:00, 21:00
+     SAST), and only once the sidecar log shows no upload in flight: the slot's upload has
+     logged its `uploader error_id=... verdict=...` line, or there was none:
+     `ssh homelab 'microk8s kubectl -n n8n-live logs deploy/tiktok-sidecar -c tiktok-sidecar --since=30m'`.
+     The Deployment is Recreate: a restart during an upload leaves it ambiguous. In the plan's
+     order this sync comes after the homelab-infra null route for Reelsmith warnings (A3b);
+     before it, the warnings reach Telegram as well.
+   - **Sync** as in step 1, then check the pod runs the 0.5.0 digest:
+     `ssh homelab 'microk8s kubectl -n n8n-live get pods -l app.kubernetes.io/name=tiktok-sidecar -o jsonpath="{.items[*].spec.containers[0].image}"'`.
+   - **Verify the scrape and the rules.** Each command below is read-only and runs in the
+     Prometheus pod, behind this prefix:
+     `ssh homelab 'microk8s kubectl -n observability exec prometheus-kube-prom-stack-kube-prome-prometheus-0 -c prometheus -- <command>'`.
+     - target up: `wget -qO- 'http://localhost:9090/api/v1/query?query=up%7Bjob%3D%22tiktok-sidecar%22%7D'`
+       shows `"value":[...,"1"]`;
+     - rules loaded: `wget -qO- 'http://localhost:9090/api/v1/rules?type=alert&rule_group%5B%5D=reelsmith.rules'`
+       lists the 11 `Reelsmith*` names, with `"health":"ok"`;
+     - the metrics port serves nothing else: `wget -S -O /dev/null http://tiktok-sidecar.n8n-live.svc:9100/api/upload`
+       answers `404 Not Found`;
+     - the API is still closed to Prometheus: `wget -T 5 -O /dev/null http://tiktok-sidecar.n8n-live.svc:8000/healthz`
+       times out (a NetworkPolicy drop is a timeout, not a refusal);
+     - the values match `/api/stats` (posted today, paused, posting enabled) and the ledger.
+   - **ReelsmithSessionInvalid drill**, right after, still outside a slot:
+     `ssh homelab 'microk8s kubectl create -f -' < manifests/test/reelsmith-session-invalid-drill.yaml`.
+     It fires at the next rule evaluation; the Telegram message "CRITICAL: ReelsmithSessionInvalid"
+     (description "DRILL, nothing is wrong") should arrive within about 2 minutes. Note the
+     delay, then delete it:
+     `ssh homelab 'microk8s kubectl -n n8n-live delete prometheusrule reelsmith-session-invalid-drill'`
+     (a resolved message follows). The desk may open an incident for it; close its ClickUp task.
+   - **Rollback:** revert this change in a PR and sync, outside a slot as above. The ledger stays
+     readable: 0.5.0 adds no row field and no status, only the code value `publish_throttled`,
+     and 0.4.0 reads `code` as free text (tiktok-sidecar PR #5 tests a rollback reader).
 
 ## Mac setup
 
