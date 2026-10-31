@@ -10,6 +10,7 @@
 //  - the sidecar URL names the Service in manifests/, and the NetworkPolicies
 //    there let the n8n main and worker pods reach it on that port;
 //  - the sidecar's DAILY_CAP and ATTEMPT_CAP fit Pick Due Clip's slots, at most 3 a day;
+//  - Log Results ships its Telegram gates as the owner decided (NOTIFY_*);
 //  - the repo's import banned-keys check and disclosure sweep both pass.
 //   node workflow-contract.selfcheck.js   -> exit 0 on pass, 1 on any failure.
 const assert = require('node:assert/strict');
@@ -136,6 +137,17 @@ s.check('DRY_RUN defaults to true (exactly one switch)', () => {
   const js = node('Pick Due Clip').parameters.jsCode;
   assert.equal(js.split('const DRY_RUN = true;').length - 1, 1);
   assert.equal(/const DRY_RUN = false/.test(js), false);
+});
+
+s.check('Log Results ships its Telegram gates as decided: NOTIFY_INFO false, NOTIFY_SESSION and NOTIFY_SIDECAR_DOWN true', () => {
+  // Owner decision 2026-10-31: the session-invalid and sidecar-unreachable messages stay on.
+  const js = node('Log Results').parameters.jsCode;
+  for (const [gate, value] of [['NOTIFY_INFO', 'false'], ['NOTIFY_SESSION', 'true'], ['NOTIFY_SIDECAR_DOWN', 'true']]) {
+    assert.equal(js.split(`const ${gate} = `).length - 1, 1, `${gate} is not exactly one constant`);
+    assert.equal(js.split(`const ${gate} = ${value};`).length - 1, 1, `${gate} does not ship ${value}`);
+  }
+  assert.deepEqual([...js.matchAll(/^const (NOTIFY_[A-Z_]+) = /gm)].map((m) => m[1]).sort(), ['NOTIFY_INFO', 'NOTIFY_SESSION', 'NOTIFY_SIDECAR_DOWN']);
+  assert.ok(js.includes("const SIDECAR_DOWN_CODES = ['network_before_upload', 'clock_unsynced'];"), 'SIDECAR_DOWN_CODES changed');
 });
 
 s.check('drift guard: every jsCode equals its canonical script file', () => {

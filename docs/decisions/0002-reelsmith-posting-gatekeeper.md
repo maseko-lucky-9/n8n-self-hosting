@@ -159,7 +159,9 @@ a day, plus at most 1 other desk message a week).
   sidecar unavailable, session invalid, daily cap, kill switch and manifest problems sit behind
   the constant `NOTIFY_INFO`, shipped as `false`. The gate is on the outgoing message only:
   claims, slots, counters and rows are unchanged, so no outcome logic moved. A gated notice
-  never fails the run.
+  never fails the run. *Changed by the second 2026-10-31 amendment: "session invalid" and "sidecar
+  unavailable" for 503 `network_before_upload` / `clock_unsynced` stay on, each behind a gate of
+  its own (`NOTIFY_SESSION`, `NOTIFY_SIDECAR_DOWN`), and fail the run when they cannot be sent.*
 - **The watchdog** keeps its per-run failed-execution check: nothing else reads n8n's execution
   state, and the Reelsmith alert rules do not either. The 09:45 run still reports the sidecar
   down or the cookie invalid, as before (the Mac-asleep backstop). Dropped, because the desk owns
@@ -251,10 +253,24 @@ not a number from TikTok's documentation. The five-slot schedule of 2026-10-27 i
   `workflow-contract.selfcheck.js` now fails on a slot count or `DAILY_CAP` over 3, not only on
   caps that disagree with the slots.
 - **Kept.** From 2026-10-27: the rejection mapping (a TikTok refusal is not "may have
-  posted"), the once-a-day daily-cap notice and `MIN_GAP_MIN` 160. With three slots a 12:00 slot
-  first claimed at 15:15 still posts at 18:00 and 20:45 (at 170 the third would be lost), and
-  posts stay at least 160 minutes apart. The retry once after another clip (second 2026-10-27
-  amendment) and the quieter notices (2026-10-28) are untouched.
+  posted") and `MIN_GAP_MIN` 160. With three slots a 12:00 slot first claimed at 15:15 still
+  posts at 18:00 and 20:45 (at 170 the third would be lost), and posts stay at least 160 minutes
+  apart. The once-a-day daily-cap notice is still in the code but is queued as information, so
+  it is never sent while `NOTIFY_INFO` is false (the selfchecks open the gate to test it). The
+  retry once after another clip (second 2026-10-27 amendment) and the quieter notices
+  (2026-10-28) are untouched, apart from the two messages below.
+- **Owner decision, two Telegram messages stay on.** `NOTIFY_INFO` stays false, and two gates of
+  their own in `scripts/log-results.jsCode.js` ship on. `NOTIFY_SESSION`: "TikTok session
+  invalid (N in a row). Run `make refresh-cookies` ..." on a 401 `auth_invalid`, the 1st in a
+  row and then every 12th. The alert rules see a dead cookie only at the next session probe, so
+  n8n's own message is the fast path. `NOTIFY_SIDECAR_DOWN`: "sidecar unavailable N times in a
+  row; clips are waiting." on a 503 `network_before_upload` (the sidecar cannot reach TikTok) or
+  `clock_unsynced`, the 3rd in a row and then every 12th. No alert rule sees either: requests
+  still arrive and nothing is paused, so before this decision that pair was an accepted gap.
+  Both keep the wording and cadence of the workflow deployed on 2026-10-18 (git `178b7dd`), and
+  the selfchecks pin both. Every other unavailable answer (503 `busy` or `paused`, a sidecar that
+  does not answer) stays behind `NOTIFY_INFO`: `ReelsmithPaused` and `ReelsmithSidecarDown`
+  cover those.
 - **Slot-marker indices.** Markers are named by position (`.slots/<day>-<i>.json`). The workflow
   deployed on 2026-10-31 (read from n8n: `SLOTS = ['12:00', '15:00', '18:00']`, cron
   `*/15 12-20 * * *`, `MIN_GAP_MIN` 170) writes 0, 1 and 2 for 12:00, 15:00 and 18:00, and this
@@ -282,12 +298,30 @@ not a number from TikTok's documentation. The five-slot schedule of 2026-10-27 i
   raises it at 13:15 until the 15:00 slot posts (with five, a 12:00 post covered a 09:00
   refusal). With nothing posted that is the stall it watches for, so it is not changed.
 - **`ReelsmithBacklogLow`** keeps its threshold of 10, now about 3 days at 3 a day.
-- **The dead cookie** is unchanged: `ReelsmithSessionInvalid` is only as fast as the watchdog's
-  09:45 probe (previous amendment). The 30 Oct replay now runs on the three slots and pins that.
+- **The dead cookie.** `ReelsmithSessionInvalid` is still only as fast as the watchdog's 09:45
+  probe (previous amendment); the 30 Oct replay now runs on the three slots and pins that. What
+  the owner sees first is n8n's own 401 message (`NOTIFY_SESSION`), as with the workflow
+  deployed today. That message does not help while TikTok refuses a dead session as
+  `publish_rejected` (no 401 happens until a probe says invalid); `ReelsmithNoPostToday` at
+  13:15 SAST is then the earliest signal, and the next 09:45 probe the first page.
+- **What the workflow deploy brings.** The deployed workflow is git `178b7dd` (n8n versionId
+  `daf5bb84`, published 2026-10-18, the only version n8n holds). This is the first deploy since,
+  so it brings #72 (an "uploaded as Only me" notice on every post), #78 (rotation across source
+  videos; `00_` intros never posted and counted as done by Archive Manifest), #79, #80 (retry
+  once; the state file gains `refusals` and `retryAfter`), #81 (quiet Telegram, with the two
+  messages above kept) and `MIN_GAP_MIN` 160, all at once. Claims that workflow wrote for TikTok
+  refusals say `failed` and are not retried by #80; the README gives the safe release. Expect
+  `ReelsmithNoPostToday` on about one day in four: it fires at 13:15 SAST whenever the 12:00
+  attempt is refused (7 of 28 attempts since 2026-10-18 were `publish_rejected`), and a refused
+  last attempt the day before plus a refused 12:00 pause the rest of the day.
 - **Deploy.** Merging deploys nothing. The sync of `reelsmith-social-publish` (caps 3/6, the
   alert window; the CronJob change is comments only) and the workflow deploy go in one window,
-  outside a slot and the 20 minutes after it, sync first. The new alert window fits either
-  order. Commands: README, "Deploy" step 5.
+  outside a slot and the 20 minutes after it, sync first: before 10:00 SAST on 2026-11-01, or
+  the old `ReelsmithDispatcherSilent` window false-fires at about 10:05 that morning. The workflow
+  goes out as a dry run first, executed once by hand and checked, then live; the settings
+  `maxConcurrency`, `binaryMode`, `callerPolicy` and `availableInMCP` are checked afterwards
+  (n8n 2.39.8 merges settings on an update, so they should survive). Commands: README, "Deploy"
+  step 5.
 
 ## Related
 
