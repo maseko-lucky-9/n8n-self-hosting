@@ -212,6 +212,14 @@ s.check('default: a gated message never needs Telegram: a failing or unconfigure
   const auth = await picked(); // NOTIFY_SESSION: a safety message, as live
   await assert.rejects(log(auth.root, auth.pick, sidecar(401, 'auth_invalid'), { notify: false, httpRequest: fail }), /Telegram alert failed/);
   assert.equal(h.readJson(statePath(auth.root)).authCount, 1, 'counter recorded before the failed send');
+  const down = await picked(); // NOTIFY_SIDECAR_DOWN: a safety message too, as live
+  for (let i = 1; i <= 2; i++) {
+    reclaim(down.pick);
+    await log(down.root, down.pick, sidecar(503, 'network_before_upload'), { notify: false, httpRequest: fail });
+  }
+  reclaim(down.pick);
+  await assert.rejects(log(down.root, down.pick, sidecar(503, 'network_before_upload'), { notify: false, httpRequest: fail }), /Telegram alert failed/);
+  assert.equal(h.readJson(statePath(down.root)).count, 3, 'counter recorded before the failed send');
   const logs = [];
   const ok = await picked();
   await log(ok.root, ok.pick, sidecar(200, 'posted'), { notify: false, httpRequest: fail, logs });
@@ -274,6 +282,15 @@ s.check('the owner gates cover only their own outcomes: every other unavailable 
   const texts = [];
   for (const r of seq) { reclaim(mixed.pick); texts.push(...(await log(mixed.root, mixed.pick, r, { notify: false })).sent.map((x) => x.body.text)); }
   assert.deepEqual(texts, [LIVE_SIDECAR_DOWN_TEXT(3, 'network_before_upload')]);
+  // ...and only that answer decides: two network_before_upload then busy sends nothing at 3
+  // (live sent it); the README documents this.
+  const quiet = await picked();
+  for (const [i, r] of [sidecar(503, 'network_before_upload'), sidecar(503, 'network_before_upload'), sidecar(503, 'busy')].entries()) {
+    reclaim(quiet.pick);
+    const { out, sent } = await log(quiet.root, quiet.pick, r, { notify: false });
+    assert.equal(out.retryCount, i + 1);
+    assert.deepEqual(sent, [], `sent at ${i + 1}`);
+  }
   // The 3rd needs_you in a row: a clip fault is always told; nothing else rides along.
   const needs = await picked();
   for (let i = 1; i <= 4; i++) {

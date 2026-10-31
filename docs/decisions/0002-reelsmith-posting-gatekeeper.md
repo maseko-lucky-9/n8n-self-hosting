@@ -310,7 +310,10 @@ not a number from TikTok's documentation. The five-slot schedule of 2026-10-27 i
   videos; `00_` intros never posted and counted as done by Archive Manifest), #79, #80 (retry
   once; the state file gains `refusals` and `retryAfter`), #81 (quiet Telegram, with the two
   messages above kept) and `MIN_GAP_MIN` 160, all at once. Claims that workflow wrote for TikTok
-  refusals say `failed` and are not retried by #80; the README gives the safe release. Expect
+  refusals say `failed` and are not retried by #80. Such a claim is the only thing that stops a
+  re-upload: after a refusal the ledger key is free, so the sidecar answers no 409 `duplicate`
+  and `make ledger-resolve` refuses both outcomes ("it is free"). A clip found on TikTok keeps its
+  claim; only a clip that is not on TikTok is released (README, "When a clip is set aside"). Expect
   `ReelsmithNoPostToday` on about one day in four: it fires at 13:15 SAST whenever the 12:00
   attempt is refused (7 of 28 attempts since 2026-10-18 were `publish_rejected`), and a refused
   last attempt the day before plus a refused 12:00 pause the rest of the day.

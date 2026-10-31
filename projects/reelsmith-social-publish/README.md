@@ -63,15 +63,17 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
     slot), and a 12h pause after 2 failures in a row;
   - it holds the **kill switch** `POSTING_ENABLED`, `false` until go-live step 7 and `"true"` after it.
     While it is off, every request is a dry run.
-- **Log Results** records each outcome in `results.log.csv` and the claim files, then alerts on
-  Telegram when you are needed (cookie expired: clips wait and retry every 15 min; bad input: that clip is set aside and the next takes its slot; TikTok refused to publish it:
-  the slot stays used and the clip is retried once, after another clip, at a later slot, then set aside at its 2nd
-  refusal (a short notice for the 1st, an alert for the 2nd); TikTok throttling or a signing failure: the clip
-  is retried at a later slot; an upload that may or may not have posted). If the workflow is live while the sidecar's `POSTING_ENABLED` is `false`, every clip
-  is released and retried, and a once-a-day Telegram notice says so. When the sidecar's daily cap
-  is reached (429, e.g. after a manual upload that day), the clip waits for tomorrow, the slot stays
-  used, and a once-a-day notice says so. Which of these reach Telegram with the shipped gates:
-  [Telegram messages](#telegram-messages). **Archive Manifest** moves a
+- **Log Results** records each outcome in `results.log.csv` and the claim files, and decides what
+  happens to the clip: cookie expired: clips wait and retry every 15 min; bad input: that clip is
+  set aside and the next takes its slot; TikTok refused to publish it: the slot stays used and the
+  clip is retried once, after another clip, at a later slot, then set aside at its 2nd refusal;
+  TikTok throttling or a signing failure: the clip is retried at a later slot; an upload that may
+  or may not have posted: the clip waits for you to check TikTok. If the workflow is live while
+  the sidecar's `POSTING_ENABLED` is `false`, every clip is released and retried. When the
+  sidecar's daily cap is reached (429, e.g. after a manual upload that day), the clip waits for
+  tomorrow and the slot stays used. With the shipped gates only some of these reach Telegram:
+  neither refusal is sent (`ReelsmithClipsSetAside` covers the 2nd), nor the throttle, the kill
+  switch or the daily cap; see [Telegram messages](#telegram-messages) for the full list. **Archive Manifest** moves a
   manifest once every row is posted or ordinary junk.
 
 ## Where things live
@@ -143,7 +145,7 @@ constants in `scripts/log-results.jsCode.js`; shipped values: `NOTIFY_INFO = fal
 | a clip refused as bad input (400) or too large (413) | always, with the commands to release it: the desk cannot see these |
 | upload outcome unknown (a timeout or unexpected answer: it may have posted) | always, with the commands to check and release it: a clip may be on TikTok as Only me, and only you can check |
 | "TikTok session invalid (N in a row). Run `make refresh-cookies` ..." (401 `auth_invalid`) | `NOTIFY_SESSION`: the 1st in a row, then every 12th (about every 3 h). The alert rules see a dead cookie only at the next session probe, so this is the fast path |
-| "sidecar unavailable N times in a row; clips are waiting." for 503 `network_before_upload` (the sidecar cannot reach TikTok) or `clock_unsynced` | `NOTIFY_SIDECAR_DOWN`: the 3rd in a row, then every 12th. No alert rule sees either (requests still arrive, nothing is paused). N counts every unavailable answer in a row |
+| "sidecar unavailable N times in a row; clips are waiting." for 503 `network_before_upload` (the sidecar cannot reach TikTok) or `clock_unsynced` | `NOTIFY_SIDECAR_DOWN`: the 3rd in a row, then every 12th. No alert rule sees either (requests still arrive, nothing is paused). N counts every unavailable answer in a row, but only the answer that lands on the 3rd (15th, 27th, ...) decides: `network_before_upload`, `network_before_upload`, `busy` sends nothing at 3, where the workflow deployed on 2026-10-18 sent it |
 | the same message for any other unavailable answer (503 `busy` or `paused`, sidecar not answering) | only with `NOTIFY_INFO`: `ReelsmithSidecarDown` covers a sidecar that does not answer, `ReelsmithPaused` a pause; `busy` is another upload holding the lock |
 | first TikTok refusal (retried later), set-aside after the 2nd refusal | only with `NOTIFY_INFO` |
 | "posting too fast" / signing failure (deferred), a clip blocked by an earlier unknown upload | only with `NOTIFY_INFO` |
@@ -354,7 +356,7 @@ one is a desk change too.
      | clip refused, 400 bad input or 413 too large | sent | sent |
      | upload outcome unknown (500, 504, any other 502, a timeout after sending) | sent | sent |
      | TikTok session invalid (401), the 1st in a row, then every 12th | sent | **still sent**, same text and cadence (owner decision, `NOTIFY_SESSION`) |
-     | sidecar unavailable N times in a row, 503 `network_before_upload` or `clock_unsynced` | sent at 3, then every 12th | **still sent**, same text and threshold (owner decision, `NOTIFY_SIDECAR_DOWN`) |
+     | sidecar unavailable N times in a row, 503 `network_before_upload` or `clock_unsynced` | sent at 3, then every 12th | **still sent**, same text and threshold when the answer at the 3rd (15th, ...) is one of these two codes (owner decision, `NOTIFY_SIDECAR_DOWN`) |
      | TikTok refused it (502 `publish_rejected`) | sent, as "upload outcome unknown (it may have posted)" | **stops**: the 1st refusal is retried silently (nothing replaces the notice); the 2nd sets the clip aside silently, `ReelsmithClipsSetAside` after 15 min |
      | "You are posting too fast" (502), a signing failure (502 `signature_failed`) | sent, as "upload outcome unknown" | **stops**: deferred to a later slot; `ReelsmithThrottled` covers the throttle, nothing names a signing failure |
      | sidecar unavailable, 503 `busy` or `paused`, or the sidecar not answering | sent at 3, then every 12th | **stops**: `ReelsmithPaused`, `ReelsmithSidecarDown`; `busy` is another upload holding the lock |
@@ -368,7 +370,8 @@ one is a desk change too.
      refused last attempt yesterday plus a refused 12:00 today pause posting for 12 hours, so the
      rest of that day has 1 attempt and 0 posts.
    - **Claims the old workflow wrote for TikTok refusals stay `failed`** and are never retried:
-     see "When a clip is set aside" for the safe release, one clip at a time.
+     see "When a clip is set aside" for releasing one, one clip at a time, and only a clip that
+     is not on TikTok (a released one is uploaded again; nothing answers 409 for it).
    - **When.** Outside a slot and the 20 minutes after it (12:00, 15:00, 18:00 SAST), once the
      sidecar log shows no upload in flight (step 4's command); before 10:00 SAST meets the
      deadline above.
@@ -543,14 +546,19 @@ click "Revert Local Changes"** on the cluster's Syncthing folder: it deletes eve
      `make ledger-resolve KEY='<job>/<filename>' OUTCOME=not_posted`
      Keep the single quotes: clip names contain spaces, and an unquoted `KEY` splits at the first
      one. Here `<filename>` is the clip's file name including `.mp4`.
-     - If it is refused with "no ledger rows for that clip_key" or "...; it is free", the upload
-       never reached TikTok (a 502 rejection, a failed 500, or a reset or timeout before the
-       sidecar wrote its row). There is nothing to resolve: go to step 2.
-  2. then, **in every case**, release the n8n claim:
+     - `OUTCOME=posted` works only while the ledger says ambiguous (its last row for the key is
+       `started` or `interrupted`).
+     - If it is refused with "no ledger rows for that clip_key" or "...; it is free", the sidecar
+       knows the upload did not post (a 502 rejection, a failed 500) or never started it (a reset
+       or timeout before it wrote its row), and there is nothing to resolve: go to step 2. If the
+       clip is on TikTok all the same, leave the claim in place and stop: a free key gets no 409
+       `duplicate`, so a release would upload it again.
+  2. then release the n8n claim:
      `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "/data/reelsmith-inbox/reelsmith-inbox/<job>/.claims/<filename>.json"'`.
      - After `not_posted`, or when the key was free, the clip is uploaded again at a later slot.
-     - After `posted`, the retry gets a 409 `duplicate` from the sidecar and is logged as
-       `posted_elsewhere`. That frees the slot, posts nothing, and lets the manifest archive.
+     - After a successful `posted` (an ambiguous key only), the retry gets a 409 `duplicate`
+       from the sidecar and is logged as `posted_elsewhere`. That frees the slot, posts nothing,
+       and lets the manifest archive.
      - A claim left in place keeps its `failed` status, so the manifest never archives.
      - If the ledger says ambiguous, resolve it first: releasing the claim alone only produces
        another ambiguous 409.
@@ -580,17 +588,25 @@ click "Revert Local Changes"** on the cluster's Syncthing folder: it deletes eve
   2026-10-27 amendment) applies only to refusals the new workflow records itself: **these claims
   stay `failed` and are never retried**, and their manifests do not archive. Example:
   `851cbce7386b47959c6136cc3fa9758e/02_Smart home and mobile gear.mp4`, refused 2026-10-31,
-  ledger key free. To give one a retry:
+  ledger key free. The claim is the only thing stopping that clip from being uploaded again: the
+  ledger's last row for the key is `failed`, so the sidecar treats the key as free, answers no 409
+  `duplicate`, and `make ledger-resolve` refuses both outcomes ("only an ambiguous clip can be
+  resolved; it is free"). To give one a retry:
   1. read the claim, and go on only if it shows `failed`, `publish_rejected` and 502:
      `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- cat "/data/reelsmith-inbox/reelsmith-inbox/<job>/.claims/<filename>.json"'`;
-  2. check TikTok Studio that the clip is not on the account, then in `tiktok-sidecar` run
-     `make ledger-resolve KEY='<job>/<filename>' OUTCOME=not_posted`. For a 502 refusal it is
-     refused with "no ledger rows for that clip_key" or "...; it is free" (the refusal already
-     freed the key). If the clip is on TikTok after all, run `OUTCOME=posted` instead;
-  3. release the claim (the same command as above):
+  2. check TikTok Studio. **If the clip is on the account, stop and leave the claim in place**:
+     the ledger cannot record that post, and releasing the claim would upload the clip again. Its
+     manifest then never archives;
+  3. only if the clip is not on the account, in `tiktok-sidecar` run
+     `make ledger-resolve KEY='<job>/<filename>' OUTCOME=not_posted` and expect it to be refused
+     with "...; it is free" (or "no ledger rows for that clip_key"): the refusal freed the key and
+     there is nothing to record. If it succeeds instead, the key was still ambiguous and is now
+     resolved as not posted: go on. If it is refused for any other reason (for example "...; it
+     is duplicate": the ledger says posted), stop and leave the claim in place;
+  4. release the claim (the same command as above):
      `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "/data/reelsmith-inbox/reelsmith-inbox/<job>/.claims/<filename>.json"'`.
   The clip goes back to the pool and is uploaded at its turn; a new refusal counts as refusal 1
-  of 2. If it had posted after all, the sidecar answers 409 `duplicate` and nothing posts twice.
+  of 2.
   A `00_` intro claim (for example `00_Convenience and productivity.mp4`, refused 2026-10-30) is
   not worth releasing: the new workflow never posts intros, and Archive Manifest counts them as
   done.
