@@ -39,6 +39,43 @@ spec:
         - port: 8000
           protocol: TCP
 ---
+# Prometheus scrapes the sidecar's metrics listener (9100, which serves GET
+# /metrics and nothing else). Its own policy, so it never widens the rule above:
+# 8000 (the upload API) is not listed here. The namespaceSelector and the
+# podSelector sit in ONE `from` element, so a peer must be BOTH in the
+# observability namespace AND a Prometheus pod. As two list items they would be
+# OR'd and admit every pod in observability plus any pod labelled prometheus in
+# n8n-live. Labels verified on the live cluster 2026-10-31: the namespace has
+# kubernetes.io/metadata.name=observability, and the only pod there with
+# app.kubernetes.io/name=prometheus is the kube-prom-stack Prometheus.
+# Prometheus itself has no egress policy, so this ingress side is the only
+# allow it needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-to-tiktok-sidecar-metrics
+  namespace: n8n-live
+  labels:
+    app.kubernetes.io/name: tiktok-sidecar
+    app.kubernetes.io/part-of: reelsmith-social-publish
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tiktok-sidecar
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 9100
+          protocol: TCP
+---
 # Egress addition for n8n pods so they can talk to the sidecar.
 # NetworkPolicies are additive — this is OR'd with the chart-managed
 # n8n-application-n8n policy.

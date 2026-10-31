@@ -1,0 +1,227 @@
+# Regression test: the 2026-10-30 outage class, replayed against the rules with the FULL label
+# set the prometheus-operator gives a scraped series (container, endpoint, instance, job,
+# namespace, pod, service), in the post-sync configuration: 5 slots, and the watchdog's 09:45
+# SAST run as the only routine session probe. Run with the other tests:
+#   sh projects/reelsmith-social-publish/tests/run-promtool-tests.sh
+# The series are generated from a per-minute timeline; minute 0 is day 1 00:00 UTC (promtool's
+# clock starts at the epoch, so hour() is right). SAST = UTC+2.
+#
+#   day 1          five posts (09:00-21:00 SAST); the 09:45 probe says valid
+#   day 2  1860m   09:00 SAST  TikTok refuses the upload (publish_rejected), the cookie is fine
+#          1905m   09:45 SAST  watchdog probe: valid
+#          1980m   11:00 SAST  the cookie dies (nothing observable: no probe runs)
+#          2040m   12:00 SAST  publish_rejected, status code 7: two refusals in a row, so the
+#                              sidecar pauses posting for 12 h (until 00:00 SAST)
+#          15:00, 18:00, 21:00 SAST  n8n still calls; the sidecar refuses (paused)
+#   day 3  3300m   09:00 SAST  publish_rejected again, a new 12 h pause
+#          3345m   09:45 SAST  watchdog probe: INVALID, session_valid 0
+#          3505m   12:25 SAST  make refresh-cookies restarts the pod (Recreate): the old pod's
+#                              series go stale, the new pod's start (verdict -1, then 1)
+#
+# What it pins down:
+# - THE KNOWN GAP: ReelsmithSessionInvalid stays silent from the cookie's death until the next
+#   09:45 probe, about 23 h later (rejections are publish_rejected, which trigger no probe; no
+#   auth_invalid reply ever happens). When the sidecar probes after a publish_rejected verdict
+#   (the planned change, not in this PR), update the day-2 expectations here.
+# - ReelsmithPaused (failures) fires 5 min after the second refusal.
+# - ReelsmithNoPostToday fires at 13:15 SAST on day 2 although posting is paused for failures,
+#   and stays up until 22:00 SAST.
+# - ReelsmithDispatcherSilent stays quiet: 3 h between slot requests is under its 3.5 h (checked
+#   before the pause, at 2035m), and the pause silences it after. The restart neither trips
+#   ReelsmithSidecarDown nor leaves ReelsmithSessionInvalid up.
+rule_files:
+  - reelsmith-alerts.yml
+evaluation_interval: 1m
+tests:
+  - name: 30 Oct outage replay, post-sync config, full operator labels
+    interval: 1m
+    input_series:
+      - series: 'up{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '1x3504 stale'
+      - series: 'reelsmith_session_valid{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '1x3344 0x159 stale'
+      - series: 'reelsmith_cookie_present{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '1x3504 stale'
+      - series: 'reelsmith_requests_total{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar",code="auth_invalid"}'
+        values: '0x3504 stale'
+      - series: 'reelsmith_requests_total{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar",code="publish_rejected"}'
+        values: '0x1859 1x179 2x1259 3x204 stale'
+      - series: 'reelsmith_ledger_ok{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '1x3504 stale'
+      - series: 'reelsmith_posting_enabled{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '1x3504 stale'
+      - series: 'reelsmith_paused{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar",reason="failures"}'
+        values: '0x2039 1x719 0x539 1x204 stale'
+      - series: 'reelsmith_paused{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar",reason="attempt_cap"}'
+        values: '0x3504 stale'
+      - series: 'reelsmith_unresolved_ambiguous{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '0x3504 stale'
+      - series: 'reelsmith_last_throttle_timestamp_seconds{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '0x3504 stale'
+      - series: 'reelsmith_last_upload_request_timestamp_seconds{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '0x419 25200x179 36000x179 46800x179 57600x179 68400x719 111600x179 122400x179 133200x179 144000x179 154800x719 198000x179 208800x24 stale'
+      - series: 'reelsmith_posted_today{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '0x419 1x179 2x179 3x179 4x179 5x179 0x2184 stale'
+      - series: 'reelsmith_clips_set_aside{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '0x3504 stale'
+      - series: 'reelsmith_backlog_ready{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '20x3504 stale'
+      - series: 'up{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-2:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-bbbbb",service="tiktok-sidecar"}'
+        values: '_x3505 1x94'
+      - series: 'reelsmith_session_valid{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-2:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-bbbbb",service="tiktok-sidecar"}'
+        values: '_x3505 -1x1 1x92'
+      - series: 'reelsmith_cookie_present{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-2:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-bbbbb",service="tiktok-sidecar"}'
+        values: '_x3505 1x94'
+      - series: 'reelsmith_requests_total{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-2:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-bbbbb",service="tiktok-sidecar",code="auth_invalid"}'
+        values: '_x3505 0x94'
+      - series: 'reelsmith_requests_total{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-2:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-bbbbb",service="tiktok-sidecar",code="publish_rejected"}'
+        values: '_x3505 0x94'
+      - series: 'reelsmith_ledger_ok{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-2:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-bbbbb",service="tiktok-sidecar"}'
+        values: '_x3505 1x94'
+      - series: 'reelsmith_posting_enabled{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-2:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-bbbbb",service="tiktok-sidecar"}'
+        values: '_x3505 1x94'
+      - series: 'reelsmith_paused{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-2:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-bbbbb",service="tiktok-sidecar",reason="failures"}'
+        values: '_x3505 1x94'
+      - series: 'reelsmith_paused{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-2:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-bbbbb",service="tiktok-sidecar",reason="attempt_cap"}'
+        values: '_x3505 0x94'
+      - series: 'reelsmith_unresolved_ambiguous{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-2:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-bbbbb",service="tiktok-sidecar"}'
+        values: '_x3505 0x94'
+      - series: 'reelsmith_last_throttle_timestamp_seconds{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-2:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-bbbbb",service="tiktok-sidecar"}'
+        values: '_x3505 0x94'
+      - series: 'reelsmith_last_upload_request_timestamp_seconds{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-2:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-bbbbb",service="tiktok-sidecar"}'
+        values: '_x3505 210360x94'
+      - series: 'reelsmith_posted_today{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-2:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-bbbbb",service="tiktok-sidecar"}'
+        values: '_x3505 0x94'
+      - series: 'reelsmith_clips_set_aside{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-2:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-bbbbb",service="tiktok-sidecar"}'
+        values: '_x3505 0x94'
+      - series: 'reelsmith_backlog_ready{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-2:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-bbbbb",service="tiktok-sidecar"}'
+        values: '_x3505 20x94'
+    alert_rule_test:
+      # ---- ReelsmithSessionInvalid: silent until the 09:45 probe (the known gap) ----------
+      - {eval_time: 1985m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+      - {eval_time: 2045m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+      - {eval_time: 2400m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+      - {eval_time: 2639m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+      - {eval_time: 3000m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+      - {eval_time: 3349m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+      - eval_time: 3350m
+        alertname: ReelsmithSessionInvalid
+        exp_alerts:
+          - exp_labels: &old_pod_critical
+              severity: critical
+              container: tiktok-sidecar
+              endpoint: metrics
+              instance: "pod-ip-1:9100"
+              job: tiktok-sidecar
+              namespace: n8n-live
+              pod: tiktok-sidecar-7c9d8f6b5-aaaaa
+              service: tiktok-sidecar
+            exp_annotations: &session_invalid
+              summary: The TikTok session is invalid; run make refresh-cookies
+              description: "The TikTok session cookie is dead or missing: the session probe said invalid, the cookie file has no session, or an upload was refused as auth_invalid in the last hour. Every upload is refused until it is replaced. On the Mac, in the tiktok-sidecar repo, run make refresh-cookies (log in, it replaces the Secret and restarts the sidecar). The alert clears up to 1 hour after the last auth_invalid reply."
+      - eval_time: 3504m
+        alertname: ReelsmithSessionInvalid
+        exp_alerts:
+          - exp_labels: *old_pod_critical
+            exp_annotations: *session_invalid
+      # The old pod's series go stale at the restart; the new pod's verdict is -1, then 1.
+      - {eval_time: 3505m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+      - {eval_time: 3515m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+
+      # ---- ReelsmithPaused (failures) ------------------------------------------------------
+      - {eval_time: 2044m, alertname: ReelsmithPaused, exp_alerts: []}
+      - eval_time: 2045m
+        alertname: ReelsmithPaused
+        exp_alerts:
+          - exp_labels: &old_pod_paused
+              severity: warning
+              reason: failures
+              container: tiktok-sidecar
+              endpoint: metrics
+              instance: "pod-ip-1:9100"
+              job: tiktok-sidecar
+              namespace: n8n-live
+              pod: tiktok-sidecar-7c9d8f6b5-aaaaa
+              service: tiktok-sidecar
+            exp_annotations: &paused
+              summary: Reelsmith posting is paused
+              description: "The sidecar has paused posting. Its reason label says why: failures (2 failed uploads in a row, a 12 hour pause) or attempt_cap (the daily attempt cap is used, until midnight SAST). The failed runs are in ledger.failures.jsonl on the cookies PVC."
+      - eval_time: 2759m
+        alertname: ReelsmithPaused
+        exp_alerts:
+          - exp_labels: *old_pod_paused
+            exp_annotations: *paused
+      - {eval_time: 2760m, alertname: ReelsmithPaused, exp_alerts: []}
+      # After the restart the new pod reads the same ledger: still paused, a new alert instance.
+      - eval_time: 3511m
+        alertname: ReelsmithPaused
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              reason: failures
+              container: tiktok-sidecar
+              endpoint: metrics
+              instance: "pod-ip-2:9100"
+              job: tiktok-sidecar
+              namespace: n8n-live
+              pod: tiktok-sidecar-7c9d8f6b5-bbbbb
+              service: tiktok-sidecar
+            exp_annotations: *paused
+
+      # ---- ReelsmithNoPostToday: not silenced by the failures pause ------------------------
+      - {eval_time: 2099m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+      - {eval_time: 2114m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+      - eval_time: 2115m
+        alertname: ReelsmithNoPostToday
+        exp_alerts:
+          - exp_labels: &old_pod_warning
+              severity: warning
+              container: tiktok-sidecar
+              endpoint: metrics
+              instance: "pod-ip-1:9100"
+              job: tiktok-sidecar
+              namespace: n8n-live
+              pod: tiktok-sidecar-7c9d8f6b5-aaaaa
+              service: tiktok-sidecar
+            exp_annotations: &no_post_today
+              summary: Nothing has been posted to TikTok today
+              description: "No clip has posted today by 13:00 SAST, although posting is on, the daily attempt cap is not reached, clips are ready, and no session probe has said invalid. The session may be dead without a probe saying so (TikTok then refuses each upload as publish_rejected, status code 7, and two refusals pause posting): check ledger.failures.jsonl and the sidecar log, then run make refresh-cookies in tiktok-sidecar if the session is dead."
+      - eval_time: 2639m
+        alertname: ReelsmithNoPostToday
+        exp_alerts:
+          - exp_labels: *old_pod_warning
+            exp_annotations: *no_post_today
+      - {eval_time: 2640m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+      # Day 3: silenced while the probe says invalid; after the refresh nothing has posted yet
+      # (the pause still holds), so it fires again at 13:15 SAST, from the new pod.
+      - {eval_time: 3554m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+      - eval_time: 3555m
+        alertname: ReelsmithNoPostToday
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              container: tiktok-sidecar
+              endpoint: metrics
+              instance: "pod-ip-2:9100"
+              job: tiktok-sidecar
+              namespace: n8n-live
+              pod: tiktok-sidecar-7c9d8f6b5-bbbbb
+              service: tiktok-sidecar
+            exp_annotations: *no_post_today
+
+      # ---- quiet throughout ------------------------------------------------------------------
+      - {eval_time: 1925m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 2035m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}  # 175 min since 09:00 SAST, not paused yet
+      - {eval_time: 2215m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 2635m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 3400m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 3600m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 3505m, alertname: ReelsmithSidecarDown, exp_alerts: []}
+      - {eval_time: 3510m, alertname: ReelsmithSidecarDown, exp_alerts: []}
+      - {eval_time: 3600m, alertname: ReelsmithSidecarDown, exp_alerts: []}
+      - {eval_time: 2400m, alertname: ReelsmithLedgerUnreadable, exp_alerts: []}
+      - {eval_time: 2400m, alertname: ReelsmithPostingDisabled, exp_alerts: []}
+      - {eval_time: 2400m, alertname: ReelsmithAmbiguousUpload, exp_alerts: []}
+      - {eval_time: 2400m, alertname: ReelsmithThrottled, exp_alerts: []}
+      - {eval_time: 2400m, alertname: ReelsmithClipsSetAside, exp_alerts: []}
+      - {eval_time: 2400m, alertname: ReelsmithBacklogLow, exp_alerts: []}

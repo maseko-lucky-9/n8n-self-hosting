@@ -16,3 +16,10 @@ spec:
       port: 8000
       targetPort: 8000
       protocol: TCP
+    # Scraped by Prometheus through tiktok-sidecar-servicemonitor.yaml (it names
+    # this port). Only Prometheus may reach it: see the NetworkPolicy
+    # prometheus-to-tiktok-sidecar-metrics.
+    - name: metrics
+      port: 9100
+      targetPort: 9100
+      protocol: TCP

@@ -187,13 +187,7 @@ s.check('Code nodes need only fs/path and the global DateTime', () => {
   }
 });
 
-// Every document in manifests/*.yaml, via python3 + PyYAML (no JS YAML dependency).
-function loadManifests(dir) {
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.yaml')).map((f) => path.join(dir, f));
-  const py = 'import json, sys, yaml\n'
-    + 'print(json.dumps([d for f in sys.argv[1:] for d in yaml.safe_load_all(open(f)) if d]))';
-  return JSON.parse(execFileSync('python3', ['-I', '-c', py, ...files], { encoding: 'utf8' }));
-}
+const { loadManifests } = h;
 const isSubset = (labels, of) => Boolean(labels) && Object.keys(labels).length > 0
   && Object.entries(labels).every(([k, v]) => of[k] === v);
 
