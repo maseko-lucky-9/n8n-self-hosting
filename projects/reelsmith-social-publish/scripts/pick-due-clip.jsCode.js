@@ -1,11 +1,10 @@
 // Pick Due Clip: chooses and claims AT MOST ONE clip per execution.
-// Schedule: every 15 min, 09:00-21:45 SAST. One clip per slot (09:00, 12:00,
-// 15:00, 18:00, 21:00), YouTube-sourced jobs only, rotating across source videos
-// (jobs): never the same video twice in a row, a video holding most of the backlog
-// every other post, otherwise the video used least recently; each video's intro
-// (00_*) is never posted. Returning [] stops the run. Canonical source:
-// scripts/pick-due-clip.jsCode.js; the workflow JSON is generated from it
-// (scripts/build-workflow.js).
+// Schedule: every 15 min, 12:00-20:45 SAST. One clip per slot (12:00, 15:00,
+// 18:00), YouTube-sourced jobs only, rotating across source videos (jobs): never
+// the same video twice in a row, a video holding most of the backlog every other
+// post, otherwise the video used least recently; each video's intro (00_*) is never
+// posted. Returning [] stops the run. Canonical source: scripts/pick-due-clip.jsCode.js; the
+// workflow JSON is generated from it (scripts/build-workflow.js).
 //
 // n8n 2.x Code-node sandbox: luxon is the global `DateTime` (requiring the
 // luxon package aborts the runner) and only fs/path/crypto may be required.
@@ -21,11 +20,14 @@ const SLOT_DIR = path.join(DATA_ROOT, '.slots');
 const STATE_DIR = path.join(DATA_ROOT, '.state');
 const STATE_FILE = path.join(STATE_DIR, 'retryable-failures.json'); // shared with Log Results
 const NOTICES_FILE = path.join(STATE_DIR, 'notices.json');           // details for a human
-const SLOTS = ['09:00', '12:00', '15:00', '18:00', '21:00'];
+// At most 3 uploads a day (owner policy). Slot markers are named by position
+// (.slots/<day>-<i>.json), so keep 0/1/2 = 12:00/15:00/18:00, the order the deployed
+// workflow writes: reordering would make a deploy read today's markers as other slots.
+const SLOTS = ['12:00', '15:00', '18:00'];
 // Since the newest slot marker's claimedAt. Runs fall on the quarter hour, so 160
 // lets a late slot catch up by 15 min per slot (170 acted as 180 and never did).
 const MIN_GAP_MIN = 160;
-const LAST_CALL = '22:00';  // no catch-up at or after this time
+const LAST_CALL = '21:00';  // no catch-up at or after this time
 const STALE_CLAIM_MIN = 30; // a claim with no outcome after this is released
 const CUTOFF = '2026-10-11';  // manifests modified before this day (SAST) are ignored
 const MIN_BYTES = 1024;       // a clip of 1 KB or less is junk
@@ -220,7 +222,7 @@ function hashtagsField(raw) {
 // released; outcomes and the pre-2026-10 workflow's markers (no status) stay.
 // A released clip that did reach TikTok gets a 409 from the sidecar ledger.
 // ponytail: the crashed run's slot marker is NOT released, so a crash costs
-//   that slot (at most 5 a day); the safe direction for an upload that may
+//   that slot (at most 3 a day); the safe direction for an upload that may
 //   have posted.
 const lastUsedMs = {}; // job -> newest counted claim, in ms
 for (const job of listJobs()) {
@@ -256,7 +258,7 @@ if (!DRY_RUN) {
   const markerPath = (day, i) => path.join(SLOT_DIR, `${day}-${i}.json`);
   const due = SLOTS.findIndex((s, i) => at(s) <= now && !lstatOrNull(markerPath(today, i)));
   if (due < 0) return [];
-  // ponytail: markers are never pruned (5 small files a day); only today's and
+  // ponytail: markers are never pruned (3 small files a day); only today's and
   // yesterday's are read, since the gap is far shorter than a day.
   const recentDays = [today, now.minus({ days: 1 }).toISODate()];
   let newest = null;

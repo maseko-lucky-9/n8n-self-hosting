@@ -28,7 +28,9 @@ workflow, its scripts and the Kubernetes manifests), so it records where that de
    (never the same video twice in a row; a video holding more than half of the ready clips goes every other post; otherwise least recently used first), and each video's intro
    (`00_*` or titled "Intro") is never posted. See the README's Candidates bullet.*
    *Amended 2026-10-27: five daily slots (09:00, 12:00, 15:00, 18:00, 21:00), runs from 09:00
-   to 21:45 SAST. See "Amendment 2026-10-27" below.*
+   to 21:45 SAST. See "Amendment 2026-10-27" below.* *Withdrawn 2026-10-31: back to the three
+   slots above, at most 3 uploads a day (owner policy). See "Amendment 2026-10-31 (second)"
+   below.*
 3. **No binaries in n8n.** n8n sends a relative `clip_path`; the video never passes through an
    n8n pod.
 4. **Fail closed.** The ledger is written before an upload; an unfinished attempt blocks that
@@ -42,14 +44,18 @@ workflow, its scripts and the Kubernetes manifests), so it records where that de
 
 - Real uploads stay off until go-live step 7 flips `POSTING_ENABLED` in a reviewed manifest
   change. The go-live runbook and rollback are in `projects/reelsmith-social-publish/README.md`.
-- The watchdog CronJob ships suspended and is switched on after the first real post (since 2026-10-28 its checks are trimmed, see the last amendment).
+- The watchdog CronJob ships suspended and is switched on after the first real post (since 2026-10-28 its checks are trimmed, see the 2026-10-28 amendment).
 - n8n needs no memory increase for big clips; the sidecar's limit rises to 1.5Gi instead.
 
 ## Amendment 2026-10-27: five slots, and a TikTok refusal is not "may have posted"
 
-**Owner decision.** Two slots are added, 09:00 and 21:00 SAST, for five a day: 09:00, 12:00,
-15:00, 18:00 and 21:00. The dispatcher runs every 15 minutes from 09:00 to 21:45 (`*/15 9-21 * * *`,
-52 runs a day) and stops catching up at 22:00. The sidecar's deployed caps rise with it:
+*Partly withdrawn on 2026-10-31 (see "Amendment 2026-10-31 (second)"): the five-slot schedule,
+the 09:00-21:45 runs, the 22:00 last call and the caps of 5 and 10 are withdrawn, back to three
+slots and caps of 3 and 6. The rejection mapping and `MIN_GAP_MIN` 160 below stay.*
+
+**Owner decision (withdrawn 2026-10-31).** Two slots are added, 09:00 and 21:00 SAST, for five
+a day: 09:00, 12:00, 15:00, 18:00 and 21:00. The dispatcher runs every 15 minutes from 09:00 to
+21:45 (`*/15 9-21 * * *`, 52 runs a day) and stops catching up at 22:00. The sidecar's deployed caps rise with it:
 `DAILY_CAP` 3 to 5 and `ATTEMPT_CAP` 6 to 10 (two attempts per slot). The watchdog runs 45
 minutes after each slot; its daily digest moves to the 09:45 run, which looks back 13 hours.
 
@@ -61,7 +67,8 @@ minutes after each slot; its daily digest moves to the 09:45 run, which looks ba
 - **Risk.** Five uploads a day is above the three a day this record first treated as ordinary
   behaviour. If the root-cause tests below point at throttling, the cap is not raised further,
   and the owner decides whether to go back to three.
-- **`MIN_GAP_MIN` 170 to 160.** Runs fall on the quarter hour, so a 170-minute gap acted as 180
+- **`MIN_GAP_MIN` 170 to 160** (kept on 2026-10-31; the five-slot example below is history).
+  Runs fall on the quarter hour, so a 170-minute gap acted as 180
   and a late slot never caught up. At 160 a late slot gains 15 minutes per slot: a 09:00 slot
   first claimed at 10:00 still posts the 21:00 slot at 21:00, with at most five posts a day and
   at least 165 minutes between them. On the deploy day the old workflow's slot markers are read
@@ -209,8 +216,9 @@ homelab desk", section A2.
   pod reports session_valid -1 until the next probe, so Alertmanager sends a RESOLVED while the
   cookie is still dead; only the startup probe in the sidecar fix closes that.
 - **Time windows** are UTC in PromQL (SAST is UTC+2 all year). Only the two dispatcher rules have
-  one (10:00-22:00 and 13:00-22:00 SAST); lasting states stay one alert rather than resolving each
-  night.
+  one (13:00-21:00 SAST for `ReelsmithDispatcherSilent` since the second 2026-10-31 amendment, it
+  was 10:00-22:00; 13:00-22:00 SAST for `ReelsmithNoPostToday`); lasting states stay one alert
+  rather than resolving each night.
 - **Tests.** `promtool test rules` runs in CI (job `promtool`) on prom/prometheus v3.10.0, the
   live version, pinned by digest. The live Prometheus selects every ServiceMonitor and
   PrometheusRule in every namespace (selectors `{}`, checked 2026-10-31); the objects still carry
@@ -224,8 +232,62 @@ homelab desk", section A2.
   the target is up on 9100, that the 11 rules are loaded, that `:9100/api/upload` answers 404 and
   that 8000 stays closed to Prometheus, and runs the critical-path drill: the alert
   `ReelsmithDrill` from `manifests/test/reelsmith-drill.yaml`, a name of its own so it cannot
-  merge with a real alert. The #79+ workflow is deployed in the same window, or
-  `ReelsmithDispatcherSilent` false-fires on the old schedule. Commands: README, "Deploy" step 4.
+  merge with a real alert. Commands: README, "Deploy" step 4. *This sync went out on 2026-10-31
+  with the five-slot schedule in git while n8n still ran three slots, so its 10:00-22:00
+  `ReelsmithDispatcherSilent` window false-fires daily until the second 2026-10-31 amendment is
+  synced.*
+
+## Amendment 2026-10-31 (second): back to three posts a day (owner policy), caps 3/6, five-slot schedule withdrawn
+
+**Owner policy.** At most 3 uploads a day. This is the owner's understanding of TikTok's limit,
+not a number from TikTok's documentation. The five-slot schedule of 2026-10-27 is withdrawn:
+
+- **Slots** 12:00, 15:00 and 18:00 SAST, as before 2026-10-27. The dispatcher runs every 15
+  minutes from 12:00 to 20:45 (`*/15 12-20 * * *`, 36 runs a day) and stops catching up at 21:00
+  (`LAST_CALL`).
+- **Caps.** The sidecar's `DAILY_CAP` goes back to 3 and `ATTEMPT_CAP` to 6 (two attempts per
+  slot). The 2026-10-31 sync had applied 5 and 10 while n8n still ran the three-slot workflow,
+  so the dispatcher still asked for at most 3 a day; only the caps were looser than the policy.
+  `workflow-contract.selfcheck.js` now fails on a slot count or `DAILY_CAP` over 3, not only on
+  caps that disagree with the slots.
+- **Kept.** From 2026-10-27: the rejection mapping (a TikTok refusal is not "may have
+  posted"), the once-a-day daily-cap notice and `MIN_GAP_MIN` 160. With three slots a 12:00 slot
+  first claimed at 15:15 still posts at 18:00 and 20:45 (at 170 the third would be lost), and
+  posts stay at least 160 minutes apart. The retry once after another clip (second 2026-10-27
+  amendment) and the quieter notices (2026-10-28) are untouched.
+- **Slot-marker indices.** Markers are named by position (`.slots/<day>-<i>.json`). The workflow
+  deployed on 2026-10-31 (read from n8n: `SLOTS = ['12:00', '15:00', '18:00']`, cron
+  `*/15 12-20 * * *`, `MIN_GAP_MIN` 170) writes 0, 1 and 2 for 12:00, 15:00 and 18:00, and this
+  one keeps exactly that order, so a deploy at any time of day reads today's markers with the
+  meaning they were written with. Simulated deploys at 11:00, 12:20, 16:00, 18:20 and 19:00 give
+  at most 3 posts, at least 160 minutes apart; a selfcheck fails if the order changes.
+- **The watchdog is unchanged.** Its runs are not upload slots. 09:45 probes the session before
+  the first slot, so a dead cookie is reported before the 12:00 slot spends an attempt on it (the
+  sidecar then answers `auth_invalid`, which claims nothing); 12:45, 15:45 and 18:45 follow the
+  slots; 21:45 follows the last tick (20:45). The 09:45 run's 13-hour lookback reaches back to
+  20:45 and overlaps the 21:45 run, so nothing is missed. Only its header comments described five
+  slots, and they are corrected.
+- **`ReelsmithDispatcherSilent`** keeps its 3.5-hour threshold and 5-minute `for`; its window
+  moves from 10:00-22:00 to 13:00-21:00 SAST (`hour() >= 11 and hour() < 19`). The dispatcher
+  calls the sidecar only at a slot, so on three slots the old window fired every day: at 10:05
+  SAST (the request before the 12:00 slot is the previous day's 18:00 one, about 18 hours old)
+  and from about 21:35 (3.5 hours after the 18:00 slot). Inside the new window a healthy day's
+  longest silence is 3 hours (12:00 to 15:00, 15:00 to 18:00, 18:00 to the 21:00 close). A missed
+  15:00 or 18:00 slot fires at about 15:36 or 18:36 SAST, a missed 12:00 slot at 13:05.
+  `tests/reelsmith-three-slots.test.yml` proves both with the operator's full label set: 48
+  healthy hours in which no Reelsmith alert fires or even pends, and each missed slot at its
+  minute. `monitoring.selfcheck.js` fails if the window stops fitting `SLOTS`.
+- **`ReelsmithNoPostToday`** stays at 13:00-22:00 SAST: by 13:00 the 12:00 slot has had an hour
+  and an upload takes minutes. One consequence of three slots: a single refusal at 12:00 now
+  raises it at 13:15 until the 15:00 slot posts (with five, a 12:00 post covered a 09:00
+  refusal). With nothing posted that is the stall it watches for, so it is not changed.
+- **`ReelsmithBacklogLow`** keeps its threshold of 10, now about 3 days at 3 a day.
+- **The dead cookie** is unchanged: `ReelsmithSessionInvalid` is only as fast as the watchdog's
+  09:45 probe (previous amendment). The 30 Oct replay now runs on the three slots and pins that.
+- **Deploy.** Merging deploys nothing. The sync of `reelsmith-social-publish` (caps 3/6, the
+  alert window; the CronJob change is comments only) and the workflow deploy go in one window,
+  outside a slot and the 20 minutes after it, sync first. The new alert window fits either
+  order. Commands: README, "Deploy" step 5.
 
 ## Related
 

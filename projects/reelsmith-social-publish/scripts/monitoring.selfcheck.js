@@ -8,14 +8,20 @@
 //  - the PrometheusRule holds exactly the 11 alert names the homelab desk allowlists, each
 //    with the static namespace label and its severity, and no annotation that would break
 //    Alertmanager's HTML Telegram template; every selector pins job and namespace;
-//  - the hand-applied drill (manifests/test/reelsmith-drill.yaml) is named ReelsmithDrill.
+//  - the hand-applied drill (manifests/test/reelsmith-drill.yaml) is named ReelsmithDrill;
+//  - the two dispatcher rules' UTC windows fit Pick Due Clip's SLOTS (SAST = UTC+2): on a
+//    healthy day ReelsmithDispatcherSilent sees no silence over its threshold, and a missed
+//    slot still fires before its window closes.
 //   node monitoring.selfcheck.js   -> exit 0 on pass, 1 on any failure.
 const assert = require('node:assert/strict');
+const fs = require('fs');
 const path = require('path');
 const h = require('./selfcheck-harness');
 
 // Overridable only so the mutation check can point it at an edited copy.
 const MANIFESTS_DIR = process.env.MANIFESTS_DIR || path.join(__dirname, '..', 'manifests');
+const PICK_FILE = process.env.PICK_FILE || path.join(__dirname, 'pick-due-clip.jsCode.js');
+const SAST_MINUS_UTC_MIN = 120; // SAST is UTC+2 all year; hour() in PromQL is UTC
 const NAMESPACE = 'n8n-live';
 const SIDECAR = 'tiktok-sidecar';
 const API_PORT = 8000;
@@ -134,6 +140,49 @@ s.check('every selector in reelsmith-alerts pins job and namespace', () => {
         `${r.alert}: ${whole} does not pin job and namespace`);
     }
   }
+});
+
+s.check('the dispatcher rules\' windows fit Pick Due Clip\'s slots: a healthy day is quiet, a missed slot fires', () => {
+  const pr = one(inNs('PrometheusRule').filter((d) => d.metadata.name === 'reelsmith-alerts'), 'PrometheusRule reelsmith-alerts');
+  const rule = (name) => one(pr.spec.groups.flatMap((g) => g.rules).filter((r) => r.alert === name), name);
+  const windowMin = (r) => {
+    const w = r.expr.match(/hour\(\) >= (\d+) and hour\(\) < (\d+)/);
+    assert.ok(w, `${r.alert}: no hour() window`);
+    return [Number(w[1]) * 60, Number(w[2]) * 60];
+  };
+  const m = fs.readFileSync(PICK_FILE, 'utf8').match(/^const SLOTS = (\[[^\]]*\]);/m);
+  assert.ok(m, 'SLOTS not found in Pick Due Clip');
+  // Slot times in minutes of the UTC day, the clock hour() reads.
+  const slots = JSON.parse(m[1].replace(/'/g, '"')).map((hhmm) => {
+    const [hh, mm] = hhmm.split(':').map(Number);
+    return hh * 60 + mm - SAST_MINUS_UTC_MIN;
+  });
+  const last = slots[slots.length - 1];
+
+  const silent = rule('ReelsmithDispatcherSilent');
+  const [open, close] = windowMin(silent);
+  const t = silent.expr.match(/_seconds\{[^}]*\} > (\d+)/);
+  assert.ok(t, 'ReelsmithDispatcherSilent: no silence threshold');
+  const threshold = Number(t[1]) / 60;
+  const f = /^(\d+)m$/.exec(silent.for);
+  assert.ok(f, 'ReelsmithDispatcherSilent: for is not in minutes');
+  const hold = Number(f[1]);
+  // Healthy day: the dispatcher calls only at a slot, and the request before the first slot is
+  // the previous evening's. So the window opens once the first slot has had an hour to call,
+  // no two slots are further apart than the threshold, and it closes before the silence after
+  // the last slot passes the threshold.
+  assert.ok(open >= slots[0] + 60, `window opens at ${open} UTC min, before the first slot (${slots[0]}) has had an hour`);
+  for (let i = 1; i < slots.length; i++) {
+    assert.ok(slots[i] - slots[i - 1] < threshold, `slots ${i - 1} and ${i} are ${slots[i] - slots[i - 1]} min apart, not under the ${threshold} min threshold`);
+  }
+  assert.ok(close <= last + threshold, `window closes at ${close} UTC min, after the last slot's silence passes ${threshold} min (${last + threshold})`);
+  // A missed slot fires before the window closes: the threshold and the for: after the slot before it.
+  for (let i = 1; i < slots.length; i++) {
+    assert.ok(slots[i - 1] + threshold + hold < close, `a missed slot ${i} would fire at ${slots[i - 1] + threshold + hold} UTC min, after the window closes (${close})`);
+  }
+  // Nothing posted today: the first slot has had an hour to post.
+  const [noPostOpen] = windowMin(rule('ReelsmithNoPostToday'));
+  assert.ok(noPostOpen >= slots[0] + 60, `ReelsmithNoPostToday opens at ${noPostOpen} UTC min, before the first slot has had an hour`);
 });
 
 s.check('the hand-applied drill uses its own alert name, ReelsmithDrill', () => {

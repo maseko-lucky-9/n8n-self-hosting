@@ -30,21 +30,21 @@ function markPosted(item) {
   fs.writeFileSync(item.claimPath, JSON.stringify({ status: 'posted', claimedAt: item.claimedAt }));
 }
 
-s.check('gate: nothing before 09:00, slot 0 at 09:00, then wait for 12:00', async () => {
+s.check('gate: nothing before 12:00, slot 0 at 12:00, then wait for 15:00', async () => {
   const root = h.makeRoot();
   job(root, 'jobA', 5);
-  for (const t of ['00:00', '08:45', '08:59']) assert.deepEqual(await pick(root, `2026-10-17T${t}:00`), [], t);
-  const [first] = await pick(root, '2026-10-17T09:00:00');
+  for (const t of ['00:00', '09:00', '11:45', '11:59']) assert.deepEqual(await pick(root, `2026-10-17T${t}:00`), [], t);
+  const [first] = await pick(root, '2026-10-17T12:00:00');
   assert.equal(first.json.clip_key, 'jobA/01_clip.mp4');
   markPosted(first.json);
   assert.deepEqual(h.listSlots(root), ['2026-10-17-0.json']);
-  for (const t of ['09:15', '10:00', '11:45', '11:50', '11:59']) assert.deepEqual(await pick(root, `2026-10-17T${t}:00`), [], t);
-  const [second] = await pick(root, '2026-10-17T12:00:00');
+  for (const t of ['12:15', '13:00', '14:45', '14:50', '14:59']) assert.deepEqual(await pick(root, `2026-10-17T${t}:00`), [], t);
+  const [second] = await pick(root, '2026-10-17T15:00:00');
   assert.equal(second.json.clip_key, 'jobA/02_clip.mp4');
   assert.deepEqual(h.listSlots(root), ['2026-10-17-0.json', '2026-10-17-1.json']);
-  const fresh = h.makeRoot(); // homelab back at 11:59: the 09:00 slot is still owed
+  const fresh = h.makeRoot(); // homelab back at 14:59: the 12:00 slot is still owed
   job(fresh, 'jobA', 5);
-  const [late] = await pick(fresh, '2026-10-17T11:59:00');
+  const [late] = await pick(fresh, '2026-10-17T14:59:00');
   assert.equal(late.json.clip_key, 'jobA/01_clip.mp4');
   assert.deepEqual(h.listSlots(fresh), ['2026-10-17-0.json']);
 });
@@ -52,40 +52,59 @@ s.check('gate: nothing before 09:00, slot 0 at 09:00, then wait for 12:00', asyn
 s.check('gate: 160-minute gap after the newest slot marker', async () => {
   const root = h.makeRoot();
   job(root, 'jobA', 5);
-  const [late] = await pick(root, '2026-10-17T12:00:00'); // outage: slot 0 taken late
+  const [late] = await pick(root, '2026-10-17T13:00:00'); // outage: slot 0 taken late
   markPosted(late.json);
   assert.deepEqual(h.listSlots(root), ['2026-10-17-0.json']);
-  assert.deepEqual(await pick(root, '2026-10-17T14:00:00'), [], '120 min after 12:00');
-  assert.deepEqual(await pick(root, '2026-10-17T14:39:00'), [], '159 min');
-  const [next] = await pick(root, '2026-10-17T14:40:00');
+  assert.deepEqual(await pick(root, '2026-10-17T15:00:00'), [], '120 min after 13:00');
+  assert.deepEqual(await pick(root, '2026-10-17T15:39:00'), [], '159 min');
+  const [next] = await pick(root, '2026-10-17T15:40:00');
   assert.equal(next.json.clip_key, 'jobA/02_clip.mp4', '160 min');
   assert.deepEqual(h.listSlots(root), ['2026-10-17-0.json', '2026-10-17-1.json']);
 });
 
-s.check('gate: earliest unused passed slot, never more than 5 a day', async () => {
+s.check('gate: earliest unused passed slot, never more than 3 a day', async () => {
   const root = h.makeRoot();
-  job(root, 'jobA', 8);
+  job(root, 'jobA', 6);
   const [a] = await pick(root, '2026-10-17T16:00:00'); // homelab back at 16:00
   markPosted(a.json);
   assert.deepEqual(h.listSlots(root), ['2026-10-17-0.json'], 'slot 0 caught up first');
   const [b] = await pick(root, '2026-10-17T18:40:00');
   markPosted(b.json);
   assert.deepEqual(h.listSlots(root), ['2026-10-17-0.json', '2026-10-17-1.json']);
-  const [c] = await pick(root, '2026-10-17T21:20:00');
-  markPosted(c.json);
-  assert.deepEqual(h.listSlots(root), ['2026-10-17-0.json', '2026-10-17-1.json', '2026-10-17-2.json']);
-  assert.deepEqual(await pick(root, '2026-10-17T21:45:00'), [], 'gap not met before 22:00');
+  assert.deepEqual(await pick(root, '2026-10-17T20:45:00'), [], 'gap not met before 21:00');
+  const full = h.makeRoot(); // all three slots used: nothing more that day, gap or not
+  job(full, 'jobA', 6);
+  for (const t of ['12:00', '15:00', '18:00']) markPosted((await pick(full, `2026-10-17T${t}:00`))[0].json);
+  assert.deepEqual(h.listSlots(full), ['2026-10-17-0.json', '2026-10-17-1.json', '2026-10-17-2.json']);
+  for (const t of ['18:15', '20:40', '20:45', '20:59']) assert.deepEqual(await pick(full, `2026-10-17T${t}:00`), [], t);
 });
 
-s.check('gate: no catch-up at or after 22:00', async () => {
+s.check('gate: no catch-up at or after 21:00', async () => {
   const root = h.makeRoot();
   job(root, 'jobA', 3);
-  assert.deepEqual(await pick(root, '2026-10-17T22:00:00'), []);
+  assert.deepEqual(await pick(root, '2026-10-17T21:00:00'), []);
   assert.deepEqual(await pick(root, '2026-10-17T23:30:00'), []);
   assert.deepEqual(h.listSlots(root), []);
   assert.equal(h.listClaims(root).length, 0);
-  const [late] = await pick(root, '2026-10-17T21:59:00');
+  const [late] = await pick(root, '2026-10-17T20:59:00');
   assert.equal(late.json.clip_key, 'jobA/01_clip.mp4');
+});
+
+s.check('slots: 12:00, 15:00, 18:00 as markers 0, 1, 2, the names the deployed workflow writes', async () => {
+  // Slot markers are named by position (.slots/<day>-<i>.json). The workflow live on
+  // 2026-10-31 (SLOTS ['12:00', '15:00', '18:00'], cron */15 12-20, read from n8n) writes these
+  // names, so this list must keep exactly that order: any other order or time would make a
+  // deploy read today's markers as other slots, and a used slot could post again.
+  const m = fs.readFileSync(path.join(__dirname, PICK), 'utf8').match(/^const SLOTS = (\[[^\]]*\]);/m);
+  assert.ok(m, 'SLOTS not found in Pick Due Clip');
+  assert.deepEqual(JSON.parse(m[1].replace(/'/g, '"')), ['12:00', '15:00', '18:00']);
+  const root = h.makeRoot();
+  job(root, 'jobA', 3);
+  for (const [t, i] of [['12:00', 0], ['15:00', 1], ['18:00', 2]]) {
+    const [item] = await pick(root, `2026-10-17T${t}:00`);
+    assert.equal(path.basename(item.json.slotMarker), `2026-10-17-${i}.json`, t);
+    markPosted(item.json);
+  }
 });
 
 s.check('gate: uses SAST, not the instance default zone', async () => {
@@ -698,9 +717,9 @@ async function dispatchRun(root, sast, sidecar, alerts = []) {
 }
 
 const posted = (item) => ({ statusCode: 200, body: { status: 'success', code: 'posted', clip_key: item.clip_key } });
-// The Schedule node's cron, */15 9-21: 52 runs a SAST day, 09:00 to 21:45.
-const TICK_FIRST = 9 * 60;
-const TICK_LAST = 21 * 60 + 45;
+// The Schedule node's cron, */15 12-20: 36 runs a SAST day, 12:00 to 20:45.
+const TICK_FIRST = 12 * 60;
+const TICK_LAST = 20 * 60 + 45;
 
 // Every run of one SAST day from `fromMin` on; returns the times that posted.
 async function simulateDay(root, dayIso, sidecar, fromMin = TICK_FIRST) {
@@ -715,21 +734,21 @@ async function simulateDay(root, dayIso, sidecar, fromMin = TICK_FIRST) {
 
 const minutesOf = (hhmm) => { const [hh, mm] = hhmm.split(':').map(Number); return hh * 60 + mm; };
 function assertSpacing(times, label) {
-  assert.ok(times.length <= 5, `${label}: ${times.length} posts in a day`);
+  assert.ok(times.length <= 3, `${label}: ${times.length} posts in a day`);
   const sorted = times.map(minutesOf).sort((a, b) => a - b);
   for (let i = 1; i < sorted.length; i++) {
     assert.ok(sorted[i] - sorted[i - 1] >= 160, `${label}: ${times.join(' ')} has posts under 160 min apart`);
   }
 }
 
-s.check('multi-day: 5 posts per SAST day at 09:00/12:00/15:00/18:00/21:00, videos alternate, no duplicates', async () => {
+s.check('multi-day: 3 posts per SAST day at 12:00/15:00/18:00, videos alternate, no duplicates', async () => {
   const root = h.makeRoot();
-  job(root, 'jobOld', 5, '2026-10-12T10:00:00');
+  job(root, 'jobOld', 4, '2026-10-12T10:00:00');
   job(root, 'jobNew', 6, '2026-10-16T10:00:00');
   const postedKeys = [];
   const perDay = {};
   let day = h.DateTime.fromISO('2026-10-17T00:00:00', { zone: h.TZ });
-  for (let d = 0; d < 4; d++, day = day.plus({ days: 1 })) {
+  for (let d = 0; d < 5; d++, day = day.plus({ days: 1 })) {
     for (let m = TICK_FIRST; m <= TICK_LAST; m += 15) {
       const t = day.plus({ minutes: m });
       const item = await dispatchRun(root, t, posted);
@@ -740,14 +759,14 @@ s.check('multi-day: 5 posts per SAST day at 09:00/12:00/15:00/18:00/21:00, video
     }
   }
   assert.deepEqual(perDay, {
-    '2026-10-17': ['09:00', '12:00', '15:00', '18:00', '21:00'],
-    '2026-10-18': ['09:00', '12:00', '15:00', '18:00', '21:00'],
-    '2026-10-19': ['09:00'],
+    '2026-10-17': ['12:00', '15:00', '18:00'],
+    '2026-10-18': ['12:00', '15:00', '18:00'],
+    '2026-10-19': ['12:00', '15:00', '18:00'],
+    '2026-10-20': ['12:00'],
   });
   assert.equal(new Set(postedKeys).size, postedKeys.length, 'duplicate post');
   assert.deepEqual(postedKeys, ['jobNew/01_clip.mp4', 'jobOld/01_clip.mp4', 'jobNew/02_clip.mp4', 'jobOld/02_clip.mp4',
-    'jobNew/03_clip.mp4', 'jobOld/03_clip.mp4', 'jobNew/04_clip.mp4', 'jobOld/04_clip.mp4', 'jobNew/05_clip.mp4', 'jobOld/05_clip.mp4',
-    'jobNew/06_clip.mp4']);
+    'jobNew/03_clip.mp4', 'jobOld/03_clip.mp4', 'jobNew/04_clip.mp4', 'jobOld/04_clip.mp4', 'jobNew/05_clip.mp4', 'jobNew/06_clip.mp4']);
   for (const j of ['jobOld', 'jobNew']) {
     const dir = path.join(h.inboxOf(root), j);
     assert.equal(h.exists(path.join(dir, 'manifest.csv')), false, j + ' not archived');
@@ -772,7 +791,7 @@ s.check('multi-day: a retryable failure frees the slot and the clip for the next
 
 s.check('multi-day: an expired cookie claims nothing, burns no slot and loses no clip', async () => {
   const root = h.makeRoot();
-  job(root, 'jobA', 10);
+  job(root, 'jobA', 6);
   const fixedAt = h.DateTime.fromISO('2026-10-19T00:00:00', { zone: h.TZ }); // refresh-cookies on day 3
   const sidecarFn = (item, t) => (t < fixedAt
     ? { statusCode: 401, body: { status: 'error', code: 'auth_invalid', error_id: 'abc123' } }
@@ -793,17 +812,15 @@ s.check('multi-day: an expired cookie claims nothing, burns no slot and loses no
       } else if (item) postedAt.push(`${t.toFormat('MM-dd HH:mm')} ${item.clip_key}`);
     }
   }
-  assert.equal(failedRuns, 104, 'every 15-minute tick retried (52 a day)');
+  assert.equal(failedRuns, 72, 'every 15-minute tick retried (36 a day)');
   const uploaded = alerts.filter((a) => a.startsWith('Reelsmith: uploaded as Only me'));
   const authAlerts = alerts.filter((a) => !uploaded.includes(a));
-  assert.equal(uploaded.length, 10, 'one Only-me notice per upload');
-  assert.equal(authAlerts.length, 9, 'alerts at the 1st, 13th, 25th, ..., 97th failure');
+  assert.equal(uploaded.length, 6, 'one Only-me notice per upload');
+  assert.equal(authAlerts.length, 6, 'alerts at the 1st, 13th, 25th, 37th, 49th, 61st failure');
   for (const a of authAlerts) assert.match(a, /^🔑 [\s\S]*make refresh-cookies/);
   assert.deepEqual(postedAt, [
-    '10-19 09:00 jobA/01_clip.mp4', '10-19 12:00 jobA/02_clip.mp4', '10-19 15:00 jobA/03_clip.mp4',
-    '10-19 18:00 jobA/04_clip.mp4', '10-19 21:00 jobA/05_clip.mp4',
-    '10-20 09:00 jobA/06_clip.mp4', '10-20 12:00 jobA/07_clip.mp4', '10-20 15:00 jobA/08_clip.mp4',
-    '10-20 18:00 jobA/09_clip.mp4', '10-20 21:00 jobA/10_clip.mp4',
+    '10-19 12:00 jobA/01_clip.mp4', '10-19 15:00 jobA/02_clip.mp4', '10-19 18:00 jobA/03_clip.mp4',
+    '10-20 12:00 jobA/04_clip.mp4', '10-20 15:00 jobA/05_clip.mp4', '10-20 18:00 jobA/06_clip.mp4',
   ]);
 });
 
@@ -824,7 +841,7 @@ s.check('a definite "not uploaded" (400) sets the clip aside and frees the slot 
   assert.deepEqual(h.listSlots(root), ['2026-10-17-0.json']);
 });
 
-s.check('multi-day: a systematic 400 sets aside at most 7 clips a day (2 + the 5 slots), with at most 7 alerts', async () => {
+s.check('multi-day: a systematic 400 sets aside at most 5 clips a day (2 + the 3 slots), with at most 5 alerts', async () => {
   const root = h.makeRoot();
   job(root, 'jobA', 24); // more than 3 days' worth: the cap, not the backlog, stops each day
   const refuse = () => ({ statusCode: 400, body: { status: 'error', code: 'bad_input', error_id: 'abc123' } });
@@ -839,11 +856,11 @@ s.check('multi-day: a systematic 400 sets aside at most 7 clips a day (2 + the 5
     perDay[day.toISODate()] = { setAside, alerts: alerts.length, hinted: alerts.filter((a) => a.includes('check the sidecar contract')).length };
   }
   assert.deepEqual(perDay, {
-    '2026-10-17': { setAside: 7, alerts: 7, hinted: 5 },
-    '2026-10-18': { setAside: 7, alerts: 7, hinted: 5 },
-    '2026-10-19': { setAside: 7, alerts: 7, hinted: 5 },
+    '2026-10-17': { setAside: 5, alerts: 5, hinted: 3 },
+    '2026-10-18': { setAside: 5, alerts: 5, hinted: 3 },
+    '2026-10-19': { setAside: 5, alerts: 5, hinted: 3 },
   });
-  assert.equal(h.listClaims(root).filter((c) => c.data.status === 'needs_you').length, 21);
+  assert.equal(h.listClaims(root).filter((c) => c.data.status === 'needs_you').length, 15);
 });
 
 s.check('multi-day: TikTok refusing every clip (502 publish_rejected): one attempt per slot, each clip tried twice, then set aside', async () => {
@@ -856,14 +873,13 @@ s.check('multi-day: TikTok refusing every clip (502 publish_rejected): one attem
     const item = await dispatchRun(root, day.plus({ minutes: m }), refuse);
     if (item) tried.push(`${day.plus({ minutes: m }).toFormat('HH:mm')} ${item.filename}`);
   }
-  // 09:00 01 refused (flag 01); 12:00 02 goes first, refused (flag 02); 15:00 01 retried and set
-  // aside (the flag stays on 02: only a post or 02's own final outcome drops it); 18:00 03 goes
-  // before 02, refused (flag 03); 21:00 02 retried and set aside (flag stays on 03).
-  assert.deepEqual(tried, ['09:00 01_clip.mp4', '12:00 02_clip.mp4', '15:00 01_clip.mp4', '18:00 03_clip.mp4', '21:00 02_clip.mp4']);
+  // 12:00 01 refused (flag 01); 15:00 02 goes first, refused (flag 02); 18:00 01 retried and set
+  // aside (the flag stays on 02: only a post or 02's own final outcome drops it).
+  assert.deepEqual(tried, ['12:00 01_clip.mp4', '15:00 02_clip.mp4', '18:00 01_clip.mp4']);
   assert.deepEqual(h.listClaims(root).filter((c) => c.data.status === 'needs_you').map((c) => c.data.clip_key).sort(),
-    ['jobA/01_clip.mp4', 'jobA/02_clip.mp4']);
+    ['jobA/01_clip.mp4']);
   const state = h.readJson(path.join(root, '.state', 'retryable-failures.json'));
-  assert.deepEqual([state.refusals, state.retryAfter], [{ 'jobA/03_clip.mp4': 1 }, 'jobA/03_clip.mp4']);
+  assert.deepEqual([state.refusals, state.retryAfter], [{ 'jobA/02_clip.mp4': 1 }, 'jobA/02_clip.mp4']);
 });
 
 // ---- a refused clip is retried after another clip of its video ----
@@ -880,13 +896,13 @@ s.check('refusal retry: another clip of the video goes first, then the refused o
   const root = h.makeRoot();
   job(root, 'jobA', 3);
   const sidecar = refusedOnce();
-  const a = await dispatchRun(root, '2026-10-17T09:00:00', sidecar);
+  const a = await dispatchRun(root, '2026-10-17T12:00:00', sidecar);
   assert.equal(a.clip_key, 'jobA/01_clip.mp4');
   assert.equal(stateOf(root).retryAfter, 'jobA/01_clip.mp4');
-  const b = await dispatchRun(root, '2026-10-17T12:00:00', sidecar);
+  const b = await dispatchRun(root, '2026-10-17T15:00:00', sidecar);
   assert.equal(b.clip_key, 'jobA/02_clip.mp4', 'the refused clip went first again');
   assert.equal('retryAfter' in stateOf(root), false, 'a kept claim did not clear the flag');
-  const c = await dispatchRun(root, '2026-10-17T15:00:00', sidecar);
+  const c = await dispatchRun(root, '2026-10-17T18:00:00', sidecar);
   assert.equal(c.clip_key, 'jobA/01_clip.mp4', 'the refused clip was not retried next');
   assert.deepEqual(stateOf(root).refusals, {});
 });
@@ -895,8 +911,8 @@ s.check('refusal retry: the only ready clip of its video is retried next', async
   const root = h.makeRoot();
   job(root, 'jobA', 1);
   const sidecar = refusedOnce();
-  assert.equal((await dispatchRun(root, '2026-10-17T09:00:00', sidecar)).clip_key, 'jobA/01_clip.mp4');
   assert.equal((await dispatchRun(root, '2026-10-17T12:00:00', sidecar)).clip_key, 'jobA/01_clip.mp4');
+  assert.equal((await dispatchRun(root, '2026-10-17T15:00:00', sidecar)).clip_key, 'jobA/01_clip.mp4');
   assert.equal(h.readJson(path.join(h.inboxOf(root), 'jobA', '.claims', '01_clip.mp4.json')).status, 'posted');
 });
 
@@ -905,8 +921,8 @@ s.check('refusal retry: the only ready clip of a video is retried next even when
   job(root, 'A', 1, '2026-10-16T10:00:00'); // newest manifest: first in the rotation
   job(root, 'B', 1, '2026-10-15T10:00:00');
   const sidecar = refusedOnce();
-  assert.equal((await dispatchRun(root, '2026-10-17T09:00:00', sidecar)).clip_key, 'A/01_clip.mp4');
   assert.equal((await dispatchRun(root, '2026-10-17T12:00:00', sidecar)).clip_key, 'A/01_clip.mp4');
+  assert.equal((await dispatchRun(root, '2026-10-17T15:00:00', sidecar)).clip_key, 'A/01_clip.mp4');
 });
 
 s.check('refusal retry: a released next attempt keeps the flag, so the refused clip still waits', async () => {
@@ -918,8 +934,8 @@ s.check('refusal retry: a released next attempt keeps the flag, so the refused c
   ];
   const sidecar = (item) => answers.shift() || posted(item);
   const got = [];
-  for (const t of ['09:00', '12:00', '12:15', '15:00']) got.push(`${t} ${(await dispatchRun(root, `2026-10-17T${t}:00`, sidecar)).filename}`);
-  assert.deepEqual(got, ['09:00 01_clip.mp4', '12:00 02_clip.mp4', '12:15 02_clip.mp4', '15:00 01_clip.mp4']);
+  for (const t of ['12:00', '15:00', '15:15', '18:00']) got.push(`${t} ${(await dispatchRun(root, `2026-10-17T${t}:00`, sidecar)).filename}`);
+  assert.deepEqual(got, ['12:00 01_clip.mp4', '15:00 02_clip.mp4', '15:15 02_clip.mp4', '18:00 01_clip.mp4']);
 });
 
 s.check('refusal retry: Pick Due Clip only reads the flag; a junk or unknown flag is ignored', async () => {
@@ -936,7 +952,7 @@ s.check('refusal retry: Pick Due Clip only reads the flag; a junk or unknown fla
     job(root, 'jobA', 3);
     fs.mkdirSync(path.join(root, '.state'), { recursive: true });
     fs.writeFileSync(path.join(root, '.state', 'retryable-failures.json'), raw);
-    const [item] = await pick(root, '2026-10-17T09:00:00');
+    const [item] = await pick(root, '2026-10-17T12:00:00');
     assert.equal(item.json.clip_key, want, label);
     assert.equal(fs.readFileSync(path.join(root, '.state', 'retryable-failures.json'), 'utf8'), raw, `${label}: the flag was rewritten`);
   }
@@ -965,21 +981,31 @@ s.check('Pick Due Clip\'s once-a-day state write keeps Log Results\' refusal cou
   assert.equal(state.needsCount, 1);
 });
 
-s.check('late cascade: the 09:00 slot claimed at 10:00 still posts the 21:00 slot by 21:45', async () => {
-  const root = h.makeRoot();
-  job(root, 'jobA', 8);
-  const at = await simulateDay(root, '2026-10-17', posted, 10 * 60);
-  assert.deepEqual(at, ['10:00', '12:45', '15:30', '18:15', '21:00']);
-  assertSpacing(at, 'late cascade');
+s.check('late cascade: a late first claim still fits all three slots by 20:45, 160 min apart', async () => {
+  // [first run after an outage, the posts that day]. At 160 a late slot gains 15 min per slot
+  // (170 acted as 180: from 15:15 it would post 15:15 and 18:15 only).
+  for (const [from, want] of [
+    ['13:00', ['13:00', '15:45', '18:30']],
+    ['15:15', ['15:15', '18:00', '20:45']],
+    ['15:30', ['15:30', '18:15']], // the 18:00 slot would fall at 21:00: lost, not crammed in
+  ]) {
+    const root = h.makeRoot();
+    job(root, 'jobA', 8);
+    const at = await simulateDay(root, '2026-10-17', posted, minutesOf(from));
+    assert.deepEqual(at, want, `from ${from}`);
+    assertSpacing(at, `from ${from}`);
+  }
 });
 
-s.check('deploy day: slot markers the 3-slot workflow wrote (12:00/15:00/18:00 as 0/1/2) never give more than 5 posts or a gap under 160 min', async () => {
-  // [deploy time, old markers already written today (index -> HH:mm), the new workflow's posts that day]
+s.check('deploy day: markers the deployed workflow wrote today keep their meaning: never more than 3 posts or a gap under 160 min', async () => {
+  // [deploy time, markers already written today by the deployed workflow (index -> HH:mm), the
+  // new workflow's posts that day]. 12:30/15:30 is 2026-10-31 as it happened live (gap 170).
   const cases = [
-    ['08:00', {}, ['09:00', '12:00', '15:00', '18:00', '21:00']],
-    ['13:00', { 0: '12:00' }, ['14:45', '17:30', '20:15']],
-    ['19:00', { 0: '12:00', 1: '15:00', 2: '18:00' }, ['20:45']],
-    ['21:10', { 0: '12:00', 1: '15:00', 2: '18:00' }, ['21:15']],
+    ['11:00', {}, ['12:00', '15:00', '18:00']],
+    ['12:20', { 0: '12:00' }, ['15:00', '18:00']],
+    ['16:00', { 0: '12:30', 1: '15:30' }, ['18:15']],
+    ['18:20', { 0: '12:00', 1: '15:00', 2: '18:00' }, []],
+    ['19:00', { 0: '12:00', 1: '15:00' }, ['19:00']], // the 18:00 slot was missed before the deploy
   ];
   for (const [deployAt, old, want] of cases) {
     const root = h.makeRoot();
@@ -993,6 +1019,7 @@ s.check('deploy day: slot markers the 3-slot workflow wrote (12:00/15:00/18:00 a
     const at = await simulateDay(root, '2026-10-17', posted, Math.max(TICK_FIRST, fromMin));
     assert.deepEqual(at, want, `deploy at ${deployAt}`);
     assertSpacing([...Object.values(old), ...at], `deploy at ${deployAt}`);
+    assert.equal(h.listSlots(root).length, Object.keys(old).length + want.length, `deploy at ${deployAt}: markers`);
   }
 });
 

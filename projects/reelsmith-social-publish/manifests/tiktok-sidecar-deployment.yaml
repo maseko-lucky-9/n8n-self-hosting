@@ -124,13 +124,13 @@ spec:
             # Rollback: set "false" and sync; every upload request is a dry run again.
             - name: POSTING_ENABLED
               value: "true"
-            # Posts per Africa/Johannesburg calendar day: one per slot (09:00, 12:00,
-            # 15:00, 18:00, 21:00).
+            # Posts per Africa/Johannesburg calendar day: one per slot (12:00, 15:00,
+            # 18:00). At most 3 uploads a day is owner policy (ADR-0002).
             - name: DAILY_CAP
-              value: "5"
-            # Upload attempts that reach the uploader, per day: 2 per slot (5 x 2).
+              value: "3"
+            # Upload attempts that reach the uploader, per day: 2 per slot (3 x 2).
             - name: ATTEMPT_CAP
-              value: "10"
+              value: "6"
             - name: MAX_CLIP_MB
               value: "300"
             # clip_path from n8n is <job>/<filename>, resolved under INBOX_DIR.

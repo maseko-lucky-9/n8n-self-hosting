@@ -1,0 +1,214 @@
+# The three-slot day (ADR-0002, second 2026-10-31 amendment: at most 3 uploads a day, owner
+# policy) against the Reelsmith alerts, with the FULL label set the prometheus-operator gives a
+# scraped series (container, endpoint, instance, job, namespace, pod, service). Run with the
+# other tests:
+#   sh projects/reelsmith-social-publish/tests/run-promtool-tests.sh
+# Minute 0 is day 1 00:00 UTC (promtool's clock starts at the epoch, so hour() is right);
+# SAST = UTC+2, so the slots 12:00, 15:00 and 18:00 SAST are minutes 600, 780 and 960 of each
+# day. The dispatcher calls /api/upload only at a slot (a few seconds after it, so a 1-minute
+# scrape first shows the new timestamp one minute later), plus a 15-minute retry when the
+# sidecar answers retryably; the request before the first slot is the previous day's 18:00
+# one, about 18 h earlier.
+#
+# What it pins down:
+# - A healthy three-slot day raises NOTHING for 48 hours: no alert fires, none is even pending
+#   (the promql_expr_test reads the ALERTS series the rules write). The ReelsmithDispatcherSilent
+#   window used to be 10:00-22:00 SAST, which fired at 10:05 and about 21:35 SAST every day of
+#   this schedule; it is now 13:00-21:00 SAST.
+# - A slot that silently never calls the sidecar still fires ReelsmithDispatcherSilent, 3.5 h
+#   after the request before it plus the 5m for: a missed 15:00 slot at 15:36 SAST, a missed
+#   18:00 slot at 18:36 SAST, a missed 12:00 slot at 13:05 SAST (when the window opens).
+rule_files:
+  - reelsmith-alerts.yml
+evaluation_interval: 1m
+tests:
+  # Day 1: the 12:00 slot posts; at 15:00 the sidecar is busy (503, a retryable answer releases
+  # the slot) and the 15:15 run posts; 18:00 posts. Day 2: three posts at the slot times. Every
+  # watchdog probe says valid. posted_today resets at 00:00 SAST (22:00 UTC, minutes 1320 and
+  # 2760); the backlog drops by one per post and stays above 10.
+  - name: healthy three-slot days, full operator labels, nothing fires or pends for 48 hours
+    interval: 1m
+    input_series:
+      - series: 'up{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '1x2880'
+      - series: 'reelsmith_session_valid{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '1x2880'
+      - series: 'reelsmith_cookie_present{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '1x2880'
+      - series: 'reelsmith_requests_total{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar",code="auth_invalid"}'
+        values: '0x2880'
+      - series: 'reelsmith_requests_total{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar",code="busy"}'
+        values: '0x780 1x2099'
+      - series: 'reelsmith_requests_total{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar",code="posted"}'
+        values: '0x604 1x194 2x164 3x1079 4x179 5x179 6x475'
+      - series: 'reelsmith_ledger_ok{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '1x2880'
+      - series: 'reelsmith_posting_enabled{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '1x2880'
+      - series: 'reelsmith_paused{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar",reason="failures"}'
+        values: '0x2880'
+      - series: 'reelsmith_paused{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar",reason="attempt_cap"}'
+        values: '0x2880'
+      - series: 'reelsmith_unresolved_ambiguous{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '0x2880'
+      - series: 'reelsmith_last_throttle_timestamp_seconds{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '0x2880'
+      # Day 1 12:00:02, 15:00:02 (busy), 15:15:02, 18:00:02; day 2 12:00:02, 15:00:02, 18:00:02 SAST.
+      - series: 'reelsmith_last_upload_request_timestamp_seconds{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '-28798x600 36002x179 46802x14 47702x164 57602x1079 122402x179 133202x179 144002x479'
+      - series: 'reelsmith_posted_today{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '0x604 1x194 2x164 3x354 0x724 1x179 2x179 3x354 0x120'
+      - series: 'reelsmith_clips_set_aside{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '0x2880'
+      - series: 'reelsmith_backlog_ready{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '20x604 19x194 18x164 17x1079 16x179 15x179 14x475'
+    promql_expr_test:
+      # Every Reelsmith alert, firing or pending, at any rule evaluation in the 48 hours.
+      - expr: count_over_time(ALERTS{alertname=~"Reelsmith.+"}[2880m])
+        eval_time: 2880m
+        exp_samples: []
+    alert_rule_test:
+      # The old 10:00-22:00 window fired at these two times every day of this schedule.
+      - {eval_time: 485m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}   # 10:05 SAST
+      - {eval_time: 1176m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}  # 21:36 SAST
+      - {eval_time: 1925m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}  # day 2 10:05 SAST
+      - {eval_time: 2616m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}  # day 2 21:36 SAST
+      # Window open (13:00 SAST), just before each later slot, and the 21:00 close.
+      - {eval_time: 665m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 780m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 960m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 1139m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 2105m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 2579m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      # The 12:00 post lands minutes after the slot, well before 13:00 SAST.
+      - {eval_time: 675m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+      - {eval_time: 1199m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+      - {eval_time: 2115m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+      - {eval_time: 2639m, alertname: ReelsmithNoPostToday, exp_alerts: []}
+      - {eval_time: 2880m, alertname: ReelsmithSidecarDown, exp_alerts: []}
+      - {eval_time: 2880m, alertname: ReelsmithSessionInvalid, exp_alerts: []}
+      - {eval_time: 2880m, alertname: ReelsmithLedgerUnreadable, exp_alerts: []}
+      - {eval_time: 2880m, alertname: ReelsmithPostingDisabled, exp_alerts: []}
+      - {eval_time: 2880m, alertname: ReelsmithPaused, exp_alerts: []}
+      - {eval_time: 2880m, alertname: ReelsmithAmbiguousUpload, exp_alerts: []}
+      - {eval_time: 2880m, alertname: ReelsmithThrottled, exp_alerts: []}
+      - {eval_time: 2880m, alertname: ReelsmithClipsSetAside, exp_alerts: []}
+      - {eval_time: 2880m, alertname: ReelsmithBacklogLow, exp_alerts: []}
+
+  # The 15:00 slot never calls (n8n wedged from 15:00 to 18:00). The silence since 12:00:02
+  # passes 3.5 h at 15:30:02 (first seen at 811m), so the alert fires at 816m = 15:36 SAST. At
+  # 18:00 the dispatcher catches up the 15:00 slot (the earliest unused one), which resolves it;
+  # the 18:00 slot follows at 20:45 (160 minutes later).
+  - name: DispatcherSilent fires at 15:36 SAST when the 15:00 slot never calls
+    interval: 1m
+    input_series:
+      - series: 'reelsmith_last_upload_request_timestamp_seconds{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '-28798x600 36002x359 57602x164 67502x314'
+      - series: 'reelsmith_paused{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar",reason="failures"}'
+        values: '0x1440'
+      - series: 'reelsmith_paused{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar",reason="attempt_cap"}'
+        values: '0x1440'
+      - series: 'reelsmith_posting_enabled{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '1x1440'
+      - series: 'reelsmith_backlog_ready{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '20x1440'
+    promql_expr_test:
+      # The ALERTS series the healthy-day check reads is really written (not a vacuous check).
+      - expr: count(ALERTS{alertname="ReelsmithDispatcherSilent", alertstate="firing"})
+        eval_time: 816m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+    alert_rule_test:
+      - {eval_time: 810m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 815m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - eval_time: 816m
+        alertname: ReelsmithDispatcherSilent
+        exp_alerts:
+          - exp_labels: &pod_warning
+              severity: warning
+              container: tiktok-sidecar
+              endpoint: metrics
+              instance: "pod-ip-1:9100"
+              job: tiktok-sidecar
+              namespace: n8n-live
+              pod: tiktok-sidecar-7c9d8f6b5-aaaaa
+              service: tiktok-sidecar
+            exp_annotations: &dispatcher_silent
+              summary: The Reelsmith dispatcher has not called the sidecar for 3.5 hours
+              description: "No upload request reached the sidecar for over 3.5 hours between 13:00 and 21:00 SAST, although posting is on, not paused, and clips are ready. The n8n workflow Reelsmith Social Publish is probably not running: check it is published and look at its recent executions."
+      - eval_time: 960m
+        alertname: ReelsmithDispatcherSilent
+        exp_alerts:
+          - exp_labels: *pod_warning
+            exp_annotations: *dispatcher_silent
+      - {eval_time: 961m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 1139m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+
+  # The 18:00 slot never calls, and nothing calls again until the next day's 12:00 slot. The
+  # silence since 15:00:02 passes 3.5 h at 18:30:02 (first seen at 991m), so the alert fires
+  # at 996m = 18:36 SAST and stays up until the window closes at 21:00 SAST.
+  - name: DispatcherSilent fires at 18:36 SAST when the 18:00 slot never calls
+    interval: 1m
+    input_series:
+      - series: 'reelsmith_last_upload_request_timestamp_seconds{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '-28798x600 36002x179 46802x1259 122402x119'
+      - series: 'reelsmith_paused{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar",reason="failures"}'
+        values: '0x2160'
+      - series: 'reelsmith_paused{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar",reason="attempt_cap"}'
+        values: '0x2160'
+      - series: 'reelsmith_posting_enabled{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '1x2160'
+      - series: 'reelsmith_backlog_ready{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '20x2160'
+    alert_rule_test:
+      - {eval_time: 990m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 995m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - eval_time: 996m
+        alertname: ReelsmithDispatcherSilent
+        exp_alerts:
+          - exp_labels: *pod_warning
+            exp_annotations: *dispatcher_silent
+      - eval_time: 1139m
+        alertname: ReelsmithDispatcherSilent
+        exp_alerts:
+          - exp_labels: *pod_warning
+            exp_annotations: *dispatcher_silent
+      - {eval_time: 1140m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      # Next day: quiet before the window (10:05 SAST) and after the 12:00 request (13:05 SAST).
+      - {eval_time: 1925m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 2105m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+
+  # The 12:00 slot never calls (n8n back at 13:15). The last request is the previous day's
+  # 18:00 one, so the condition holds from the window's opening at 13:00 SAST and fires at
+  # 13:05. The 13:15 catch-up resolves it; the later slots follow 160 minutes apart (16:00,
+  # 18:45), and nothing fires again before the 21:00 close.
+  - name: DispatcherSilent fires at 13:05 SAST when the 12:00 slot never calls
+    interval: 1m
+    input_series:
+      - series: 'reelsmith_last_upload_request_timestamp_seconds{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '-28798x675 40502x164 50402x164 60302x434'
+      - series: 'reelsmith_paused{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar",reason="failures"}'
+        values: '0x1440'
+      - series: 'reelsmith_paused{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar",reason="attempt_cap"}'
+        values: '0x1440'
+      - series: 'reelsmith_posting_enabled{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '1x1440'
+      - series: 'reelsmith_backlog_ready{container="tiktok-sidecar",endpoint="metrics",instance="pod-ip-1:9100",job="tiktok-sidecar",namespace="n8n-live",pod="tiktok-sidecar-7c9d8f6b5-aaaaa",service="tiktok-sidecar"}'
+        values: '20x1440'
+    alert_rule_test:
+      - {eval_time: 659m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 664m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - eval_time: 665m
+        alertname: ReelsmithDispatcherSilent
+        exp_alerts:
+          - exp_labels: *pod_warning
+            exp_annotations: *dispatcher_silent
+      - eval_time: 675m
+        alertname: ReelsmithDispatcherSilent
+        exp_alerts:
+          - exp_labels: *pod_warning
+            exp_annotations: *dispatcher_silent
+      - {eval_time: 676m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 1000m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 1139m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}

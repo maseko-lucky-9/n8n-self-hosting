@@ -41,8 +41,8 @@ tests:
       - {eval_time: 70m, alertname: ReelsmithThrottled, exp_alerts: []}
       - {eval_time: 70m, alertname: ReelsmithClipsSetAside, exp_alerts: []}
       - {eval_time: 70m, alertname: ReelsmithBacklogLow, exp_alerts: []}
-      - {eval_time: 600m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
-      - {eval_time: 1199m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 700m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 1139m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
       - {eval_time: 700m, alertname: ReelsmithNoPostToday, exp_alerts: []}
       - {eval_time: 1199m, alertname: ReelsmithNoPostToday, exp_alerts: []}
 
@@ -273,9 +273,10 @@ tests:
       - {eval_time: 1470m, alertname: ReelsmithThrottled, exp_alerts: []}
 
   # ---- ReelsmithDispatcherSilent ------------------------------------------------------------
-  # The last request was at 00:00 UTC, so the silence is over 3.5h all morning; only the window
-  # (08:00-20:00 UTC = 10:00-22:00 SAST) decides.
-  - name: DispatcherSilent window opens at 10:00 SAST and closes at 22:00 SAST
+  # The last request was at 00:00 UTC, so the silence is over 3.5h all day; only the window
+  # (11:00-19:00 UTC = 13:00-21:00 SAST) decides. The three-slot day itself, healthy and with a
+  # missed slot, is in reelsmith-three-slots.test.yml.
+  - name: DispatcherSilent window opens at 13:00 SAST and closes at 21:00 SAST
     interval: 1m
     input_series:
       - {series: 'reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x1260'}
@@ -284,21 +285,23 @@ tests:
       - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x1260'}
       - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '20x1260'}
     alert_rule_test:
-      - {eval_time: 479m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
-      - {eval_time: 484m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
-      - eval_time: 485m
+      - {eval_time: 485m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 659m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 664m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - eval_time: 665m
         alertname: ReelsmithDispatcherSilent
         exp_alerts:
           - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
             exp_annotations: &dispatcher_silent
               summary: The Reelsmith dispatcher has not called the sidecar for 3.5 hours
-              description: "No upload request reached the sidecar for over 3.5 hours between 10:00 and 22:00 SAST, although posting is on, not paused, and clips are ready. The n8n workflow Reelsmith Social Publish is probably not running: check it is published and look at its recent executions."
-      - eval_time: 1199m
+              description: "No upload request reached the sidecar for over 3.5 hours between 13:00 and 21:00 SAST, although posting is on, not paused, and clips are ready. The n8n workflow Reelsmith Social Publish is probably not running: check it is published and look at its recent executions."
+      - eval_time: 1139m
         alertname: ReelsmithDispatcherSilent
         exp_alerts:
           - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
             exp_annotations: *dispatcher_silent
-      - {eval_time: 1200m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 1140m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 1199m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
 
   # Requests every minute until the last one at 500m: silent for over 3.5h (12600 s) only from
   # 711m, firing from 716m.
@@ -327,7 +330,7 @@ tests:
       - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x1260'}
       - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '20x1260'}
     alert_rule_test:
-      - {eval_time: 600m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 700m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
       - {eval_time: 1000m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
 
   - name: DispatcherSilent unless posting is switched off
@@ -339,7 +342,7 @@ tests:
       - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x1260'}
       - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '20x1260'}
     alert_rule_test:
-      - {eval_time: 600m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 700m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
 
   - name: DispatcherSilent unless no clip is ready
     interval: 1m
@@ -350,7 +353,7 @@ tests:
       - {series: 'reelsmith_posting_enabled{job="tiktok-sidecar",namespace="n8n-live"}', values: '1x1260'}
       - {series: 'reelsmith_backlog_ready{job="tiktok-sidecar",namespace="n8n-live"}', values: '0x1260'}
     alert_rule_test:
-      - {eval_time: 600m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
+      - {eval_time: 700m, alertname: ReelsmithDispatcherSilent, exp_alerts: []}
 
   # ---- ReelsmithNoPostToday -----------------------------------------------------------------
   - name: NoPostToday window opens at 13:00 SAST and closes at 22:00 SAST
@@ -511,4 +514,4 @@ tests:
           - exp_labels: {severity: warning, namespace: n8n-live, job: tiktok-sidecar}
             exp_annotations:
               summary: Fewer than 10 Reelsmith clips are ready to post
-              description: "Only 9 clip(s) are ready to post, about 2 days at 5 a day. Export more from Reelsmith on the Mac (they reach the cluster through Syncthing)."
+              description: "Only 9 clip(s) are ready to post, about 3 days at 3 a day. Export more from Reelsmith on the Mac (they reach the cluster through Syncthing)."

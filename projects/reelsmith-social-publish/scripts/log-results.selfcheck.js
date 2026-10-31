@@ -407,17 +407,17 @@ s.check('daily cap: told once a SAST day (informational: a failed send is only l
   };
   const fail = async () => { const e = new Error('x'); e.code = 'ECONNRESET'; throw e; };
   const logs = [];
-  await run('2026-10-17T09:05:00', { httpRequest: fail, logs }); // must not throw
+  await run('2026-10-17T12:05:00', { httpRequest: fail, logs }); // must not throw
   assert.match(logs.join('\n'), /informational alert not sent; the next run retries it/);
   const sentAt = [];
-  for (const t of ['2026-10-17T12:05:00', '2026-10-17T15:05:00', '2026-10-17T18:05:00', '2026-10-18T09:05:00', '2026-10-18T12:05:00']) {
+  for (const t of ['2026-10-17T15:05:00', '2026-10-17T18:05:00', '2026-10-18T12:05:00', '2026-10-18T15:05:00', '2026-10-18T18:05:00']) {
     const { sent } = await run(t);
     if (sent.length) {
       sentAt.push(t);
       assert.match(sent[0].body.text, /^Reelsmith: today's upload cap is reached/);
     }
   }
-  assert.deepEqual(sentAt, ['2026-10-17T12:05:00', '2026-10-18T09:05:00']);
+  assert.deepEqual(sentAt, ['2026-10-17T15:05:00', '2026-10-18T12:05:00']);
   assert.equal(h.readJson(path.join(root, '.state', 'retryable-failures.json')).dailyCapAlertDay, '2026-10-18');
 });
 
@@ -666,12 +666,12 @@ s.check('refusals: two clips are counted independently', async () => {
   const { root, pick } = await picked();
   const other = { ...pick, clip_key: 'jobA/02_clip.mp4', filename: '02_clip.mp4', claimPath: path.join(path.dirname(pick.claimPath), '02_clip.mp4.json') };
   const run = async (p, response, sast) => { reclaim(p); return (await log(root, p, response, { sast })).out.outcome; };
-  assert.equal(await run(pick, REFUSED, '2026-10-17T09:05:00'), 'refused_retry');
-  assert.equal(await run(other, REFUSED, '2026-10-17T12:05:00'), 'refused_retry');
+  assert.equal(await run(pick, REFUSED, '2026-10-17T12:05:00'), 'refused_retry');
+  assert.equal(await run(other, REFUSED, '2026-10-17T15:05:00'), 'refused_retry');
   assert.deepEqual(readRefusals(root), { [KEY]: 1, 'jobA/02_clip.mp4': 1 });
-  assert.equal(await run(pick, REFUSED, '2026-10-17T15:05:00'), 'needs_you');
+  assert.equal(await run(pick, REFUSED, '2026-10-17T18:05:00'), 'needs_you');
   assert.deepEqual(readRefusals(root), { 'jobA/02_clip.mp4': 1 });
-  assert.equal(await run(other, sidecar(200, 'posted'), '2026-10-17T18:05:00'), 'posted');
+  assert.equal(await run(other, sidecar(200, 'posted'), '2026-10-18T12:05:00'), 'posted');
   assert.deepEqual(readRefusals(root), {});
 });
 

@@ -9,7 +9,7 @@
 //    build-workflow.js output byte for byte;
 //  - the sidecar URL names the Service in manifests/, and the NetworkPolicies
 //    there let the n8n main and worker pods reach it on that port;
-//  - the sidecar's DAILY_CAP and ATTEMPT_CAP fit Pick Due Clip's slots;
+//  - the sidecar's DAILY_CAP and ATTEMPT_CAP fit Pick Due Clip's slots, at most 3 a day;
 //  - the repo's import banned-keys check and disclosure sweep both pass.
 //   node workflow-contract.selfcheck.js   -> exit 0 on pass, 1 on any failure.
 const assert = require('node:assert/strict');
@@ -91,8 +91,8 @@ s.check('nodes, versions, schedule and connections', () => {
   const sched = node('Schedule');
   assert.equal(sched.type, 'n8n-nodes-base.scheduleTrigger');
   assert.equal(sched.typeVersion, 1);
-  assert.deepEqual(sched.parameters.rule.interval, [{ field: 'cronExpression', expression: '*/15 9-21 * * *' }]);
-  assert.match(sched.notes, /^Every 15 min, 09:00-21:45 in /);
+  assert.deepEqual(sched.parameters.rule.interval, [{ field: 'cronExpression', expression: '*/15 12-20 * * *' }]);
+  assert.match(sched.notes, /^Every 15 min, 12:00-20:45 in /);
   for (const name of Object.keys(SCRIPTS)) {
     assert.equal(node(name).type, 'n8n-nodes-base.code');
     assert.equal(node(name).typeVersion, 2);
@@ -235,7 +235,7 @@ s.check('sidecar URL resolves to the manifests\' Service, and the NetworkPolicie
   }
 });
 
-s.check('the sidecar caps fit the slots: DAILY_CAP = one per slot, ATTEMPT_CAP = two per slot', () => {
+s.check('the sidecar caps fit the slots: DAILY_CAP = one per slot, ATTEMPT_CAP = two per slot, at most 3 a day', () => {
   const slots = fs.readFileSync(path.join(__dirname, SCRIPTS['Pick Due Clip']), 'utf8').match(/^const SLOTS = \[([^\]]*)\];/m);
   assert.ok(slots, 'SLOTS not found in Pick Due Clip');
   const n = slots[1].split(',').filter((x) => x.trim()).length;
@@ -247,6 +247,9 @@ s.check('the sidecar caps fit the slots: DAILY_CAP = one per slot, ATTEMPT_CAP =
   };
   assert.equal(env('DAILY_CAP'), n, 'DAILY_CAP must allow one post per slot');
   assert.equal(env('ATTEMPT_CAP'), 2 * n, 'ATTEMPT_CAP must allow two attempts per slot');
+  // Owner policy (ADR-0002, second 2026-10-31 amendment): at most 3 uploads a day. A matching
+  // change to both the slots and the caps must not slip past the check above.
+  assert.ok(n <= 3 && env('DAILY_CAP') <= 3, `owner policy is at most 3 uploads a day (slots ${n}, DAILY_CAP ${env('DAILY_CAP')})`);
 });
 
 s.check('passes the import banned-keys check (scripts/import-workflows.sh)', () => {

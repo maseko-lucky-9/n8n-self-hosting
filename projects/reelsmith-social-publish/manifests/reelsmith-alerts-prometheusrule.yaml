@@ -13,12 +13,12 @@
 #   and promtool asserts the namespace on every alert.
 # - Severity is critical (pages Telegram even while the Mac and its desk sleep) or warning
 #   (for the desk); never info.
-# - hour() is UTC. SAST is UTC+2 all year (no DST since 1944), so the posting day
-#   09:00-22:00 SAST is `hour() >= 7 and hour() < 20`, and a window that starts later in the
-#   SAST day starts at a later UTC hour (10:00 SAST = 8, 13:00 SAST = 11).
+# - hour() is UTC. SAST is UTC+2 all year (no DST since 1944), so a SAST hour is the UTC
+#   hour plus 2: the posting day, slots 12:00, 15:00 and 18:00 SAST with no catch-up from
+#   21:00, is 10:00-19:00 UTC, and 13:00 SAST is `hour() >= 11`, 21:00 SAST `hour() < 19`.
 # - Only the two rules that measure the dispatcher's activity carry a time window. The other
-#   warnings describe a lasting state; a window would resolve them at 22:00 SAST and fire them
-#   again at 09:00, opening a new desk incident every day for one condition.
+#   warnings describe a lasting state; a window would resolve them every evening and fire them
+#   again the next day, opening a new desk incident every day for one condition.
 # - Every selector names job="tiktok-sidecar" and namespace="n8n-live" (the Service name and
 #   namespace the ServiceMonitor gives the target), so a same-named Service in another
 #   namespace can neither raise these alerts nor hide one (absent() included). A scrape that
@@ -181,15 +181,21 @@ spec:
               that. The clip was released for a later slot. Repeated throttling means
               DAILY_CAP should come down.
 
-        # No /api/upload request for 3.5h (slots are 3h apart) between 10:00 and 22:00 SAST:
-        # hour() 8 to 20 UTC. 10:00, not 09:00: at 09:00 the last request is the previous
-        # evening's, and the 09:00 slot gets an hour to call. The sidecar starts the clock at
-        # its own start, so a restart is not a silence. Silenced when no request is due:
-        # paused (either reason), posting switched off, or no clip ready.
+        # No /api/upload request for 3.5h between 13:00 and 21:00 SAST: hour() 11 to 19 UTC.
+        # The dispatcher calls the sidecar only at a slot (12:00, 15:00, 18:00 SAST), so on a
+        # healthy day the longest silence inside the window is 3h (12:00 to 15:00, 15:00 to
+        # 18:00, 18:00 to the 21:00 close). The window opens at 13:00, not at 12:00, because
+        # the request before the 12:00 slot is the previous day's 18:00 one (about 18h): the
+        # first slot gets an hour to call. It closes at 21:00 (no catch-up after it, and the
+        # 18:00 request is only 3h old), not at 21:30, when a healthy evening crosses 3.5h.
+        # A missed 15:00 or 18:00 slot fires 3.5h after the request before it, plus the 5m
+        # for: 15:36 or 18:36 SAST. A missed 12:00 slot fires at 13:05. The sidecar starts
+        # the clock at its own start, so a restart is not a silence. Silenced when no request
+        # is due: paused (either reason), posting switched off, or no clip ready.
         - alert: ReelsmithDispatcherSilent
           expr: >-
             time() - reelsmith_last_upload_request_timestamp_seconds{job="tiktok-sidecar", namespace="n8n-live"} > 12600
-            and on () (hour() >= 8 and hour() < 20)
+            and on () (hour() >= 11 and hour() < 19)
             unless on () (reelsmith_paused{job="tiktok-sidecar", namespace="n8n-live"} == 1)
             unless on () (reelsmith_posting_enabled{job="tiktok-sidecar", namespace="n8n-live"} == 0)
             unless on () (reelsmith_backlog_ready{job="tiktok-sidecar", namespace="n8n-live"} == 0)
@@ -200,16 +206,18 @@ spec:
           annotations:
             summary: The Reelsmith dispatcher has not called the sidecar for 3.5 hours
             description: >-
-              No upload request reached the sidecar for over 3.5 hours between 10:00 and 22:00
+              No upload request reached the sidecar for over 3.5 hours between 13:00 and 21:00
               SAST, although posting is on, not paused, and clips are ready. The n8n workflow
               Reelsmith Social Publish is probably not running: check it is published and look
               at its recent executions.
 
-        # Nothing posted by 13:00 SAST (hour() 11 UTC: the 09:00 and 12:00 slots have both
-        # passed), until 22:00 SAST (hour() 20), when the dispatcher has stopped and the
-        # sidecar's day is about to reset. Silenced by the causes that already explain it: the
-        # attempt-cap pause (the day's attempts are spent), posting off, a probe that said
-        # invalid (ReelsmithSessionInvalid pages), or no clip ready. The FAILURES pause does
+        # Nothing posted by 13:00 SAST (hour() 11 UTC: the 12:00 slot has had an hour, and an
+        # upload takes minutes), until 22:00 SAST (hour() 20), when the dispatcher has stopped
+        # and the sidecar's day is about to reset. A single refusal at 12:00 raises it too,
+        # until the 15:00 slot posts: with nothing posted, that is the stall it watches for.
+        # Silenced by the causes that already explain it: the attempt-cap pause (the day's
+        # attempts are spent), posting off, a probe that said invalid
+        # (ReelsmithSessionInvalid pages), or no clip ready. The FAILURES pause does
         # not silence it: two refusals in a row with nothing posted is exactly the stall this
         # rule is for (a dead session refused as publish_rejected looks like that).
         # session_valid -1 (unknown) or a stale 1 does not silence it either: this is the
@@ -249,7 +257,7 @@ spec:
               until you act. See When a clip is set aside in
               projects/reelsmith-social-publish/README.md.
 
-        # About 2 days of posts at 5 a day. 1h: the inbox changes only when the Mac syncs.
+        # About 3 days of posts at 3 a day. 1h: the inbox changes only when the Mac syncs.
         - alert: ReelsmithBacklogLow
           expr: reelsmith_backlog_ready{job="tiktok-sidecar", namespace="n8n-live"} < 10
           for: 1h
@@ -259,5 +267,5 @@ spec:
           annotations:
             summary: Fewer than 10 Reelsmith clips are ready to post
             description: >-
-              Only {{ $value }} clip(s) are ready to post, about 2 days at 5 a day. Export more
+              Only {{ $value }} clip(s) are ready to post, about 3 days at 3 a day. Export more
               from Reelsmith on the Mac (they reach the cluster through Syncthing).

@@ -23,14 +23,14 @@ function buildWorkflow() {
   const nodes = [
     {
       parameters: {
-        rule: { interval: [{ field: 'cronExpression', expression: '*/15 9-21 * * *' }] },
+        rule: { interval: [{ field: 'cronExpression', expression: '*/15 12-20 * * *' }] },
       },
       name: 'Schedule',
       type: 'n8n-nodes-base.scheduleTrigger',
       typeVersion: 1,
       position: [0, 300],
       notesInFlow: true,
-      notes: 'Every 15 min, 09:00-21:45 in the workflow time zone (Africa/Johannesburg). Pick Due Clip decides whether a slot is due.',
+      notes: 'Every 15 min, 12:00-20:45 in the workflow time zone (Africa/Johannesburg). Pick Due Clip decides whether a slot is due.',
     },
     {
       parameters: { jsCode: code('pick-due-clip.jsCode.js') },
