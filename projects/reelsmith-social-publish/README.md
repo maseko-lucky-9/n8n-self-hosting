@@ -14,14 +14,17 @@ points to Reelsmith's ADR-012, and [ADR-0003](../../docs/decisions/0003-reelsmit
 ## Flow
 
 ```
-Schedule (*/15 9-21 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Sidecar Upload → Log Results → Archive Manifest
+Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Sidecar Upload → Log Results → Archive Manifest
 ```
 
-- **Slots:** 09:00, 12:00, 15:00, 18:00 and 21:00 SAST. A run posts only when a slot has passed,
-  is unused today, and at least 160 minutes have gone by since the last slot was claimed (runs
-  fall on the quarter hour, so a late slot catches up 15 minutes per slot). The last tick is
-  21:45, so nothing catches up after 22:00. At most 5 posts per SAST day; the sidecar enforces
-  the same cap (`DAILY_CAP`, deployed as 5).
+- **Slots:** 12:00, 15:00 and 18:00 SAST: at most 3 uploads a day, the owner's policy (the
+  owner's understanding of TikTok's limit, not a documented TikTok number; ADR-0002, second
+  2026-10-31 amendment). A run posts only when a slot has passed, is unused today, and at least
+  160 minutes have gone by since the last slot was claimed (runs fall on the quarter hour, so a
+  late slot catches up 15 minutes per slot). The last tick is 20:45, so nothing catches up after
+  21:00. The sidecar enforces the same cap (`DAILY_CAP` 3). Each slot leaves a marker named by
+  its position, `.slots/<day>-<i>.json` (0 = 12:00, 1 = 15:00, 2 = 18:00): never reorder
+  `SLOTS` in `scripts/pick-due-clip.jsCode.js`, or a deploy reads today's markers as other slots.
 - **Candidates:** manifests under the inbox modified on or after **2026-10-11** (the cutoff),
   taken in turns across source videos (a job is one video): never the same video twice in a row; a
   video holding more than half of all ready clips goes every other post; otherwise the video used
@@ -56,18 +59,21 @@ Schedule (*/15 9-21 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Sid
   - it validates the path and the file;
   - it keeps a ledger (`ledger.jsonl` on the cookies PVC) and refuses a clip already posted, by
     name or by content hash (409);
-  - it enforces the daily cap (429), at most 10 upload attempts a day (`ATTEMPT_CAP`, 2 per
+  - it enforces the daily cap (429), at most 6 upload attempts a day (`ATTEMPT_CAP`, 2 per
     slot), and a 12h pause after 2 failures in a row;
   - it holds the **kill switch** `POSTING_ENABLED`, `false` until go-live step 7 and `"true"` after it.
     While it is off, every request is a dry run.
-- **Log Results** records each outcome in `results.log.csv` and the claim files, then alerts on
-  Telegram when you are needed (cookie expired: clips wait and retry every 15 min; bad input: that clip is set aside and the next takes its slot; TikTok refused to publish it:
-  the slot stays used and the clip is retried once, after another clip, at a later slot, then set aside at its 2nd
-  refusal (a short notice for the 1st, an alert for the 2nd); TikTok throttling or a signing failure: the clip
-  is retried at a later slot; an upload that may or may not have posted). If the workflow is live while the sidecar's `POSTING_ENABLED` is `false`, every clip
-  is released and retried, and a once-a-day Telegram notice says so. When the sidecar's daily cap
-  is reached (429, e.g. after a manual upload that day), the clip waits for tomorrow, the slot stays
-  used, and a once-a-day notice says so. **Archive Manifest** moves a
+- **Log Results** records each outcome in `results.log.csv` and the claim files, and decides what
+  happens to the clip: cookie expired: clips wait and retry every 15 min; bad input: that clip is
+  set aside and the next takes its slot; TikTok refused to publish it: the slot stays used and the
+  clip is retried once, after another clip, at a later slot, then set aside at its 2nd refusal;
+  TikTok throttling or a signing failure: the clip is retried at a later slot; an upload that may
+  or may not have posted: the clip waits for you to check TikTok. If the workflow is live while
+  the sidecar's `POSTING_ENABLED` is `false`, every clip is released and retried. When the
+  sidecar's daily cap is reached (429, e.g. after a manual upload that day), the clip waits for
+  tomorrow and the slot stays used. With the shipped gates only some of these reach Telegram:
+  neither refusal is sent (`ReelsmithClipsSetAside` covers the 2nd), nor the throttle, the kill
+  switch or the daily cap; see [Telegram messages](#telegram-messages) for the full list. **Archive Manifest** moves a
   manifest once every row is posted or ordinary junk.
 
 ## Where things live
@@ -129,19 +135,24 @@ You log in in the browser it opens. The script then:
 
 The homelab desk (OpenClaw on the Mac) now watches the whole workflow and tells the owner about
 real faults, so Log Results sends only what the desk cannot do or see (ADR-0002, amendment
-2026-10-28). With `NOTIFY_INFO = false` in `scripts/log-results.jsCode.js` (the shipped value):
+2026-10-28), plus two messages the owner keeps on (second 2026-10-31 amendment). The gates are
+constants in `scripts/log-results.jsCode.js`; shipped values: `NOTIFY_INFO = false`,
+`NOTIFY_SESSION = true`, `NOTIFY_SIDECAR_DOWN = true`.
 
 | Message | Sent |
 |---|---|
 | "uploaded as Only me, set it to Everyone" | always: the one manual step you must take |
 | a clip refused as bad input (400) or too large (413) | always, with the commands to release it: the desk cannot see these |
 | upload outcome unknown (a timeout or unexpected answer: it may have posted) | always, with the commands to check and release it: a clip may be on TikTok as Only me, and only you can check |
+| "TikTok session invalid (N in a row). Run `make refresh-cookies` ..." (401 `auth_invalid`) | `NOTIFY_SESSION`: the 1st in a row, then every 12th (about every 3 h). The alert rules see a dead cookie only at the next session probe, so this is the fast path |
+| "sidecar unavailable N times in a row; clips are waiting." for 503 `network_before_upload` (the sidecar cannot reach TikTok) or `clock_unsynced` | `NOTIFY_SIDECAR_DOWN`: the 3rd in a row, then every 12th. No alert rule sees either (requests still arrive, nothing is paused). N counts every unavailable answer in a row, but only the answer that lands on the 3rd (15th, 27th, ...) decides: `network_before_upload`, `network_before_upload`, `busy` sends nothing at 3, where the workflow deployed on 2026-10-18 sent it |
+| the same message for any other unavailable answer (503 `busy` or `paused`, sidecar not answering) | only with `NOTIFY_INFO`: `ReelsmithSidecarDown` covers a sidecar that does not answer, `ReelsmithPaused` a pause; `busy` is another upload holding the lock |
 | first TikTok refusal (retried later), set-aside after the 2nd refusal | only with `NOTIFY_INFO` |
 | "posting too fast" / signing failure (deferred), a clip blocked by an earlier unknown upload | only with `NOTIFY_INFO` |
-| sidecar unavailable, TikTok session invalid | only with `NOTIFY_INFO` |
 | daily cap reached, kill switch off while live, manifest problems | only with `NOTIFY_INFO` |
 
-Only the outgoing message is gated: claims, slots, counters, refusal counts and result rows are
+The two owner messages keep the wording and cadence of the workflow deployed on 2026-10-18;
+`log-results.selfcheck.js` pins both. Only the outgoing message is gated: claims, slots, counters, refusal counts and result rows are
 the same either way, and a gated message never fails the run (an always-sent message still does
 when it cannot be sent, which the watchdog then reports). A once-a-day notice is marked sent only when it was sent, so it is not lost if
 the flag is turned on later. To get every message again (for example while the desk is off), change
@@ -151,12 +162,15 @@ the constant to `true`, rebuild (`cd scripts && node build-workflow.js`) and red
 
 The CronJob `reelsmith-publish-watchdog` is the backstop for when the Mac is asleep and the desk
 cannot reach you. It runs at 09:45, 12:45, 15:45, 18:45 and 21:45 SAST (the CronJob has
-`timeZone: Africa/Johannesburg`) and sends at most one Telegram message per run:
+`timeZone: Africa/Johannesburg`) and sends at most one Telegram message per run. These are not
+upload slots: 09:45 probes the session before the first slot (12:00), so a dead cookie is
+reported before that slot spends an attempt on it; 12:45, 15:45 and 18:45 follow the slots;
+21:45 follows the last dispatcher tick (20:45).
 
 - **Every run:** failed executions (`error`, `crashed` or `canceled`; an execution timeout may
-  be recorded as canceled) of the workflow in the last 4h. The 09:45 run looks back 13h, so a
-  failure in the previous evening's 21:45 tick or after the 21:45 run is not missed. Nothing else
-  in the cluster reads n8n's execution state, so this stays on every run.
+  be recorded as canceled) of the workflow in the last 4h. The 09:45 run looks back 13h (to
+  20:45, the last tick), overlapping the 21:45 run, so nothing from the previous evening is
+  missed. Nothing else in the cluster reads n8n's execution state, so this stays on every run.
 - **09:45 run only, appended to the same message:** the session probe (the sidecar caches it):
   401 is "cookie expired - run make refresh-cookies"; 502 is "sidecar cannot reach TikTok"; 503 is
   "no cookie on the sidecar"; no answer is "sidecar down"; any other status is "sidecar session
@@ -192,10 +206,10 @@ one is a desk change too.
 | `ReelsmithPaused` | warning | the failure pause or the attempt-cap pause is on for 5 min (one alert per `reason`) |
 | `ReelsmithAmbiguousUpload` | warning | an upload outcome is unresolved for 5 min (`make ledger-resolve`) |
 | `ReelsmithThrottled` | warning | TikTok said "posting too fast" in the last 30 min; stays up 2 h more |
-| `ReelsmithDispatcherSilent` | warning | no `/api/upload` request for 3.5 h, 10:00-22:00 SAST, unless paused, posting off, or no clip ready |
+| `ReelsmithDispatcherSilent` | warning | no `/api/upload` request for 3.5 h, 13:00-21:00 SAST, unless paused, posting off, or no clip ready. A healthy three-slot day stays under 3 h inside the window; a missed 15:00 or 18:00 slot fires at about 15:36 or 18:36, a missed 12:00 slot at 13:05 |
 | `ReelsmithNoPostToday` | warning | nothing posted by 13:00 SAST (until 22:00), unless the daily attempt cap is used, posting off, a probe said the session is invalid, or no clip ready. The failures pause does **not** silence it |
 | `ReelsmithClipsSetAside` | warning | a clip is set aside (`needs_you`) for 15 min |
-| `ReelsmithBacklogLow` | warning | fewer than 10 clips ready to post for 1 h |
+| `ReelsmithBacklogLow` | warning | fewer than 10 clips ready to post for 1 h (about 3 days at 3 a day) |
 
 - **The session: `ReelsmithSessionInvalid` is only as fast as the probe cadence.**
   `session_valid` is the latest probe: 1, 0, or -1 (unknown, after every restart and before any
@@ -206,8 +220,10 @@ one is a desk change too.
   failure and a fresh probe confirms it. TikTok's refusal of the publish request for a dead
   session (status code 7 on 2026-10-30) is classed `publish_rejected` and triggers no probe. After
   the sync the only routine probe is the watchdog's 09:45 SAST run, so **a cookie that dies just
-  after it pages about 24 hours later, no sooner than the watchdog**. Until then the earlier
-  signals are warnings: `ReelsmithPaused` (two refusals in a row) and `ReelsmithNoPostToday` at
+  after it pages about 24 hours later, no sooner than the watchdog**. n8n's own "session invalid"
+  message (`NOTIFY_SESSION`, on) comes at the first 401 `auth_invalid` reply, but no 401 happens
+  while TikTok refuses a dead session as `publish_rejected`. Until then the earlier signals are
+  warnings: `ReelsmithPaused` (two refusals in a row) and `ReelsmithNoPostToday` at
   13:00 SAST, which the failures pause does not silence. The fix is a sidecar change (probe after
   a `publish_rejected` verdict, and once at startup); it is not part of this change and waits for
   the owner's go-ahead. `tests/reelsmith-outage-2026-10-30.test.yml` replays the 30 Oct timeline
@@ -216,15 +232,23 @@ one is a desk change too.
   alert (the new pod reports -1 until the next probe, so a RESOLVED goes out while the cookie is
   still dead); the startup probe in the same sidecar fix is what closes that.
 - **Time windows** are written in UTC (`hour()`), because Prometheus has no time zones: SAST is
-  UTC+2, so 10:00-22:00 SAST is `hour() >= 8 and hour() < 20`. Only the two dispatcher rules have
+  UTC+2, so 13:00-21:00 SAST is `hour() >= 11 and hour() < 19`. Only the two dispatcher rules have
   one; a lasting state (paused, set aside, low backlog) stays one alert instead of resolving every
-  night and firing again every morning.
+  night and firing again every morning. `ReelsmithDispatcherSilent` opens at 13:00, an hour after
+  the first slot (the request before that slot is the previous day's 18:00 one), and closes at
+  21:00, before the silence after the 18:00 slot reaches 3.5 h (21:30). `ReelsmithNoPostToday`
+  opens at 13:00 too: by then the 12:00 slot has posted, so a single refusal at 12:00 raises it
+  until the 15:00 slot posts. `scripts/monitoring.selfcheck.js` fails if either window stops
+  fitting `SLOTS`.
 - **Selectors** pin `job="tiktok-sidecar"` and `namespace="n8n-live"`, so a same-named Service in
   another namespace can neither raise nor hide an alert (`absent()` included).
 - **Tests.** `tests/reelsmith-alerts.test.yml` (promtool, run in CI by the `promtool` job) covers
   every rule, every `unless`, the window edges, the namespace pin and the throttle edge;
-  `tests/reelsmith-outage-2026-10-30.test.yml` replays the 30 Oct outage with the operator's full
-  label set and a pod restart. `scripts/monitoring.selfcheck.js` checks the port wiring, that only
+  `tests/reelsmith-three-slots.test.yml` runs 48 hours of healthy three-slot days with the
+  operator's full label set (no alert fires or even pends) and a missed 12:00, 15:00 and 18:00
+  slot (each fires `ReelsmithDispatcherSilent` at its expected minute);
+  `tests/reelsmith-outage-2026-10-30.test.yml` replays the 30 Oct outage on the three slots with
+  the full label set and a pod restart. `scripts/monitoring.selfcheck.js` checks the port wiring, that only
   Prometheus reaches 9100 (both selectors in one `from` element) and nothing new reaches 8000, the
   exact alert names, each rule's static namespace label and severity, the namespace pin in every
   selector, and the drill's name.
@@ -257,19 +281,15 @@ one is a desk change too.
    the scrape NetworkPolicy and `reelsmith-alerts` go live together in one manual sync of
    `reelsmith-social-publish`; merging deploys nothing. Everything else merged since the last
    sync goes with it, so read the whole diff.
-   - **When.** Outside a slot and the 20 minutes after it (09:00, 12:00, 15:00, 18:00, 21:00
-     SAST), and only once the sidecar log shows no upload in flight: the slot's upload has
-     logged its `uploader error_id=... verdict=...` line, or there was none:
+   - **When.** Outside a slot and the 20 minutes after it (12:00, 15:00, 18:00 SAST), and only
+     once the sidecar log shows no upload in flight: the slot's upload has logged its
+     `uploader error_id=... verdict=...` line, or there was none:
      `ssh homelab 'microk8s kubectl -n n8n-live logs deploy/tiktok-sidecar -c tiktok-sidecar --since=30m'`.
      The Deployment is Recreate: a restart during an upload leaves it ambiguous. In the plan's
      order this sync comes after the homelab-infra null route for Reelsmith warnings (A3b);
      before it, the warnings reach Telegram as well.
-   - **Deploy the workflow in the same window** (step 2, the #79+ workflow). Until it is live, n8n
-     runs the pre-#79 schedule (`*/15 12-20`, slots 12:00, 15:00 and 18:00 SAST), and
-     `ReelsmithDispatcherSilent` false-fires every day (unless paused or out of clips): from 10:05
-     SAST (the last request was the previous day's 18:00 slot) until the 12:00 slot, and again
-     from about 21:35 SAST (3.5 h after the 18:00 slot) until 22:00. Plan item 4 already orders
-     the sync and the workflow deploy together.
+   - **The workflow.** This sync went out on 2026-10-31 with the five-slot schedule still in
+     git; step 5 brings git back to three slots and is deployed as one window.
    - **Sync** as in step 1, then check the pod runs the 0.5.0 digest:
      `ssh homelab 'microk8s kubectl -n n8n-live get pods -l app.kubernetes.io/name=tiktok-sidecar -o jsonpath="{.items[*].spec.containers[0].image}"'`.
    - **Verify the scrape and the rules.** Each command below is read-only and runs in the
@@ -298,6 +318,114 @@ one is a desk change too.
      readable: 0.5.0 adds no row field and no status, only the code value `publish_throttled`,
      and 0.4.0 reads `code` as free text (tiktok-sidecar PR #5 tests a rollback reader).
 
+5. **Three posts a day, and the first workflow deploy since 2026-10-18 (ADR-0002, second
+   2026-10-31 amendment).** Merging deploys nothing (`reelsmith-social-publish` and the workflow
+   are both manual). The sync and the workflow deploy go in ONE window, sync first.
+   - **Deadline: sync before 10:00 SAST on 2026-11-01**, or plan for one false warning. The
+     live `ReelsmithDispatcherSilent` still has the 10:00-22:00 SAST window. At 22:13 SAST on
+     2026-10-31 the sidecar reported 77 clips ready, the last upload request at 18:32:05 SAST
+     and no pause, so with no request before the 12:00 slot it fires at about 10:05 SAST and
+     stays up until 12:00 (a warning: it reaches Telegram until the desk's null route, plan item
+     A3b, is in place). The sync alone fixes it, because the new window fits the three slots the
+     deployed workflow already runs. If the sync cannot land in time, silence
+     `ReelsmithDispatcherSilent` in Alertmanager from 10:00 to 12:30 SAST, or accept the warning.
+   - **What the sync changes.** The sidecar's `DAILY_CAP` goes back to 3 and `ATTEMPT_CAP` to 6
+     (the 2026-10-31 15:19 SAST sync applied 5 and 10; the Deployment restarts, Recreate), and
+     `ReelsmithDispatcherSilent` gets its 13:00-21:00 SAST window. The watchdog CronJob change
+     is comments only.
+   - **What the workflow deploy changes.** The live workflow is git `178b7dd` (n8n versionId
+     `daf5bb84`, published 2026-10-18 17:18 UTC, its only `workflow_history` row). This deploy
+     brings everything merged since, in one go:
+     - #72: an "uploaded as Only me" Telegram notice on every post (up to 3 a day);
+     - #78: rotation across source videos (never the same video twice in a row), a video's
+       `00_` intro is never posted, and Archive Manifest counts intros as done (the live
+       workflow claimed the intro `00_Convenience and productivity.mp4` on 2026-10-30);
+     - #79: a 502 `publish_rejected` or `signature_failed` is no longer "may have posted";
+     - #80: a refused clip is retried once at a later slot, after another clip of its video
+       (`REFUSAL_LIMIT` 2); `.state/retryable-failures.json` gains `refusals` and `retryAfter`;
+     - #81: quiet Telegram (`NOTIFY_INFO` false), with the two owner gates on (below);
+     - `MIN_GAP_MIN` 170 to 160: a late slot catches up 15 minutes per slot.
+
+     Slots, cron and `LAST_CALL` are the ones n8n already runs (12:00/15:00/18:00, markers
+     0/1/2, `*/15 12-20 * * *`, 21:00).
+   - **Telegram, before and after the workflow deploy** (Log Results; the watchdog is unchanged):
+
+     | Message | Live today (`178b7dd`) | After this deploy |
+     |---|---|---|
+     | "uploaded as Only me, set it to Everyone" | not sent | **new**: every post, up to 3 a day |
+     | clip refused, 400 bad input or 413 too large | sent | sent |
+     | upload outcome unknown (500, 504, any other 502, a timeout after sending) | sent | sent |
+     | TikTok session invalid (401), the 1st in a row, then every 12th | sent | **still sent**, same text and cadence (owner decision, `NOTIFY_SESSION`) |
+     | sidecar unavailable N times in a row, 503 `network_before_upload` or `clock_unsynced` | sent at 3, then every 12th | **still sent**, same text and threshold when the answer at the 3rd (15th, ...) is one of these two codes (owner decision, `NOTIFY_SIDECAR_DOWN`) |
+     | TikTok refused it (502 `publish_rejected`) | sent, as "upload outcome unknown (it may have posted)" | **stops**: the 1st refusal is retried silently (nothing replaces the notice); the 2nd sets the clip aside silently, `ReelsmithClipsSetAside` after 15 min |
+     | "You are posting too fast" (502), a signing failure (502 `signature_failed`) | sent, as "upload outcome unknown" | **stops**: deferred to a later slot; `ReelsmithThrottled` covers the throttle, nothing names a signing failure |
+     | sidecar unavailable, 503 `busy` or `paused`, or the sidecar not answering | sent at 3, then every 12th | **stops**: `ReelsmithPaused`, `ReelsmithSidecarDown`; `busy` is another upload holding the lock |
+     | a clip blocked by an earlier unknown upload (409 `ambiguous`) | sent | **stops**: `ReelsmithAmbiguousUpload` |
+     | the kill switch off while live, once a day | sent | **stops**: `ReelsmithPostingDisabled` |
+     | manifest problems, once a day | sent | **stops**: only the list in `.state/notices.json`, and the watchdog's failed-execution check when nothing else can be posted |
+     | daily cap reached | not sent | not sent (only with `NOTIFY_INFO`) |
+   - **Expect `ReelsmithNoPostToday` about one day in four.** It fires at 13:15 SAST whenever the
+     12:00 attempt is refused: the ledger since 2026-10-18 holds 7 `publish_rejected` of 28
+     attempts (15 posted, 6 `internal`). The sidecar's failure streak also spans midnight: a
+     refused last attempt yesterday plus a refused 12:00 today pause posting for 12 hours, so the
+     rest of that day has 1 attempt and 0 posts.
+   - **Claims the old workflow wrote for TikTok refusals stay `failed`** and are never retried:
+     see "When a clip is set aside" for releasing one, one clip at a time, and only a clip that
+     is not on TikTok (a released one is uploaded again; nothing answers 409 for it).
+   - **When.** Outside a slot and the 20 minutes after it (12:00, 15:00, 18:00 SAST), once the
+     sidecar log shows no upload in flight (step 4's command); before 10:00 SAST meets the
+     deadline above.
+   - **Commands.** Before the window, create an n8n API key in the n8n UI with the shortest
+     expiry and copy it; delete it once step (d) is done. From the Mac, in
+     `projects/reelsmith-social-publish/scripts`:
+     ```bash
+     # (a) sync reelsmith-social-publish (step 1), then check the caps: value "3" and value "6"
+     ssh homelab 'microk8s kubectl -n n8n-live get deploy tiktok-sidecar -o yaml' | grep -A1 -E 'name: (DAILY|ATTEMPT)_CAP'
+     # (b) the posting ledger's length, to compare after the dry run
+     ssh homelab 'microk8s kubectl -n n8n-live exec deploy/tiktok-sidecar -c tiktok-sidecar -- wc -l /app/CookiesDir/ledger.jsonl'
+     # (c) dry-run deploy: saved, never published (the published version keeps the schedule);
+     #     the API key goes on stdin; the id is the one in the editor URL and the watchdog's messages
+     WF=SKLkX5qUDYLlWTxo
+     pbpaste | N8N_SSH_HOST=homelab-tunnel ./deploy-workflow.sh --workflow-id "$WF" --dry-run
+     ```
+     Then open the workflow in the n8n editor and execute it once by hand (it runs the saved
+     dry-run copy). In that execution, check that Pick Due Clip shows `dryRun: true` and a
+     `clip_key` from a YouTube job whose filename does not start with `00_`, from a different
+     video than the last post; that TikTok Sidecar Upload answered 200 with `status: dry_run`;
+     and that Log Results shows `outcome: dry_run` and `clipReleased: true`. Then confirm nothing
+     posted (the ledger has the same length as in (b), and the dry-run log has the new row):
+     ```bash
+     ssh homelab 'microk8s kubectl -n n8n-live exec deploy/tiktok-sidecar -c tiktok-sidecar -- sh -c "wc -l /app/CookiesDir/ledger.jsonl; tail -n 1 /app/CookiesDir/ledger.dryrun.jsonl"'
+     # (d) live deploy: saved with DRY_RUN=false and published
+     pbpaste | N8N_SSH_HOST=homelab-tunnel ./deploy-workflow.sh --workflow-id "$WF" --live
+     ```
+   - **After the live deploy** (read-only checks):
+     - the published version is new: the first field below is no longer `daf5bb84-...`
+       `ssh homelab 'microk8s kubectl -n n8n-live exec n8n-application-postgres-0 -c postgres -- psql -U postgres -d n8n -At -c "SELECT \"activeVersionId\", settings FROM workflow_entity WHERE name = \$\$Reelsmith Social Publish\$\$"'`
+     - **the workflow settings survived.** Live has `maxConcurrency: 1`, `binaryMode`,
+       `callerPolicy` and `availableInMCP`; the generated JSON has none of them, and the public
+       API refuses `maxConcurrency`. The deployed n8n 2.39.8 merges settings on an update
+       (`{...old, ...new}` in `dist/workflows/workflow.service.js`, read in the pod on
+       2026-10-31), and the 2026-10-18 deploy sent the same keys while all four survived, so they
+       should stay. Compare the copy of the old workflow that the dry-run deploy saved (after the
+       two deploys it is the second newest file in `../backups/`, mode 0600; the public API
+       returns its settings whole) with the live settings:
+       ```bash
+       ssh homelab 'microk8s kubectl -n n8n-live exec n8n-application-postgres-0 -c postgres -- psql -U postgres -d n8n -At -c "SELECT settings FROM workflow_entity WHERE name = \$\$Reelsmith Social Publish\$\$"' > /tmp/reelsmith-settings-after.json
+       node -e 'const fs = require("fs"); const before = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).settings || {}; const after = JSON.parse(fs.readFileSync(process.argv[2], "utf8")); const lost = Object.keys(before).filter((k) => !(k in after)); console.log("before:", Object.keys(before).sort().join(" ")); console.log("after: ", Object.keys(after).sort().join(" ")); console.log(lost.length ? "LOST: " + lost.join(" ") : "no setting lost");' "$(ls -tr ../backups/*.json | tail -n 2 | head -n 1)" /tmp/reelsmith-settings-after.json
+       ```
+       If `maxConcurrency` is lost, the risk is low: claims are exclusive files (created with
+       O_EXCL, so two overlapping runs never take the same clip or slot) and the workflow's
+       `executionTimeout` is 900 s, under the 15-minute tick. The 2.39.8 editor cannot put it
+       back: its workflow settings do not offer `maxConcurrency` (the editor bundle names the
+       key only in its Evaluations view, checked 2026-10-31). Leave it off, note it in the
+       session log, and decide on any other way separately.
+     - at the next slot: one execution, the "uploaded as Only me" notice after a post, and the
+       upload in `ssh homelab 'microk8s kubectl -n n8n-live logs deploy/tiktok-sidecar -c tiktok-sidecar --since=30m'`.
+     - delete the n8n API key in the n8n UI.
+   - **Rollback:** revert this change in a PR and sync, outside a slot. For the workflow,
+     follow go-live step 10 (`--deactivate` first; the deploy saved the old copy in `backups/`).
+
 ## Mac setup
 
 1. Set `YTVIDEO_EXPORT_BASE_FOLDER` in Reelsmith `.env` to your local Syncthing share folder
@@ -308,7 +436,8 @@ one is a desk change too.
    - set the Mac folder to **Send Only** and the cluster side to **Receive Only**;
    - add a `.stignore` with `*.tmp`, `.DS_Store` and `processed/`.
 3. New clips reach the cluster only while the Mac is awake with Tailscale up, and nothing posts
-   while the homelab is off. Keep it on from 08:30 to 22:15 SAST.
+   while the homelab is off. Keep it on from 11:30 to 21:00 SAST for the slots, and from 09:30
+   to 22:00 for the watchdog's 09:45 probe and its 21:45 run.
 
 ## Go-live runbook
 
@@ -358,7 +487,7 @@ Paste the evidence at each step; nothing moves to the next step without your go.
 4. **`make refresh-cookies`, once, regardless.** You log in; the probe says valid.
 5. **Dry run.** `scripts/deploy-workflow.sh --workflow-id <ID> --dry-run` (n8n API key on
    stdin, shortest expiry; it connects as `homelab-tunnel`, see Deploy step 2). A dry-run
-   deploy is saved, never published, so it does not run 52 times a day; execute it once by
+   deploy is saved, never published, so it does not run 36 times a day; execute it once by
    hand from the n8n editor. Check:
    - a **YouTube** clip is picked (historically the newest, job `1979f8a4`; see Candidates for the rotation now), and no TikTok-sourced job is
      touched;
@@ -369,8 +498,8 @@ Paste the evidence at each step; nothing moves to the next step without your go.
    - **no TikTok post** appears.
 6. **Forced-failure dry run.** `scripts/deploy-workflow.sh --workflow-id <ID> --dry-run --simulate auth_invalid` (via `homelab-tunnel`),
    executed by hand from the editor (`simulate` is honoured only in dry runs). Confirm Log Results
-   reports `auth_invalid` with the clip released; the 401 Telegram alert is behind `NOTIFY_INFO`,
-   so none arrives with the shipped value (set it to `true` for this test to see it).
+   reports `auth_invalid` with the clip released, and that the Telegram message "[dry run] 🔑
+   Reelsmith: TikTok session invalid (1 in a row) ..." arrives (`NOTIFY_SESSION` is on).
 7. **Your go.** Record your Phase 0 gate answers first (account status, For You eligibility,
    clickable tags). Then a manifest PR sets `POSTING_ENABLED` to `"true"`; merge it and sync.
    Deploy the workflow live with `scripts/deploy-workflow.sh --workflow-id <ID> --live` (via
@@ -385,7 +514,7 @@ Paste the evidence at each step; nothing moves to the next step without your go.
      `ssh homelab 'microk8s kubectl create -f -' < manifests/test/reelsmith-watchdog-test-alert-job.yaml`.
      One test message must arrive.
 9. **Observe for 2 days:**
-   - at most 5 posts per SAST day, one per slot, consecutive posts from different videos, no `00_` intro;
+   - at most 3 posts per SAST day, one per slot, consecutive posts from different videos, no `00_` intro;
    - no duplicates; missing clips are waited for; junk is skipped;
    - no `OOMKilled` or `Error` in the sidecar's `lastState`;
    - the watchdog stays quiet;
@@ -404,7 +533,11 @@ Paste the evidence at each step; nothing moves to the next step without your go.
 ## When a clip is set aside
 
 A clip with an unclear or refused outcome keeps its n8n claim, so it is never retried and its
-manifest is never archived. The Telegram alert prints the exact commands for that clip.
+manifest is never archived. When the outcome is one of the messages sent with the shipped gates
+(400/413, an unknown outcome), the Telegram alert prints the exact commands for that clip;
+otherwise `ReelsmithClipsSetAside` fires after 15 minutes and the commands are the ones below.
+Every command here runs from the Mac against the homelab and is the owner's to run. **Never
+click "Revert Local Changes"** on the cluster's Syncthing folder: it deletes every claim.
 
 - **Ambiguous upload** (it may or may not have posted), or a clip **blocked** by an earlier
   unresolved upload (409 `ambiguous`):
@@ -413,14 +546,19 @@ manifest is never archived. The Telegram alert prints the exact commands for tha
      `make ledger-resolve KEY='<job>/<filename>' OUTCOME=not_posted`
      Keep the single quotes: clip names contain spaces, and an unquoted `KEY` splits at the first
      one. Here `<filename>` is the clip's file name including `.mp4`.
-     - If it is refused with "no ledger rows for that clip_key" or "...; it is free", the upload
-       never reached TikTok (a 502 rejection, a failed 500, or a reset or timeout before the
-       sidecar wrote its row). There is nothing to resolve: go to step 2.
-  2. then, **in every case**, release the n8n claim:
+     - `OUTCOME=posted` works only while the ledger says ambiguous (its last row for the key is
+       `started` or `interrupted`).
+     - If it is refused with "no ledger rows for that clip_key" or "...; it is free", the sidecar
+       knows the upload did not post (a 502 rejection, a failed 500) or never started it (a reset
+       or timeout before it wrote its row), and there is nothing to resolve: go to step 2. If the
+       clip is on TikTok all the same, leave the claim in place and stop: a free key gets no 409
+       `duplicate`, so a release would upload it again.
+  2. then release the n8n claim:
      `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "/data/reelsmith-inbox/reelsmith-inbox/<job>/.claims/<filename>.json"'`.
      - After `not_posted`, or when the key was free, the clip is uploaded again at a later slot.
-     - After `posted`, the retry gets a 409 `duplicate` from the sidecar and is logged as
-       `posted_elsewhere`. That frees the slot, posts nothing, and lets the manifest archive.
+     - After a successful `posted` (an ambiguous key only), the retry gets a 409 `duplicate`
+       from the sidecar and is logged as `posted_elsewhere`. That frees the slot, posts nothing,
+       and lets the manifest archive.
      - A claim left in place keeps its `failed` status, so the manifest never archives.
      - If the ledger says ambiguous, resolve it first: releasing the claim alone only produces
        another ambiguous 409.
@@ -428,11 +566,12 @@ manifest is never archived. The Telegram alert prints the exact commands for tha
   claim with the same command. Or leave it set aside.
 - **TikTok refused to publish it** (502 `publish_rejected`; not posted, the sidecar's ledger key
   is already free). Refusals are often intermittent: the same clip and caption can post on a later
-  try. The 1st refusal releases the clip back to the pool and a Telegram notice says "refusal 1
-  of 2". The next attempt takes another clip of the same video first (unless it is that video's
-  only ready clip), and a later attempt retries the refused one. The 2nd refusal of the same clip
-  sets it aside with an alert: probably the clip itself; re-export it, then release the claim with
-  the same command. Or leave it set aside. Either way the slot stays used: at most one upload
+  try. The 1st refusal releases the clip back to the pool (a "refusal 1 of 2" notice only with
+  `NOTIFY_INFO`; nothing replaces it, the clip simply comes back). The next attempt takes another
+  clip of the same video first (unless it is that video's only ready clip), and a later attempt
+  retries the refused one. The 2nd refusal of the same clip sets it aside (an alert only with
+  `NOTIFY_INFO`; `ReelsmithClipsSetAside` fires after 15 minutes): probably the clip itself;
+  re-export it, then release the claim with the same command. Or leave it set aside. Either way the slot stays used: at most one upload
   attempt per slot. The sidecar also pauses posting for 12h after 2 failed attempts in a row, so
   back-to-back refusals can cost the rest of the day's slots. Putting another clip between a
   refusal and its retry makes two failures in a row less likely; a retry never directly follows
@@ -441,8 +580,36 @@ manifest is never archived. The Telegram alert prints the exact commands for tha
   clip waiting behind another) is dropped once an attempt posts, or when the flagged clip itself
   reaches a final outcome; it lasts through released attempts (e.g. a sidecar 503), not only the
   next pick. A refusal that says "You are posting too fast", and a 502
-  `signature_failed`, are not the clip's fault: the clip is released for a later slot and a
-  Telegram alert says so.
+  `signature_failed`, are not the clip's fault: the clip is released for a later slot (a
+  Telegram alert only with `NOTIFY_INFO`; `ReelsmithThrottled` covers the throttle).
+- **A TikTok refusal recorded by the workflow deployed before 2026-11** (git `178b7dd`). That
+  workflow logged every 502 as "may have posted", so its claim says `"status": "failed"` with
+  `"code": "publish_rejected"` and `"http_status": 502`. The retry once (ADR-0002, second
+  2026-10-27 amendment) applies only to refusals the new workflow records itself: **these claims
+  stay `failed` and are never retried**, and their manifests do not archive. Example:
+  `851cbce7386b47959c6136cc3fa9758e/02_Smart home and mobile gear.mp4`, refused 2026-10-31,
+  ledger key free. The claim is the only thing stopping that clip from being uploaded again: the
+  ledger's last row for the key is `failed`, so the sidecar treats the key as free, answers no 409
+  `duplicate`, and `make ledger-resolve` refuses both outcomes ("only an ambiguous clip can be
+  resolved; it is free"). To give one a retry:
+  1. read the claim, and go on only if it shows `failed`, `publish_rejected` and 502:
+     `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- cat "/data/reelsmith-inbox/reelsmith-inbox/<job>/.claims/<filename>.json"'`;
+  2. check TikTok Studio. **If the clip is on the account, stop and leave the claim in place**:
+     the ledger cannot record that post, and releasing the claim would upload the clip again. Its
+     manifest then never archives;
+  3. only if the clip is not on the account, in `tiktok-sidecar` run
+     `make ledger-resolve KEY='<job>/<filename>' OUTCOME=not_posted` and expect it to be refused
+     with "...; it is free" (or "no ledger rows for that clip_key"): the refusal freed the key and
+     there is nothing to record. If it succeeds instead, the key was still ambiguous and is now
+     resolved as not posted: go on. If it is refused for any other reason (for example "...; it
+     is duplicate": the ledger says posted), stop and leave the claim in place;
+  4. release the claim (the same command as above):
+     `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "/data/reelsmith-inbox/reelsmith-inbox/<job>/.claims/<filename>.json"'`.
+  The clip goes back to the pool and is uploaded at its turn; a new refusal counts as refusal 1
+  of 2.
+  A `00_` intro claim (for example `00_Convenience and productivity.mp4`, refused 2026-10-30) is
+  not worth releasing: the new workflow never posts intros, and Archive Manifest counts them as
+  done.
 
 ## Run as non-root (sidecar 0.4.0)
 

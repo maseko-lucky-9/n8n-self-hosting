@@ -2,8 +2,8 @@
 // Order matters: the claim (and slot) are settled on disk BEFORE any alert, so
 // a failed Telegram send can never leave a clip half-recorded; the failed send
 // of a safety message then fails the run, which the watchdog's failed-execution
-// check reports (a message gated off by NOTIFY_INFO is never sent, so never fails
-// the run). Canonical source: scripts/log-results.jsCode.js.
+// check reports (a message gated off is never sent, so never fails the run).
+// Canonical source: scripts/log-results.jsCode.js.
 const fs = require('fs');
 const path = require('path');
 
@@ -29,13 +29,19 @@ const ALERT_MAX_CHARS = 2000;
 // Three kinds of message are always sent: "uploaded as Only me" (the owner's one
 // manual step), a clip refused for bad input or size (400/413: the homelab desk cannot
 // see those), and an unknown upload outcome (a timed-out or unexpected answer may still
-// be on TikTok as Only me, and only the owner can check). Every other notice (first
-// refusal, set-aside after two refusals, throttle or signing failure, a clip blocked by
-// an earlier unknown upload, sidecar unavailable, session invalid, daily cap, kill
-// switch, manifest problems) is covered by the homelab desk's alerts and is sent only
-// when this is true. Claims, slots, counters and result rows are the same either way:
-// only the outgoing message is gated.
+// be on TikTok as Only me, and only the owner can check). Two more have their own gate
+// below (owner decision 2026-10-31, both on). Every other notice (first refusal,
+// set-aside after two refusals, throttle or signing failure, a clip blocked by an
+// earlier unknown upload, any other sidecar-unavailable streak, daily cap, kill switch,
+// manifest problems) is covered by the homelab desk's alerts and is sent only when this
+// is true. Claims, slots, counters and result rows are the same either way: only the
+// outgoing message is gated.
 const NOTIFY_INFO = false;
+// Session invalid (401 auth_invalid; first in a row, then every 12th): the alert rules see a dead cookie only at the next probe, so this is the fast path.
+const NOTIFY_SESSION = true;
+// Sidecar unavailable 3 times in a row (then every 12th) when it cannot reach TikTok or its clock is off: no alert rule sees either.
+const NOTIFY_SIDECAR_DOWN = true;
+const SIDECAR_DOWN_CODES = ['network_before_upload', 'clock_unsynced']; // the sidecar's 503 codes NOTIFY_SIDECAR_DOWN covers
 const HEADER = 'timestamp,filename,title,tiktok_post_id,tiktok_post_url,youtube_video_id,youtube_status,error,tiktok_status\n';
 // Failures before the request left n8n: connect and DNS errors. Anything later
 // (read ETIMEDOUT, read EHOSTUNREACH, ECONNRESET, EPIPE, the HTTP timeout) may
@@ -356,8 +362,9 @@ function releaseSteps(withLedger, fixLine) {
 
 // safety: the run fails if these cannot be sent. info: once-a-day notices; a
 // failed send is logged and retried by the next run (its day stays unmarked).
-// A message goes out only if it is `always` or NOTIFY_INFO is true (see its comment);
-// a day marker is set only for a notice that was queued.
+// A message goes out only if its `always` argument (a fixed true, or its own gate) is
+// true or NOTIFY_INFO is true (see their comments); a day marker is set only for a
+// notice that was queued.
 const safety = [];
 const info = [];
 const infoDays = {};
@@ -369,7 +376,8 @@ function queue(list, text, always = false) {
 // 400 and 413 are about this clip and invisible to the desk: always told.
 const clipFault = outcome.kind === 'needs_you' && (outcome.httpStatus === 400 || outcome.httpStatus === 413);
 if (outcome.kind === 'auth_invalid' && due(authCount, AUTH_ALERT_AFTER)) {
-  queue(safety, `🔑 Reelsmith: TikTok session invalid (${authCount} in a row). Run \`make refresh-cookies\` in tiktok-sidecar; clips wait and retry every 15 min.` + detail);
+  queue(safety, `🔑 Reelsmith: TikTok session invalid (${authCount} in a row). Run \`make refresh-cookies\` in tiktok-sidecar; clips wait and retry every 15 min.` + detail,
+    NOTIFY_SESSION);
 } else if (retryRefused) {
   // Routine (about 2 a day): informational, a failed send is only logged.
   queue(info, `Reelsmith: TikTok refused it (not posted); it will be retried at a later slot (refusal ${refusalCount} of ${REFUSAL_LIMIT}).` + detail);
@@ -391,7 +399,8 @@ if (outcome.kind === 'auth_invalid' && due(authCount, AUTH_ALERT_AFTER)) {
 } else if (outcome.kind === 'ambiguous') {
   queue(safety, 'Reelsmith: upload outcome unknown (it may have posted).' + detail + releaseSteps(true), true);
 } else if (outcome.kind === 'retryable' && due(retryCount, RETRY_ALERT_AFTER)) {
-  queue(safety, `Reelsmith: sidecar unavailable ${retryCount} times in a row; clips are waiting.` + detail);
+  queue(safety, `Reelsmith: sidecar unavailable ${retryCount} times in a row; clips are waiting.` + detail,
+    NOTIFY_SIDECAR_DOWN && SIDECAR_DOWN_CODES.includes(outcome.code));
 }
 // Every upload is Only me (the sidecar passes --visibility=1): tell the owner so they can publish it.
 // Informational: the claim is already settled, so a failed send is only logged. Always sent.

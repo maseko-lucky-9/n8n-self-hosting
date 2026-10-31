@@ -1,18 +1,20 @@
 # Watchdog for Reelsmith Social Publish: the 15-minute dispatcher (n8n workflow
-# SKLkX5qUDYLlWTxo, 09:00-21:45 SAST) and the tiktok-sidecar gatekeeper. It is the
+# SKLkX5qUDYLlWTxo, 12:00-20:45 SAST) and the tiktok-sidecar gatekeeper. It is the
 # Mac-asleep backstop: the homelab desk (OpenClaw, on the Mac) watches the workflow
 # too, but nothing in the cluster reads n8n's execution state except this job.
 #
-# Runs 45 minutes after each posting slot (09:00, 12:00, 15:00, 18:00, 21:00);
-# the 21:45 run coincides with the last dispatcher tick. It reads execution_entity directly
-# (independent of n8n's own health) and asks the sidecar for its state.
+# The runs are not upload slots. 09:45 probes the session before the first slot
+# (12:00), so a dead cookie is reported before that slot spends an attempt on it;
+# 12:45, 15:45 and 18:45 follow the slots (12:00, 15:00, 18:00); 21:45 follows the
+# last dispatcher tick (20:45). It reads execution_entity directly (independent of
+# n8n's own health) and asks the sidecar for its state.
 #
 # Checks (every Telegram message carries only fixed strings, validated integers
 # and the workflow id; everything else is stripped, see clean()):
 #  a. failed executions (status error/crashed/canceled; an execution timeout
 #     may be recorded as canceled) in the last 4h. Reported on EVERY run. The
-#     09:45 run looks back 13h (to 20:45) so the previous evening's 21:45 tick
-#     and anything finishing after the 21:45 run are not missed.
+#     09:45 run looks back 13h (to 20:45, the last dispatcher tick), overlapping
+#     the 21:45 run's window, so nothing from the previous evening is missed.
 #  b. GET /healthz/session, on the 09:45 run only (so at most once a day):
 #     401 => "cookie expired - run make refresh-cookies"; 503 => no cookie on the
 #     sidecar; 502 => "sidecar cannot reach TikTok"; no answer (refused, timeout)
