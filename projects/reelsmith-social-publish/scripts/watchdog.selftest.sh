@@ -3,7 +3,9 @@
 #
 # Extracts the container script from the CronJob with python3 + PyYAML and runs
 # it against stub `psql`, `wget` and `date` placed first on PATH, asserting every
-# alert decision. It also guards the sidecar Deployment's single-process shape
+# alert decision. Since 2026-10-28 (ADR-0002 amendment) it reports only failed n8n
+# executions (every run) and, on the 09:45 run, the sidecar being down or the cookie
+# invalid; the /api/stats and "no executions" checks are gone. It also guards the sidecar Deployment's single-process shape
 # (one replica, Recreate). Exits non-zero on any failed assertion.
 #
 #   scripts/watchdog.selftest.sh [cronjob.yaml [test-alert-job.yaml [sidecar-deployment.yaml]]]
@@ -90,7 +92,7 @@ if [ "${STUB_PSQL_RC:-0}" != 0 ]; then
   echo 'psql: error: connection to server at "postgres-service" failed: timeout expired' >&2
   exit "$STUB_PSQL_RC"
 fi
-printf '%s\n' "${STUB_PSQL_OUT-0|0|36}"
+printf '%s\n' "${STUB_PSQL_OUT-0|0}"
 SH
 
 cat > "$work/bin/wget" <<'SH'
@@ -223,84 +225,70 @@ expect_sql_count() {
   if [ "$n" = "$2" ]; then pass; else fail "psql call has '$1' $n time(s), want $2"; fi
 }
 
-STATS_OK='{"posted_today":1,"cap":3,"last_success_at":"2026-10-17T12:00:09+02:00","hours_since_success":2.7,"paused_until":null,"posting_enabled":true}'
-stats_with() { printf '{"posted_today":0,"cap":3,"last_success_at":null,"hours_since_success":%s,"paused_until":%s,"posting_enabled":true}' "$1" "$2"; }
-
 # --- cases ---------------------------------------------------------------------
-# Healthy run off the digest hour: no alert, no sidecar calls, 4h error window, timeouts set.
+# Healthy run off the 09:45 run: no alert, no sidecar calls, 4h error window, timeouts set.
 run healthy_15
 expect_rc 0; expect_sends 0; expect_out "ok: no alert"; expect_count sidecar.count 0; expect_count psql.count 1
 expect_sql "interval '4 hours'"
 # Both aggregates (failed count, latest failed id) use the full status filter.
-expect_sql_count "status IN ('error','crashed','canceled') AND \"startedAt\" > now() - interval '4 hours')" 2
+expect_sql_count "status IN ('error','crashed','canceled'))" 2
 expect_sql "\"workflowId\"='SKLkX5qUDYLlWTxo'"
-expect_sql "interval '25 hours'"; expect_sql "PGCONNECT_TIMEOUT=10"; expect_sql "statement_timeout=10000"
+expect_sql "PGCONNECT_TIMEOUT=10"; expect_sql "statement_timeout=10000"
 case $(cat "$state/date.calls") in TZ=SAST-2) pass ;; *) fail "hour not read in SAST" ;; esac
 
-# Healthy digest run: sidecar probed (10 s timeouts), 13h error window, still no alert.
-run healthy_09 FAKE_HOUR=09 STUB_STATS_BODY="$STATS_OK"
-expect_rc 0; expect_sends 0; expect_out "ok: no alert"; expect_count sidecar.count 2; expect_sql "interval '13 hours'"
+# Healthy 09:45 run: ONE sidecar call (the session probe, 10 s timeout), 13h error window, no alert.
+# /api/stats is no longer read.
+run healthy_09 FAKE_HOUR=09
+expect_rc 0; expect_sends 0; expect_out "ok: no alert"; expect_count sidecar.count 1; expect_sql "interval '13 hours'"
 if [ "$(sort -u "$state/wget.timeouts")" = "T=10" ]; then pass; else fail "a wget call lacks -T 10"; fi
 
 # (a) failed executions alert on every run, with count and latest id.
 for h in 12 15 18 21 09; do
-  run "errors_$h" FAKE_HOUR=$h STUB_PSQL_OUT='2|1234|36'
+  run "errors_$h" FAKE_HOUR=$h STUB_PSQL_OUT='2|1234'
   expect_rc 0; expect_sends 1; expect_msg "Reelsmith watchdog: 2 failed execution(s) of workflow SKLkX5qUDYLlWTxo"
   expect_msg "latest id 1234"; expect_clean_message
 done
-expect_msg "in the last 13h"   # the last loop run is the 09 digest run
-run errors_window_15 STUB_PSQL_OUT='1|9|36'
+expect_msg "in the last 13h"   # the last loop run is the 09 run
+run errors_window_15 STUB_PSQL_OUT='1|9'
 expect_msg "in the last 4h"
 
 # A database failure alerts on every run.
 run db_down_15 STUB_PSQL_RC=2
 expect_rc 0; expect_sends 1; expect_msg "n8n database query failed"
 
-# (b) cookie expired: digest run only.
+# (b) cookie expired: 09:45 run only.
 run cookie_401_09 FAKE_HOUR=09 STUB_SESSION=401
 expect_rc 0; expect_sends 1; expect_msg "cookie expired - run make refresh-cookies"; expect_clean_message
 run cookie_401_15 STUB_SESSION=401
 expect_rc 0; expect_sends 0; expect_count sidecar.count 0
 
 # (b) sidecar down (no answer), TikTok unreachable from the sidecar (502), no cookie (503),
-# any other session status; (c) any non-200 from /api/stats is "sidecar down".
-run sidecar_unreachable_09 FAKE_HOUR=09 STUB_SESSION=000 STUB_STATS=000
-expect_rc 0; expect_sends 1; expect_msg "sidecar down (session check HTTP 000)"; expect_msg "sidecar down (stats HTTP 000)"
+# any other session status.
+run sidecar_unreachable_09 FAKE_HOUR=09 STUB_SESSION=000
+expect_rc 0; expect_sends 1; expect_msg_is "Reelsmith watchdog: daily: sidecar down (session check HTTP 000)"
 run session_502_09 FAKE_HOUR=09 STUB_SESSION=502
-expect_rc 0; expect_sends 1; expect_msg "sidecar cannot reach TikTok (session check HTTP 502)"; expect_no_msg "sidecar down"
+expect_rc 0; expect_sends 1; expect_msg "sidecar cannot reach TikTok (session check HTTP 502)"; expect_no_msg "sidecar down"; expect_no_msg "cookie"
 run no_cookie_503_09 FAKE_HOUR=09 STUB_SESSION=503
 expect_rc 0; expect_sends 1; expect_msg "no cookie on the sidecar - run make refresh-cookies (session check HTTP 503)"
 expect_no_msg "sidecar down"; expect_no_msg "cookie expired"
 run session_404_09 FAKE_HOUR=09 STUB_SESSION=404
 expect_rc 0; expect_sends 1; expect_msg "sidecar session check failed (HTTP 404)"; expect_no_msg "sidecar down"
-run stats_500_09 FAKE_HOUR=09 STUB_STATS=500
-expect_rc 0; expect_sends 1; expect_msg_is "Reelsmith watchdog: daily: sidecar down (stats HTTP 500)"
+run session_500_09 FAKE_HOUR=09 STUB_SESSION=500
+expect_rc 0; expect_sends 1; expect_msg "sidecar session check failed (HTTP 500)"
 
-# (c) stale success (> 48h), the 48h boundary, never posted, paused.
-run stale_49_09 FAKE_HOUR=09 STUB_STATS_BODY="$(stats_with 49.2 null)"
-expect_sends 1; expect_msg "no successful post for 49h"
-run stale_boundary_48_09 FAKE_HOUR=09 STUB_STATS_BODY="$(stats_with 48.9 null)"
-expect_rc 0; expect_sends 0
-run never_posted_09 FAKE_HOUR=09 STUB_STATS_BODY="$(stats_with null null)"
-expect_sends 1; expect_msg "no successful post on record"
-run paused_09 FAKE_HOUR=09 STUB_STATS_BODY="$(stats_with 3 '"2026-10-18T09:00:00+02:00"')"
-expect_sends 1; expect_msg "posting paused after repeated failures"
-run stats_spaced_09 FAKE_HOUR=09 STUB_STATS_BODY='{ "hours_since_success" : 50 , "paused_until" : null }'
-expect_sends 1; expect_msg "no successful post for 50h"; expect_no_msg "unreadable"
+# Dropped checks stay dropped: a stale or paused sidecar, and an empty n8n, are not reported.
+STALE_STATS='{"posted_today":0,"cap":3,"last_success_at":null,"hours_since_success":99,"paused_until":"2026-10-18T09:00:00+02:00","posting_enabled":true}'
+run dropped_stats_09 FAKE_HOUR=09 STUB_STATS=500 STUB_STATS_BODY="$STALE_STATS"
+expect_rc 0; expect_sends 0; expect_out "ok: no alert"; expect_count sidecar.count 1
+run dropped_no_executions_09 FAKE_HOUR=09 STUB_PSQL_OUT='0|0'
+expect_rc 0; expect_sends 0; expect_out "ok: no alert"
 
-# (d) zero executions in 25h: digest run only.
-run no_executions_09 FAKE_HOUR=09 STUB_PSQL_OUT='0|0|0' STUB_STATS_BODY="$STATS_OK"
-expect_sends 1; expect_msg "daily: no executions of workflow SKLkX5qUDYLlWTxo in 25h"
-run no_executions_15 STUB_PSQL_OUT='0|0|0'
-expect_rc 0; expect_sends 0
-
-# Every condition at once: the 09:45 run sends exactly ONE combined message ...
-ALL_BAD=(STUB_PSQL_OUT='1|77|0' STUB_SESSION=401 STUB_STATS_BODY="$(stats_with 60 '"2026-10-18T09:00:00+02:00"')")
+# Everything at once: the 09:45 run sends exactly ONE combined message ...
+ALL_BAD=(STUB_PSQL_OUT='1|77' STUB_SESSION=401)
 run digest_combined_09 FAKE_HOUR=09 "${ALL_BAD[@]}"
-expect_rc 0; expect_sends 1; expect_msg "1 failed execution(s)"; expect_msg "daily: "; expect_msg "cookie expired"
-expect_msg "no successful post for 60h"; expect_msg "posting paused"; expect_msg "no executions of workflow"; expect_clean_message
-expect_msg_is "Reelsmith watchdog: 1 failed execution(s) of workflow SKLkX5qUDYLlWTxo in the last 13h, latest id 77; daily: no executions of workflow SKLkX5qUDYLlWTxo in 25h - inactive or n8n down; cookie expired - run make refresh-cookies; no successful post for 60h; posting paused after repeated failures"
-# ... and the other runs report only the failed execution, never the ongoing conditions.
+expect_rc 0; expect_sends 1; expect_clean_message
+expect_msg_is "Reelsmith watchdog: 1 failed execution(s) of workflow SKLkX5qUDYLlWTxo in the last 13h, latest id 77; daily: cookie expired - run make refresh-cookies"
+# ... and the other runs report only the failed execution, never the sidecar.
 for h in 12 15 18 21; do
   run "digest_skipped_$h" FAKE_HOUR=$h "${ALL_BAD[@]}"
   expect_rc 0; expect_sends 1; expect_msg "1 failed execution(s)"; expect_no_msg "daily"; expect_no_msg "cookie"
@@ -315,14 +303,13 @@ run test_alert_send_fails TEST_ALERT=1 STUB_TG=500
 expect_rc 1; expect_out "telegram send failed (HTTP 500)"
 
 # Sanitisation: hostile values never reach the message.
-run hostile_psql_15 STUB_PSQL_OUT='3|9"; DROP TABLE x; <b>|5'
-expect_sends 1; expect_msg "n8n database query failed"; expect_no_msg "DROP"; expect_clean_message
-run multiline_psql_15 STUB_PSQL_OUT="$(printf '0|0|36\n5|5|5')"
+run hostile_psql_15 STUB_PSQL_OUT='3|9"; <b>HOSTILE</b>'
+expect_sends 1; expect_msg "n8n database query failed"; expect_no_msg "HOSTILE"; expect_clean_message
+run multiline_psql_15 STUB_PSQL_OUT="$(printf '0|0\n5|5')"
 expect_sends 1; expect_msg "n8n database query failed"; expect_clean_message
-run hostile_stats_09 FAKE_HOUR=09 STUB_STATS_BODY="$(printf '{"hours_since_success":"<b>99</b>\nINJECT","paused_until":"x'\''\n\"EVIL\\\\n"}')"
-expect_sends 1; expect_msg "sidecar stats unreadable"; expect_no_msg "INJECT"; expect_no_msg "EVIL"; expect_no_msg "99"
-expect_clean_message
-run hostile_wf_id WF_ID="x';DROP"
+run three_fields_psql_15 STUB_PSQL_OUT='1|2|3'
+expect_sends 1; expect_msg "n8n database query failed"
+run hostile_wf_id WF_ID="x';HOSTILE"
 expect_rc 1; expect_sends 0; expect_count psql.count 0; expect_out "WF_ID is missing or malformed"
 run hostile_chat TG_CHAT='42&text=evil'
 expect_rc 1; expect_sends 0; expect_out "TG_CHAT is missing or not a numeric chat id"; case $OUT in *evil*) fail "chat id echoed" ;; *) pass ;; esac
@@ -330,9 +317,9 @@ run token_newline TG_TOKEN="$(printf '123:abc\nevil')"
 expect_rc 1; expect_sends 0; expect_out "TG_TOKEN is missing or malformed"
 
 # A failed send exits 1 and prints only the HTTP status (the stub's stderr carries the URL).
-run send_fails_400 STUB_PSQL_OUT='1|5|36' STUB_TG=400
+run send_fails_400 STUB_PSQL_OUT='1|5' STUB_TG=400
 expect_rc 1; expect_out "FATAL: telegram send failed (HTTP 400)"
-run send_fails_unreachable STUB_PSQL_OUT='1|5|36' STUB_TG=000
+run send_fails_unreachable STUB_PSQL_OUT='1|5' STUB_TG=000
 expect_rc 1; expect_out "FATAL: telegram send failed (HTTP 000)"
 
 echo "watchdog selftest ($WATCHDOG_SH): $((checks - fails))/$checks checks passed"

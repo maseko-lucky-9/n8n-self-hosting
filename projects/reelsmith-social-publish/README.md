@@ -41,8 +41,9 @@ Schedule (*/15 9-21 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Sid
   space, ending in `.mp4`), a file over 300 MiB, no usable caption (nothing left of the
   description or the title once URLs, `@`, `#` and emoji are stripped), or not a regular file.
   - Reported three ways: listed (job, row, reason) in `/data/reelsmith-inbox/.state/notices.json`;
-    counted in a once-a-day Telegram notice from a run that posts; and, when nothing else can be
-    posted, by one failed execution a day, which the watchdog reports. Read the list with
+    counted in a once-a-day Telegram notice from a run that posts (only when `NOTIFY_INFO` is on,
+    see Telegram messages); and, when nothing else can be posted, by one failed execution a day,
+    which the watchdog reports (every run checks for failed executions). Read the list with
     `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- cat /data/reelsmith-inbox/.state/notices.json'`.
   - It pins its manifest: Archive Manifest keeps the manifest until you fix the clip (re-export
     it so it passes) or archive the manifest by hand, which also skips its remaining clips:
@@ -121,21 +122,47 @@ You log in in the browser it opens. The script then:
    appears in argv or in a `last-applied` annotation;
 3. restarts the sidecar and probes `/healthz/session`.
 
+## Telegram messages
+
+The homelab desk (OpenClaw on the Mac) now watches the whole workflow and tells the owner about
+real faults, so Log Results sends only what the desk cannot do or see (ADR-0002, amendment
+2026-10-28). With `NOTIFY_INFO = false` in `scripts/log-results.jsCode.js` (the shipped value):
+
+| Message | Sent |
+|---|---|
+| "uploaded as Only me, set it to Everyone" | always: the one manual step you must take |
+| a clip refused as bad input (400) or too large (413) | always, with the commands to release it: the desk cannot see these |
+| upload outcome unknown (a timeout or unexpected answer: it may have posted) | always, with the commands to check and release it: a clip may be on TikTok as Only me, and only you can check |
+| first TikTok refusal (retried later), set-aside after the 2nd refusal | only with `NOTIFY_INFO` |
+| "posting too fast" / signing failure (deferred), a clip blocked by an earlier unknown upload | only with `NOTIFY_INFO` |
+| sidecar unavailable, TikTok session invalid | only with `NOTIFY_INFO` |
+| daily cap reached, kill switch off while live, manifest problems | only with `NOTIFY_INFO` |
+
+Only the outgoing message is gated: claims, slots, counters, refusal counts and result rows are
+the same either way, and a gated message never fails the run (an always-sent message still does
+when it cannot be sent, which the watchdog then reports). A once-a-day notice is marked sent only when it was sent, so it is not lost if
+the flag is turned on later. To get every message again (for example while the desk is off), change
+the constant to `true`, rebuild (`cd scripts && node build-workflow.js`) and redeploy the workflow.
+
 ## The watchdog
 
-The CronJob `reelsmith-publish-watchdog` runs at 09:45, 12:45, 15:45, 18:45 and 21:45 SAST
-(the CronJob has `timeZone: Africa/Johannesburg`) and sends at most one Telegram message per run:
+The CronJob `reelsmith-publish-watchdog` is the backstop for when the Mac is asleep and the desk
+cannot reach you. It runs at 09:45, 12:45, 15:45, 18:45 and 21:45 SAST (the CronJob has
+`timeZone: Africa/Johannesburg`) and sends at most one Telegram message per run:
 
 - **Every run:** failed executions (`error`, `crashed` or `canceled`; an execution timeout may
   be recorded as canceled) of the workflow in the last 4h. The 09:45 run looks back 13h, so a
-  failure in the previous evening's 21:45 tick or after the 21:45 run is not missed.
-- **09:45 run only, one combined message:**
-  - the session probe: 401 is "cookie expired - run make refresh-cookies"; 502 is "sidecar
-    cannot reach TikTok"; 503 is "no cookie on the sidecar"; no answer is "sidecar down"; any
-    other status is "sidecar session check failed";
-  - `/api/stats`: any non-200 is "sidecar down"; also no successful post for over 48h, none on
-    record, or posting paused;
-  - no executions at all in 25h.
+  failure in the previous evening's 21:45 tick or after the 21:45 run is not missed. Nothing else
+  in the cluster reads n8n's execution state, so this stays on every run.
+- **09:45 run only, appended to the same message:** the session probe (the sidecar caches it):
+  401 is "cookie expired - run make refresh-cookies"; 502 is "sidecar cannot reach TikTok"; 503 is
+  "no cookie on the sidecar"; no answer is "sidecar down"; any other status is "sidecar session
+  check failed".
+
+Dropped on 2026-10-28, because the desk owns them: the `/api/stats` checks (no success for 48h,
+none on record, posting paused, stats unreadable) and "no executions in 25h". Once the Reelsmith
+alert rules are live (plan section A2), Alertmanager's critical alerts for the sidecar and the
+session are a second backstop; until then this watchdog is the only one.
 
 Messages carry only fixed text, validated integers and the workflow id. A failed send exits 1 and
 prints only the HTTP status. The CronJob was switched on 2026-10-24 (it shipped suspended until the first upload).
@@ -237,8 +264,9 @@ Paste the evidence at each step; nothing moves to the next step without your go.
    - `fs` and `DateTime` work in the n8n 2.39.8 runner;
    - **no TikTok post** appears.
 6. **Forced-failure dry run.** `scripts/deploy-workflow.sh --workflow-id <ID> --dry-run --simulate auth_invalid` (via `homelab-tunnel`),
-   executed by hand from the editor (`simulate` is honoured only in dry runs). Confirm the 401
-   Telegram alert arrives.
+   executed by hand from the editor (`simulate` is honoured only in dry runs). Confirm Log Results
+   reports `auth_invalid` with the clip released; the 401 Telegram alert is behind `NOTIFY_INFO`,
+   so none arrives with the shipped value (set it to `true` for this test to see it).
 7. **Your go.** Record your Phase 0 gate answers first (account status, For You eligibility,
    clickable tags). Then a manifest PR sets `POSTING_ENABLED` to `"true"`; merge it and sync.
    Deploy the workflow live with `scripts/deploy-workflow.sh --workflow-id <ID> --live` (via
@@ -264,9 +292,10 @@ Paste the evidence at each step; nothing moves to the next step without your go.
       copy while it is published.
     - set `POSTING_ENABLED` back to `"false"` and sync, or `git revert` this PR and sync.
 
-    The saved copy's path is recorded in the session log. While the workflow stays off, set the
-    watchdog back to `suspend: true` in the same PR; otherwise it reports "no executions in 25h"
-    every day.
+    The saved copy's path is recorded in the session log. While the workflow stays off, the
+    watchdog stays quiet about executions (there are none to fail) and keeps checking the sidecar
+    and the cookie once a day; set it back to `suspend: true` in the same PR only if the sidecar
+    is also taken down.
 
 ## When a clip is set aside
 
@@ -333,8 +362,9 @@ revert the Deployment change and sync: root can still read files owned by 10001 
   (the environment is not exposed that way). This is accepted on this single-user node. The fix
   is an image that ships `curl` (token on stdin); installing it at runtime is what made the old
   watchdog miss its deadline, so it is deferred.
-- The once-a-day checks run only at 09:45. If the homelab is off then, that day's checks are
-  skipped; failed executions are still reported on the later runs.
+- The sidecar and cookie checks run only at 09:45. If the homelab is off then, that day's checks are
+  skipped; failed executions are still reported on the later runs. Once the Reelsmith alert rules are
+  live (plan section A2), Alertmanager's critical alerts for the sidecar and the session cover the gap.
 - The web uploader returns no TikTok post id, so the ledger's `posted` row is the record.
 - The Only-me notice is informational: if Telegram is down when a clip uploads, the notice is lost
   (the ledger and TikTok Studio still show the clip).

@@ -685,7 +685,11 @@ async function dispatchRun(root, sast, sidecar, alerts = []) {
   if (!picked.length) return null;
   const response = sidecar(picked[0].json, sast);
   const nodes = { 'Pick Due Clip': picked };
-  const logged = await h.runNode(h.loadNode('log-results.jsCode.js', { root }), {
+  // These steady-state checks assert the notices, so they open Log Results' NOTIFY_INFO
+  // gate (it ships false); log-results.selfcheck.js covers the shipped default.
+  const logCode = h.loadNode('log-results.jsCode.js', { root }).replace('const NOTIFY_INFO = false;', 'const NOTIFY_INFO = true;');
+  assert.ok(logCode.includes('const NOTIFY_INFO = true;'), 'NOTIFY_INFO gate not found');
+  const logged = await h.runNode(logCode, {
     input: [{ json: response }], nodes, execId, env: { TELEGRAM_BOT_TOKEN: 't', TELEGRAM_CHAT_ID: 'c' },
     helpers: { httpRequest: async (opts) => { alerts.push(opts.body.text); return { ok: true }; } },
   });

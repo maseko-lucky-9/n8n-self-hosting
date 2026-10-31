@@ -4,6 +4,9 @@
 // every outcome row of the plan's table, the atomic claim write, claim-before-
 // alert ordering, alert failure -> thrown run, and the dry-run release.
 //   node log-results.selfcheck.js   -> exit 0 on pass, 1 on any failure.
+// NOTIFY_INFO ships false (only "posted", 400/413 clip faults and an unknown outcome are sent). Checks
+// that assert a message's text open the gate explicitly with `notify: true`; the
+// gate-closed behaviour is checked from the shipped default (see "NOTIFY_INFO").
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
@@ -25,13 +28,18 @@ async function picked({ live = true, filename = '01_clip.mp4' } = {}) {
   return { root, pick: item.json };
 }
 
-async function log(root, pick, response, { env = ENV, httpRequest, sast = '2026-10-17T12:05:00', logs, patch } = {}) {
+// notify: true (the default here) sets NOTIFY_INFO = true so a check can read the text of
+// every message; notify: false runs the shipped default.
+async function log(root, pick, response, { env = ENV, httpRequest, sast = '2026-10-17T12:05:00', logs, patch, notify = true } = {}) {
   const sent = [];
   h.setNow(sast);
   const helpers = {
     httpRequest: httpRequest || (async (opts) => { sent.push(opts); return { ok: true }; }),
   };
-  const code = h.loadNode('log-results.jsCode.js', { root });
+  let code = h.loadNode('log-results.jsCode.js', { root });
+  const gate = 'const NOTIFY_INFO = false;';
+  assert.equal(code.split(gate).length, 2, 'NOTIFY_INFO default is not exactly one `false` constant');
+  if (notify) code = code.replace(gate, 'const NOTIFY_INFO = true;');
   if (patch) assert.equal(code.split(patch[0]).length, 2, 'patch target not found exactly once');
   const [out] = await h.runNode(patch ? code.replace(patch[0], patch[1]) : code, {
     input: [{ json: response }], nodes: { 'Pick Due Clip': [{ json: pick }] }, env, helpers, execId: '77', logs,
@@ -65,14 +73,15 @@ function seedState(root, state) {
 // [name, response, expected]
 //   claim: final claim status, or null when the clip is released
 //   slot: true when the slot marker survives
-//   alert: RegExp the alert text must match, or null for no alert
+//   alert: RegExp the alert text must match, or null for no alert (NOTIFY_INFO open)
+//   kept: true when the message is still sent with the shipped default (NOTIFY_INFO false)
 const TABLE = [
-  ['200 posted', sidecar(200, 'posted'), { kind: 'posted', claim: 'posted', slot: true, alert: /^Reelsmith: uploaded as Only me\. Set it to Everyone in TikTok Studio[\s\S]*file: /, row: 'posted' }],
+  ['200 posted', sidecar(200, 'posted'), { kept: true, kind: 'posted', claim: 'posted', slot: true, alert: /^Reelsmith: uploaded as Only me\. Set it to Everyone in TikTok Studio[\s\S]*file: /, row: 'posted' }],
   ['409 duplicate', sidecar(409, 'duplicate'), { kind: 'posted_elsewhere', claim: 'posted_elsewhere', slot: false, alert: null, row: 'posted_elsewhere' }],
   ['409 ambiguous', sidecar(409, 'ambiguous'), { kind: 'needs_you', claim: 'needs_you', slot: false, alert: /^Reelsmith: a clip is blocked by an earlier upload that may have posted[\s\S]*code: ambiguous/, row: 'needs_you' }],
   ['401 auth_invalid', sidecar(401, 'auth_invalid'), { kind: 'auth_invalid', claim: null, slot: false, alert: /^🔑[\s\S]*make refresh-cookies[\s\S]*code: auth_invalid/, row: 'auth_invalid' }],
-  ['400 bad_input', sidecar(400, 'bad_input'), { kind: 'needs_you', claim: 'needs_you', slot: false, alert: /^Reelsmith: a clip was refused \(not posted[\s\S]*code: bad_input/, row: 'needs_you' }],
-  ['413 too_large', sidecar(413, 'too_large'), { kind: 'needs_you', claim: 'needs_you', slot: false, alert: /^Reelsmith: a clip was refused \(not posted[\s\S]*code: too_large/, row: 'needs_you' }],
+  ['400 bad_input', sidecar(400, 'bad_input'), { kept: true, kind: 'needs_you', claim: 'needs_you', slot: false, alert: /^Reelsmith: a clip was refused \(not posted[\s\S]*code: bad_input/, row: 'needs_you' }],
+  ['413 too_large', sidecar(413, 'too_large'), { kept: true, kind: 'needs_you', claim: 'needs_you', slot: false, alert: /^Reelsmith: a clip was refused \(not posted[\s\S]*code: too_large/, row: 'needs_you' }],
   ['429 daily_cap', sidecar(429, 'daily_cap'), { kind: 'daily_cap', claim: null, slot: true, alert: /^Reelsmith: today's upload cap is reached; clips wait for tomorrow \(this slot is used\)\.\ncode: daily_cap\nerror_id: err-123\nfile: 01_clip\.mp4$/, row: 'daily_cap' }],
   ['503 busy', sidecar(503, 'busy'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
   ['503 clock_unsynced', sidecar(503, 'clock_unsynced'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
@@ -84,10 +93,10 @@ const TABLE = [
   ['connect timeout (ETIMEDOUT)', transport('ETIMEDOUT', 'connect ETIMEDOUT 127.0.0.1:8000'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
   ['connect EHOSTUNREACH', transport('EHOSTUNREACH', 'connect EHOSTUNREACH 127.0.0.1:8000'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
   ['ENETUNREACH (code only)', transport('ENETUNREACH', ''), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
-  ['read ETIMEDOUT (after sending)', transport('ETIMEDOUT', 'read ETIMEDOUT'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: etimedout/, row: 'failed' }],
-  ['EPIPE', transport('EPIPE', 'write EPIPE'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: epipe/, row: 'failed' }],
-  ['HTTP timeout (ECONNABORTED)', transport('ECONNABORTED', 'timeout of 673000ms exceeded'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: timeout/, row: 'failed' }],
-  ['ECONNRESET', transport('ECONNRESET', 'socket hang up'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: econnreset/, row: 'failed' }],
+  ['read ETIMEDOUT (after sending)', transport('ETIMEDOUT', 'read ETIMEDOUT'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: etimedout/, row: 'failed' }],
+  ['EPIPE', transport('EPIPE', 'write EPIPE'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: epipe/, row: 'failed' }],
+  ['HTTP timeout (ECONNABORTED)', transport('ECONNABORTED', 'timeout of 673000ms exceeded'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: timeout/, row: 'failed' }],
+  ['ECONNRESET', transport('ECONNRESET', 'socket hang up'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: econnreset/, row: 'failed' }],
   // TikTok refused the post: not published, the slot stays used. The 1st refusal of a
   // clip releases it for a later slot; the 2nd (state: already refused once) sets it aside.
   ['502 publish_rejected', sidecar(502, 'publish_rejected', { tiktok_status_code: 5, tiktok_status_msg: null }), { kind: 'refused_retry', claim: null, slot: true, alert: new RegExp('^' + RETRY_TEXT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$'), row: 'refused_retry' }],
@@ -97,14 +106,14 @@ const TABLE = [
   ['502 publish_rejected, throttled', sidecar(502, 'publish_rejected', { tiktok_status_msg: THROTTLE }), { kind: 'deferred', claim: null, slot: true, alert: /^Reelsmith: TikTok says "posting too fast" \(not posted\)[\s\S]*released for a later slot; this slot stays used\.\ncode: publish_rejected\nerror_id: err-123\nfile: 01_clip\.mp4$/, row: 'deferred' }],
   ['502 signature_failed', sidecar(502, 'signature_failed'), { kind: 'deferred', claim: null, slot: true, alert: /^Reelsmith: the sidecar's signing helper failed \(not posted\)[\s\S]*released for a later slot; this slot stays used\.\ncode: signature_failed\nerror_id: err-123\nfile: 01_clip\.mp4$/, row: 'deferred' }],
   // Every other 502, and those codes on any other status, may have posted.
-  ['502 other code', sidecar(502, 'upload_failed'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: upload_failed/, row: 'failed' }],
-  ['502 no JSON body', http(502, 'Bad Gateway'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: http_502/, row: 'failed' }],
-  ['500 publish_rejected', sidecar(500, 'publish_rejected', { tiktok_status_msg: THROTTLE }), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: publish_rejected/, row: 'failed' }],
-  ['504 signature_failed', sidecar(504, 'signature_failed'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: signature_failed/, row: 'failed' }],
-  ['500 internal', sidecar(500, 'internal'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: internal/, row: 'failed' }],
-  ['504 timeout', sidecar(504, 'timeout'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: timeout/, row: 'failed' }],
+  ['502 other code', sidecar(502, 'upload_failed'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: upload_failed/, row: 'failed' }],
+  ['502 no JSON body', http(502, 'Bad Gateway'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: http_502/, row: 'failed' }],
+  ['500 publish_rejected', sidecar(500, 'publish_rejected', { tiktok_status_msg: THROTTLE }), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: publish_rejected/, row: 'failed' }],
+  ['504 signature_failed', sidecar(504, 'signature_failed'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: signature_failed/, row: 'failed' }],
+  ['500 internal', sidecar(500, 'internal'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: internal/, row: 'failed' }],
+  ['504 timeout', sidecar(504, 'timeout'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: timeout/, row: 'failed' }],
   ['200 posting_disabled (real run, kill switch off)', http(200, { status: 'dry_run', code: 'posting_disabled' }), { kind: 'dry_run', claim: null, slot: false, alert: /^Reelsmith: the sidecar has POSTING_ENABLED=false while the workflow is live/, row: 'dry_run' }],
-  ['read EHOSTUNREACH (established socket)', transport('EHOSTUNREACH', 'read EHOSTUNREACH'), { kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: ehostunreach/, row: 'failed' }],
+  ['read EHOSTUNREACH (established socket)', transport('EHOSTUNREACH', 'read EHOSTUNREACH'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: ehostunreach/, row: 'failed' }],
   ['EHOSTUNREACH (code only)', transport('EHOSTUNREACH', ''), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
 ];
 
@@ -132,6 +141,117 @@ for (const [name, response, want] of TABLE) {
     } else assert.equal(sent.length, 0, 'unexpected alert');
   });
 }
+
+// The shipped default: NOTIFY_INFO is false. Only "posted" and a 400/413 clip fault are
+// sent; every other row of the table stays silent, with the claim, slot, counters and
+// result row exactly as when the gate is open.
+const names = ['read ETIMEDOUT (after sending)', 'EPIPE', 'HTTP timeout (ECONNABORTED)', 'ECONNRESET', '502 other code', '502 no JSON body',
+  '500 publish_rejected', '504 signature_failed', '500 internal', '504 timeout', 'read EHOSTUNREACH (established socket)'];
+const ALWAYS_SENT = TABLE.filter(([, , want]) => want.kept).map(([name]) => name);
+s.check('NOTIFY_INFO ships false; always sent: posted, 400 bad_input, 413 too_large and every unknown (ambiguous) outcome', () => {
+  assert.deepEqual(ALWAYS_SENT, ['200 posted', '400 bad_input', '413 too_large', ...names]);
+  assert.equal(fs.readFileSync(path.join(__dirname, 'log-results.jsCode.js'), 'utf8').split('const NOTIFY_INFO = false;').length, 2);
+});
+
+for (const [name, response, want] of TABLE) {
+  s.check(`default (NOTIFY_INFO false): ${name} -> ${want.kept ? 'sent' : 'silent'}, state unchanged`, async () => {
+    const open = await picked();
+    const shut = await picked();
+    for (const r of [open, shut]) if (want.state) seedState(r.root, want.state);
+    const a = await log(open.root, open.pick, response);
+    const b = await log(shut.root, shut.pick, response, { notify: false });
+    if (want.kept) {
+      assert.equal(b.sent.length, 1, 'the always-sent message is missing');
+      assert.match(b.sent[0].body.text, want.alert);
+    } else assert.equal(b.sent.length, 0, 'a gated message was sent: ' + (b.sent[0] && b.sent[0].body.text));
+    assert.equal(b.out.alerted, want.kept === true);
+    // Same outcome, rows, claim, slot and counters either way (the fixed clock and ids make them comparable).
+    const bare = (o) => ({ ...o, alerted: null, jobDir: null, manifestPath: null }); // temp paths differ per root
+    assert.deepEqual(bare(b.out), bare(a.out));
+    assert.deepEqual(fs.readFileSync(path.join(shut.pick.jobDir, 'results.log.csv'), 'utf8'),
+      fs.readFileSync(path.join(open.pick.jobDir, 'results.log.csv'), 'utf8'));
+    assert.equal(h.exists(shut.pick.claimPath), h.exists(open.pick.claimPath));
+    if (h.exists(open.pick.claimPath)) assert.deepEqual(h.readJson(shut.pick.claimPath), h.readJson(open.pick.claimPath));
+    assert.equal(h.exists(shut.pick.slotMarker), h.exists(open.pick.slotMarker));
+    // The once-a-day notice markers differ on purpose: a notice never sent is never marked.
+    const stateOf = (r) => { const st = h.readJson(statePath(r.root)); for (const k of ['manifestAlertDay', 'dailyCapAlertDay', 'postingDisabledAlertDay']) delete st[k]; return st; };
+    assert.deepEqual(stateOf(shut), stateOf(open));
+  });
+}
+
+s.check('default: a gated message never needs Telegram: a failing or unconfigured send neither throws nor is attempted', async () => {
+  let calls = 0;
+  const fail = async () => { calls += 1; const e = new Error('x'); e.code = 'ECONNRESET'; throw e; };
+  for (const response of [sidecar(502, 'publish_rejected', { tiktok_status_msg: THROTTLE }), sidecar(401, 'auth_invalid'), sidecar(409, 'ambiguous'), sidecar(502, 'signature_failed')]) {
+    const { root, pick } = await picked();
+    const r = await log(root, pick, response, { notify: false, httpRequest: fail });
+    assert.equal(r.out.alerted, false);
+    const nothing = await picked();
+    await log(nothing.root, nothing.pick, response, { notify: false, env: {} }); // TELEGRAM_* unset: still no throw
+  }
+  assert.equal(calls, 0);
+  // The always-sent ones still fail the run when they cannot be sent (400, unknown outcome) or are only logged (posted).
+  const unknown = await picked();
+  await assert.rejects(log(unknown.root, unknown.pick, sidecar(504, 'timeout'), { notify: false, httpRequest: fail }), /Telegram alert failed/);
+  assert.equal(h.readJson(unknown.pick.claimPath).status, 'failed', 'claim recorded before the failed send');
+  const bad = await picked();
+  await assert.rejects(log(bad.root, bad.pick, sidecar(400, 'bad_input'), { notify: false, httpRequest: fail }), /Telegram alert failed/);
+  const logs = [];
+  const ok = await picked();
+  await log(ok.root, ok.pick, sidecar(200, 'posted'), { notify: false, httpRequest: fail, logs });
+  assert.match(logs.join('\n'), /informational alert not sent/);
+});
+
+s.check('default: sidecar-unavailable streak, repeated auth failures and the 3rd needs_you stay silent and keep counting', async () => {
+  const { root, pick } = await picked();
+  for (let i = 1; i <= 15; i++) {
+    const { out, sent } = await log(root, pick, sidecar(503, 'busy'), { notify: false });
+    assert.equal(out.retryCount, i);
+    assert.equal(sent.length, 0, 'unavailable alert at ' + i);
+  }
+  const auth = await picked();
+  for (let i = 1; i <= 13; i++) {
+    const { out, sent } = await log(auth.root, auth.pick, sidecar(401, 'auth_invalid'), { notify: false });
+    assert.equal(out.authCount, i);
+    assert.equal(sent.length, 0, 'auth alert at ' + i);
+  }
+  const needs = await picked();
+  for (let i = 1; i <= 4; i++) {
+    const r = await log(needs.root, needs.pick, sidecar(400, 'bad_input'), { notify: false });
+    assert.equal(r.out.needsCount, i);
+    assert.equal(r.sent.length, 1, 'a clip fault is always told');
+  }
+});
+
+s.check('default: a gated notice leaves its day unmarked, so it is sent once NOTIFY_INFO is on', async () => {
+  const { root, pick } = await picked();
+  const withErrors = { ...pick, manifestErrors: ['jobX: unterminated quoted field'] };
+  const quiet = await log(root, withErrors, sidecar(200, 'posted'), { notify: false });
+  assert.equal(quiet.sent.length, 1, 'only the posted notice');
+  assert.match(quiet.sent[0].body.text, /^Reelsmith: uploaded as Only me/);
+  assert.equal(quiet.sent[0].body.text.includes('manifest problem'), false, 'manifest notice leaked past the gate');
+  assert.equal(h.readJson(statePath(root)).manifestAlertDay, undefined, 'day marked for a notice never sent');
+  fs.writeFileSync(pick.claimPath, JSON.stringify({ status: 'claimed' }));
+  const loud = await log(root, withErrors, sidecar(409, 'duplicate'), { sast: '2026-10-17T15:05:00' });
+  assert.equal(loud.sent.length, 1);
+  assert.match(loud.sent[0].body.text, /^Reelsmith: 1 manifest problem\(s\)/);
+  // The same for the daily cap and the kill switch.
+  const cap = await picked();
+  assert.equal((await log(cap.root, cap.pick, sidecar(429, 'daily_cap'), { notify: false })).sent.length, 0);
+  assert.equal(h.readJson(statePath(cap.root)).dailyCapAlertDay, undefined);
+  const off = await picked();
+  assert.equal((await log(off.root, off.pick, http(200, { status: 'dry_run', code: 'posting_disabled' }), { notify: false })).sent.length, 0);
+  assert.equal(h.readJson(statePath(off.root)).postingDisabledAlertDay, undefined);
+});
+
+s.check('default: a dry run keeps its [dry run] prefix on the always-sent messages and silences the rest', async () => {
+  const d = await picked({ live: false });
+  const bad = await log(d.root, d.pick, sidecar(400, 'bad_input'), { notify: false });
+  assert.equal(bad.sent.length, 1);
+  assert.match(bad.sent[0].body.text, /^\[dry run\] Reelsmith: a clip was refused/);
+  const e = await picked({ live: false });
+  assert.equal((await log(e.root, e.pick, sidecar(401, 'auth_invalid'), { notify: false })).sent.length, 0);
+});
 
 s.check('alerts: fixed text + code + error_id + filename only, <= 2000 chars, plain text', async () => {
   const { root, pick } = await picked();

@@ -1,5 +1,7 @@
 # Watchdog for Reelsmith Social Publish: the 15-minute dispatcher (n8n workflow
-# SKLkX5qUDYLlWTxo, 09:00-21:45 SAST) and the tiktok-sidecar gatekeeper.
+# SKLkX5qUDYLlWTxo, 09:00-21:45 SAST) and the tiktok-sidecar gatekeeper. It is the
+# Mac-asleep backstop: the homelab desk (OpenClaw, on the Mac) watches the workflow
+# too, but nothing in the cluster reads n8n's execution state except this job.
 #
 # Runs 45 minutes after each posting slot (09:00, 12:00, 15:00, 18:00, 21:00);
 # the 21:45 run coincides with the last dispatcher tick. It reads execution_entity directly
@@ -11,15 +13,13 @@
 #     may be recorded as canceled) in the last 4h. Reported on EVERY run. The
 #     09:45 run looks back 13h (to 20:45) so the previous evening's 21:45 tick
 #     and anything finishing after the 21:45 run are not missed.
-#  b. GET /healthz/session: 401 => "cookie expired - run make refresh-cookies";
-#     502 => the sidecar cannot reach TikTok; 503 => no cookie on the sidecar;
-#     no answer (refused, timeout) => "sidecar down"; any other status =>
-#     "sidecar session check failed".
-#  c. GET /api/stats: any non-200 => "sidecar down"; hours_since_success > 48,
-#     no success on record, or paused_until set.
-#  d. zero executions of the workflow in the last 25h (inactive, or n8n down).
-# Ongoing conditions (b, c, d) are checked and reported only on the 09:45 run,
-# so they alert at most once a day; one run sends at most one message.
+#  b. GET /healthz/session, on the 09:45 run only (so at most once a day):
+#     401 => "cookie expired - run make refresh-cookies"; 503 => no cookie on the
+#     sidecar; 502 => "sidecar cannot reach TikTok"; no answer (refused, timeout)
+#     => "sidecar down"; any other status => "sidecar session check failed".
+# Dropped on 2026-10-28 (ADR-0002 amendment; the desk owns them): the "no executions
+# in 25h" check, the /api/stats checks (no success for 48h, paused, stats unreadable)
+# and the daily digest list. One run sends at most one message.
 #
 # TEST_ALERT=1 sends exactly one test message and exits 0 (see
 # ../test/reelsmith-watchdog-test-alert-job.yaml). A failed send exits 1 and
@@ -106,8 +106,7 @@ spec:
                 - |
                   set -u
                   export LC_ALL=C
-                  DIGEST_HOUR=09   # the 09:45 run carries the daily digest; zero-padded like date +%H
-                  STALE_HOURS=48
+                  DIGEST_HOUR=09   # the 09:45 run also probes the sidecar and looks back further; zero-padded like date +%H
 
                   log() { printf '%s\n' "$*"; }
                   die() { log "FATAL: $*"; exit 1; }
@@ -164,25 +163,25 @@ spec:
                   add_now() { NOW_ITEMS="${NOW_ITEMS:+$NOW_ITEMS; }$1"; }
                   add_day() { DAY_ITEMS="${DAY_ITEMS:+$DAY_ITEMS; }$1"; }
 
-                  # (a) failed executions in the lookback window, (d) all executions in 25h.
+                  # (a) failed executions in the lookback window. Nothing else in the cluster reads n8n's
+                  # execution state, so this check stays on every run.
                   export PGCONNECT_TIMEOUT=10 PGOPTIONS='-c statement_timeout=10000'
                   RES=$(psql -X -h postgres-service -U n8n_watchdog -d n8n -tA -c \
-                    "SELECT count(*) FILTER (WHERE status IN ('error','crashed','canceled') AND \"startedAt\" > now() - interval '$LOOKBACK hours') \
-                     ||'|'|| COALESCE((max(id) FILTER (WHERE status IN ('error','crashed','canceled') AND \"startedAt\" > now() - interval '$LOOKBACK hours'))::text, '0') \
-                     ||'|'|| count(*) \
-                     FROM execution_entity WHERE \"workflowId\"='$WF_ID' AND \"startedAt\" > now() - interval '25 hours';")
-                  if valid "$RES" '0-9|' '[0-9]{1,9}\|[0-9]{1,12}\|[0-9]{1,9}'; then
-                    ERRS=${RES%%|*}; REST=${RES#*|}; LAST_ID=${REST%%|*}; TOTAL=${REST#*|}
+                    "SELECT count(*) FILTER (WHERE status IN ('error','crashed','canceled')) \
+                     ||'|'|| COALESCE((max(id) FILTER (WHERE status IN ('error','crashed','canceled')))::text, '0') \
+                     FROM execution_entity WHERE \"workflowId\"='$WF_ID' AND \"startedAt\" > now() - interval '$LOOKBACK hours';")
+                  if valid "$RES" '0-9|' '[0-9]{1,9}\|[0-9]{1,12}'; then
+                    ERRS=${RES%%|*}; LAST_ID=${RES#*|}
                     [ "$ERRS" -gt 0 ] && add_now "$ERRS failed execution(s) of workflow $WF_ID in the last ${LOOKBACK}h, latest id $LAST_ID"
-                    [ "$TOTAL" -eq 0 ] && add_day "no executions of workflow $WF_ID in 25h - inactive or n8n down"
-                    log "hour=$HOUR lookback=${LOOKBACK}h failed=$ERRS executions_25h=$TOTAL"
+                    log "hour=$HOUR lookback=${LOOKBACK}h failed=$ERRS"
                   else
                     add_now "n8n database query failed"
                     log "hour=$HOUR database query failed"
                   fi
 
                   if [ "$DIGEST" = 1 ]; then
-                    # (b) cookie session probe (the sidecar caches it; no forced refresh).
+                    # (b) the sidecar is down, or the TikTok cookie is invalid: the once-a-day backstop for
+                    # the Mac-asleep case. The sidecar caches the probe (no forced refresh).
                     fetch "$SIDECAR_URL/healthz/session?account=$ACCOUNT"
                     case $STATUS in
                       200) ;;
@@ -193,29 +192,6 @@ spec:
                       *) add_day "sidecar session check failed (HTTP $STATUS)" ;;
                     esac
                     log "session=$STATUS"
-                    # (c) posting state.
-                    fetch "$SIDECAR_URL/api/stats?account=$ACCOUNT"
-                    if [ "$STATUS" != 200 ]; then
-                      add_day "sidecar down (stats HTTP $STATUS)"
-                    else
-                      flat=$(printf '%s' "$BODY" | tr -d '\r\n')
-                      hrs=$(printf '%s' "$flat" | sed -n 's/.*"hours_since_success"[[:space:]]*:[[:space:]]*\([^,}[:space:]]*\).*/\1/p')
-                      paused=$(printf '%s' "$flat" | sed -n 's/.*"paused_until"[[:space:]]*:[[:space:]]*\([^,}[:space:]]*\).*/\1/p')
-                      unreadable=0
-                      if [ "$hrs" = null ]; then
-                        add_day "no successful post on record"
-                      elif is_int "${hrs%%.*}"; then
-                        [ "${hrs%%.*}" -gt "$STALE_HOURS" ] && add_day "no successful post for ${hrs%%.*}h"
-                      else
-                        unreadable=1
-                      fi
-                      case $paused in
-                        null) ;;
-                        '') unreadable=1 ;;
-                        *) add_day "posting paused after repeated failures" ;;
-                      esac
-                      [ "$unreadable" = 1 ] && add_day "sidecar stats unreadable"
-                    fi
                   fi
 
                   MSG=$NOW_ITEMS
