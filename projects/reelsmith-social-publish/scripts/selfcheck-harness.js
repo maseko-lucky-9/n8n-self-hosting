@@ -99,21 +99,27 @@ function toCsv(header, rows) {
 }
 
 const MANIFEST_HEADER = ['filename', 'title', 'duration_seconds', 'file_size_mb', 'description',
-  'hashtags', 'export_path', 'thumbnail_path', 'job_id', 'broll_credits', 'source'];
+  'hashtags', 'export_path', 'thumbnail_path', 'job_id', 'broll_credits', 'source', 'source_url', 'segment_origin'];
+const PROVENANCE_COLUMNS = ['source', 'source_url', 'segment_origin'];
 
-// rows: [{filename, title?, description?, hashtags?, source?, size?, onDisk?}]
+// rows: [{filename, title?, description?, hashtags?, source?, segment_origin?, size?, onDisk?}]
 //   size: bytes written to the clip file (default 4096; null = no file)
 //   onDisk: the name to create on disk (default: filename)
-function addJob(root, job, { rows, mtime, legacy = false, raw } = {}) {
+// Rows default to source youtube, segment_origin chapters (eligible).
+// legacy: no provenance columns at all (the backlog); drop: header columns to leave out.
+function addJob(root, job, { rows, mtime, legacy = false, drop = [], raw } = {}) {
   const jobDir = path.join(inboxOf(root), job);
   fs.mkdirSync(jobDir, { recursive: true });
-  const header = legacy ? MANIFEST_HEADER.filter((h) => h !== 'source') : MANIFEST_HEADER;
+  const dropped = legacy ? [...PROVENANCE_COLUMNS, ...drop] : drop;
+  const header = MANIFEST_HEADER.filter((h) => !dropped.includes(h));
   const csvRows = (rows || []).map((r) => ({
     title: `title ${r.filename}`,
     description: '',
     hashtags: '["#reels", "#clip"]',
     job_id: job,
     source: 'youtube',
+    source_url: '',
+    segment_origin: 'chapters',
     ...r,
   }));
   const manifestPath = path.join(jobDir, 'manifest.csv');

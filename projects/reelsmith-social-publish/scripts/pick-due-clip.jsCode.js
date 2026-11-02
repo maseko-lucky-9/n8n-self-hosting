@@ -1,6 +1,7 @@
 // Pick Due Clip: chooses and claims AT MOST ONE clip per execution.
 // Schedule: every 15 min, 12:00-20:45 SAST. One clip per slot (12:00, 15:00,
-// 18:00), YouTube-sourced jobs only, rotating across source videos (jobs): never
+// 18:00), only clips cut from a YouTube video's own chapters (or a confirmed legacy
+// job), rotating across source videos (jobs): never
 // the same video twice in a row, a video holding most of the backlog every other
 // post, otherwise the video used least recently; each video's intro (00_*) is never
 // posted. Returning [] stops the run. Canonical source: scripts/pick-due-clip.jsCode.js; the
@@ -43,7 +44,10 @@ const MAX_TIMEOUT_MS = 780000; // must stay under the workflow's executionTimeou
 const NAME_RE = /^(?!\.)[\p{L}\p{N}_. -]{1,251}\.mp4$/u;
 const MAX_NAME_BYTES = 200;
 const NAME_MAX = 255; // a longer spelling (an NFD name grows) cannot exist on disk: never lstat it
-// Jobs exported before manifest.csv had a `source` column, confirmed YouTube-sourced.
+// Jobs exported before manifest.csv had provenance columns, confirmed YouTube-sourced; the
+// owner chose to keep them, so their rows post with segment_origin legacy_youtube. The
+// sidecar's LEGACY_YOUTUBE_JOBS (manifests/tiktok-sidecar-deployment.yaml) is the same list
+// in the same order; workflow-contract.selfcheck.js fails if the two drift.
 const YOUTUBE_LEGACY_JOBS = [
   '1979f8a4a33643b5a43d8f0fb4337d3e',
   '851cbce7386b47959c6136cc3fa9758e',
@@ -70,6 +74,23 @@ const execId = (typeof $execution !== 'undefined' && $execution && $execution.id
 function isIntro(row) {
   const name = String(row.filename == null ? '' : row.filename).normalize('NFC');
   return name.startsWith('00_') || String(row.title == null ? '' : row.title).trim().toLowerCase() === 'intro';
+}
+
+// Owner rule: only clips cut from a YouTube video's own chapter list may be posted.
+// -> the segment_origin to send ('chapters' | 'legacy_youtube'), or null: skip the row.
+// A row qualifies with source youtube AND segment_origin chapters. A confirmed legacy
+// job's row also qualifies when it says nothing more specific: no column or an empty
+// cell for segment_origin, and source youtube, empty or no column. A manifest with a
+// source column but no segment_origin column (exported before that column existed) is
+// never eligible outside the legacy list. Cells are trimmed and compared exactly, so
+// "YouTube" or "Chapters" do not qualify.
+function segmentOriginOf(row, header, legacyJob) {
+  const cell = (name) => (header.includes(name) ? String(row[name] == null ? '' : row[name]).trim() : '');
+  const source = cell('source');
+  const origin = cell('segment_origin');
+  if (source === 'youtube' && origin === 'chapters') return 'chapters';
+  if (legacyJob && (source === 'youtube' || source === '') && origin === '') return 'legacy_youtube';
+  return null;
 }
 
 function lstatOrNull(p) {
@@ -314,18 +335,15 @@ for (const m of manifests) {
     errors.push(m.job + ': ' + String((e && e.message) || e).slice(0, 120));
     continue;
   }
-  // YouTube only: with a `source` column every row must say youtube (an empty
-  // cell counts only for a confirmed legacy job: its DB source is NULL); without
-  // the column, the job must be on the confirmed legacy list. Everything else
-  // is skipped and therefore never archived.
-  const hasSource = parsed.header.includes('source');
+  // YouTube chapters only (segmentOriginOf): an ineligible row is skipped silently,
+  // before any other check (no claim, no notice), so a manifest with no eligible row
+  // is never claimed from and therefore never archived.
   const legacyJob = YOUTUBE_LEGACY_JOBS.includes(m.job);
-  if (!hasSource && !legacyJob) continue;
 
   for (let rowIndex = 0; rowIndex < parsed.rows.length; rowIndex++) {
     const row = parsed.rows[rowIndex];
-    const source = String(row.source).trim();
-    if (hasSource && source !== 'youtube' && !(source === '' && legacyJob)) continue;
+    const segmentOrigin = segmentOriginOf(row, parsed.header, legacyJob);
+    if (!segmentOrigin) continue;
     if (isIntro(row)) continue; // never posted, never reported, never pins the manifest
     const where = `${m.job} row ${rowIndex + 1}`;
     // One bad row never stops the others: an unexpected error (EACCES, EIO, ...)
@@ -345,7 +363,7 @@ for (const m of manifests) {
       notices.push(`${where}: no usable caption`);
       continue;
     }
-    candidates.push({ m, rowIndex, row, clip, title, caption });
+    candidates.push({ m, rowIndex, row, clip, title, caption, segmentOrigin });
   }
 }
 
@@ -396,7 +414,7 @@ if (notices.length || lstatOrNull(NOTICES_FILE)) {
 }
 
 // 5. Claim the first candidate nobody else holds.
-for (const { m, rowIndex, row, clip, title, caption } of candidates) {
+for (const { m, rowIndex, row, clip, title, caption, segmentOrigin } of candidates) {
   const timeoutMs = (TIMEOUT_BASE_S + Math.ceil(TIMEOUT_PER_MIB_S * clip.size / 1048576) + HTTP_MARGIN_S) * 1000;
   if (timeoutMs > MAX_TIMEOUT_MS) {
     throw new Error(`Pick Due Clip: timeout ${timeoutMs} ms exceeds ${MAX_TIMEOUT_MS} ms; lower MAX_CLIP_MB or raise executionTimeout`);
@@ -442,6 +460,9 @@ for (const { m, rowIndex, row, clip, title, caption } of candidates) {
       clip_key: clipKey,
       caption,
       hashtags: hashtagsField(row.hashtags),
+      // Provenance for the sidecar's own check (form fields clip_source, segment_origin).
+      clip_source: 'youtube',
+      segment_origin: segmentOrigin,
       dryRun: DRY_RUN,
       timeoutMs,
       manifestPath: m.manifestPath,

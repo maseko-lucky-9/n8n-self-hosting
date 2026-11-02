@@ -138,6 +138,18 @@ spec:
               value: /inbox
             - name: LEDGER_PATH
               value: /app/CookiesDir/ledger.jsonl
+            # Owner rule: only clips cut from YouTube videos with chapters are posted.
+            # log = log the verdict and allow, enforce = refuse with 422
+            # provenance_rejected, off; the code default is enforce. "log" until a day of
+            # logs after the workflow deploy (README Deploy step 6). An image without the
+            # provenance check ignores both entries.
+            - name: PROVENANCE_MODE
+              value: "log"
+            # Jobs exported before manifest.csv had provenance columns, kept by the owner:
+            # the same ids, in the same order, as YOUTUBE_LEGACY_JOBS in
+            # scripts/pick-due-clip.jsCode.js (workflow-contract.selfcheck.js checks it).
+            - name: LEGACY_YOUTUBE_JOBS
+              value: "1979f8a4a33643b5a43d8f0fb4337d3e,851cbce7386b47959c6136cc3fa9758e,d7a54c8aa4454fc38949927c0e5c9505,32508a2a96a14ce38cd087bfb1fdeb22,48ac096bd9db4976a06f63be654a2900"
           volumeMounts:
             - name: cookies-pvc
               mountPath: /app/CookiesDir
