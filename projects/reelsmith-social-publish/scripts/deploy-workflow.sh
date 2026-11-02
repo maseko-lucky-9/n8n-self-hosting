@@ -26,6 +26,12 @@
 #
 # The n8n API key is read from stdin, never argv or env. Paste it at the prompt, or pipe it:
 #   pbpaste | scripts/deploy-workflow.sh --workflow-id ID --dry-run
+# Or keep it in a file only you can read and name the file (the key itself is never an argument:
+# argv shows in `ps` and shell history):
+#   install -m 600 /dev/null ~/.n8n-deploy-key && pbpaste > ~/.n8n-deploy-key
+#   scripts/deploy-workflow.sh --workflow-id ID --dry-run --key-file ~/.n8n-deploy-key
+#   --key-file F   read the key from the first line of F (a regular file, mode 0600 or 0400,
+#                  owned by you); delete the file when the deploy is done
 # The workflow ID is the one in the n8n editor URL (/workflow/<ID>).
 #
 # What it does:
@@ -78,7 +84,7 @@ BACKUP_DIR="$PROJECT_DIR/backups"
 usage() { sed -n '2,/^# What it does:/p' "$0" | sed '$d' >&2; exit 2; }
 die() { echo "deploy-workflow: $*" >&2; exit 1; }
 
-WORKFLOW_ID="" MODE="" SIMULATE=""
+WORKFLOW_ID="" MODE="" SIMULATE="" KEY_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --workflow-id) [ $# -ge 2 ] || usage; WORKFLOW_ID="$2"; shift 2 ;;
@@ -86,6 +92,7 @@ while [ $# -gt 0 ]; do
     --live) MODE="live"; shift ;;
     --deactivate) MODE="deactivate"; shift ;;
     --simulate) [ $# -ge 2 ] || usage; SIMULATE="$2"; shift 2 ;;
+    --key-file) [ $# -ge 2 ] || usage; KEY_FILE="$2"; shift 2 ;;
     --no-publish) die "--no-publish was removed: --dry-run never publishes, --live always does" ;;
     -h|--help) usage ;;
     *) echo "unknown argument: $1" >&2; usage ;;
@@ -136,10 +143,21 @@ fi
 
 # 2. API key from stdin. Kept in a shell variable only; curl gets it through `-K -` (its stdin),
 #    fed by the printf builtin, so it never appears in any process's argv or environment.
-if [ -t 0 ]; then printf 'n8n API key (input hidden): ' >&2; fi
-IFS= read -rs N8N_API_KEY || true
-if [ -t 0 ]; then printf '\n' >&2; fi
-[[ "$N8N_API_KEY" =~ ^[A-Za-z0-9._-]{20,}$ ]] || die "no usable API key on stdin"
+if [ -n "$KEY_FILE" ]; then
+  [ -f "$KEY_FILE" ] && [ ! -L "$KEY_FILE" ] || die "--key-file must be a regular file"
+  [ -O "$KEY_FILE" ] || die "--key-file must be owned by you"
+  case "$(stat -f %Lp "$KEY_FILE" 2>/dev/null || stat -c %a "$KEY_FILE")" in
+    600|400) ;;
+    *) die "--key-file must be mode 600 or 400 (chmod 600 it)" ;;
+  esac
+  IFS= read -r N8N_API_KEY < "$KEY_FILE" || true
+  [[ "$N8N_API_KEY" =~ ^[A-Za-z0-9._-]{20,}$ ]] || die "no usable API key in --key-file"
+else
+  if [ -t 0 ]; then printf 'n8n API key (input hidden): ' >&2; fi
+  IFS= read -rs N8N_API_KEY || true
+  if [ -t 0 ]; then printf '\n' >&2; fi
+  [[ "$N8N_API_KEY" =~ ^[A-Za-z0-9._-]{20,}$ ]] || die "no usable API key on stdin"
+fi
 
 # 3. Tunnel: $SOCK (Unix socket, 0700 dir) -> ssh -> homelab 127.0.0.1:FORWARD_PORT -> kubectl
 #    port-forward -> n8n. The WHOLE remote command runs under `timeout 900`; kubectl's own output
