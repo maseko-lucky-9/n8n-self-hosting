@@ -71,6 +71,7 @@ const KEY = 'jobA/01_clip.mp4';
 const RETRY_TEXT = 'Reelsmith: TikTok refused it (not posted); it will be retried at a later slot (refusal 1 of 2).'
   + '\ncode: publish_rejected\nerror_id: err-123\nfile: 01_clip.mp4';
 const FINAL_ALERT = /^Reelsmith: TikTok refused to publish it twice \(not posted\); it is set aside\.\ncode: publish_rejected\nerror_id: err-123\nfile: 01_clip\.mp4\nProbably this clip: re-export it, or leave it set aside; to retry, release the claim:\nssh homelab '[^\n]*'$/;
+const PROVENANCE_ALERT = /^Reelsmith: the sidecar refused a clip that is not from a YouTube video with chapters \(not posted, will not be retried\)\.\ncode: provenance_rejected\nerror_id: err-123\nfile: 01_clip\.mp4\nKeep the clip set aside\. Only if its manifest \(source \/ segment_origin\) or the legacy job list was wrong: fix that first, then release the claim:\nssh homelab '[^\n]*'$/;
 const statePath = (root) => path.join(root, '.state', 'retryable-failures.json');
 // Writes the Log Results state file as it would be after earlier runs.
 function seedState(root, state) {
@@ -90,6 +91,8 @@ const TABLE = [
   ['401 auth_invalid', sidecar(401, 'auth_invalid'), { kept: true, kind: 'auth_invalid', claim: null, slot: false, alert: /^🔑[\s\S]*make refresh-cookies[\s\S]*code: auth_invalid/, row: 'auth_invalid' }],
   ['400 bad_input', sidecar(400, 'bad_input'), { kept: true, kind: 'needs_you', claim: 'needs_you', slot: false, alert: /^Reelsmith: a clip was refused \(not posted[\s\S]*code: bad_input/, row: 'needs_you' }],
   ['413 too_large', sidecar(413, 'too_large'), { kept: true, kind: 'needs_you', claim: 'needs_you', slot: false, alert: /^Reelsmith: a clip was refused \(not posted[\s\S]*code: too_large/, row: 'needs_you' }],
+  // The sidecar's provenance check refused it BEFORE any upload: set aside like a 400, never "unknown".
+  ['422 provenance_rejected', sidecar(422, 'provenance_rejected'), { kept: true, kind: 'needs_you', claim: 'needs_you', slot: false, alert: PROVENANCE_ALERT, row: 'needs_you' }],
   ['429 daily_cap', sidecar(429, 'daily_cap'), { kind: 'daily_cap', claim: null, slot: true, alert: /^Reelsmith: today's upload cap is reached; clips wait for tomorrow \(this slot is used\)\.\ncode: daily_cap\nerror_id: err-123\nfile: 01_clip\.mp4$/, row: 'daily_cap' }],
   ['503 busy', sidecar(503, 'busy'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
   ['503 clock_unsynced', sidecar(503, 'clock_unsynced'), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
@@ -120,6 +123,8 @@ const TABLE = [
   ['504 signature_failed', sidecar(504, 'signature_failed'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: signature_failed/, row: 'failed' }],
   ['500 internal', sidecar(500, 'internal'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: internal/, row: 'failed' }],
   ['504 timeout', sidecar(504, 'timeout'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: timeout/, row: 'failed' }],
+  // Only provenance_rejected makes a 422 a pre-upload refusal; any other 422 stays unexpected.
+  ['422 other code', sidecar(422, 'unprocessable'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: unprocessable/, row: 'failed' }],
   ['200 posting_disabled (real run, kill switch off)', http(200, { status: 'dry_run', code: 'posting_disabled' }), { kind: 'dry_run', claim: null, slot: false, alert: /^Reelsmith: the sidecar has POSTING_ENABLED=false while the workflow is live/, row: 'dry_run' }],
   ['read EHOSTUNREACH (established socket)', transport('EHOSTUNREACH', 'read EHOSTUNREACH'), { kept: true, kind: 'ambiguous', claim: 'failed', slot: true, alert: /outcome unknown[\s\S]*code: ehostunreach/, row: 'failed' }],
   ['EHOSTUNREACH (code only)', transport('EHOSTUNREACH', ''), { kind: 'retryable', claim: null, slot: false, alert: null, row: 'retryable' }],
@@ -155,10 +160,10 @@ for (const [name, response, want] of TABLE) {
 // the table stays silent, with the claim, slot, counters and result row exactly as when the
 // gate is open. (A 503 is a first in a row here, under the sidecar-unavailable threshold.)
 const names = ['read ETIMEDOUT (after sending)', 'EPIPE', 'HTTP timeout (ECONNABORTED)', 'ECONNRESET', '502 other code', '502 no JSON body',
-  '500 publish_rejected', '504 signature_failed', '500 internal', '504 timeout', 'read EHOSTUNREACH (established socket)'];
+  '500 publish_rejected', '504 signature_failed', '500 internal', '504 timeout', '422 other code', 'read EHOSTUNREACH (established socket)'];
 const ALWAYS_SENT = TABLE.filter(([, , want]) => want.kept).map(([name]) => name);
-s.check('NOTIFY_INFO ships false, NOTIFY_SESSION and NOTIFY_SIDECAR_DOWN true; sent: posted, 401, 400, 413 and every unknown outcome', () => {
-  assert.deepEqual(ALWAYS_SENT, ['200 posted', '401 auth_invalid', '400 bad_input', '413 too_large', ...names]);
+s.check('NOTIFY_INFO ships false, NOTIFY_SESSION and NOTIFY_SIDECAR_DOWN true; sent: posted, 401, 400, 413, 422 provenance and every unknown outcome', () => {
+  assert.deepEqual(ALWAYS_SENT, ['200 posted', '401 auth_invalid', '400 bad_input', '413 too_large', '422 provenance_rejected', ...names]);
   const src = fs.readFileSync(path.join(__dirname, 'log-results.jsCode.js'), 'utf8');
   assert.equal(src.split('const NOTIFY_INFO = false;').length, 2);
   assert.equal(src.split(SESSION_GATE).length, 2);
@@ -946,6 +951,41 @@ s.check('dry run: released claim (no slot), dry_run row, even for simulate=auth_
   const { rows } = resultRows(pick);
   assert.deepEqual(rows.map((r) => r[8]), ['dry_run', 'auth_invalid', 'needs_you', 'ambiguous']);
   assert.equal(h.listSlots(root).length, 0);
+});
+
+s.check('provenance_rejected: never the unknown-outcome path, no ledger steps, claim kept as needs_you with its code', async () => {
+  const { root, pick } = await picked();
+  const { out, sent } = await log(root, pick, sidecar(422, 'provenance_rejected'), { notify: false });
+  assert.equal(out.outcome, 'needs_you');
+  assert.equal(out.code, 'provenance_rejected');
+  assert.equal(out.clipReleased, false);
+  const claim = h.readJson(pick.claimPath);
+  assert.equal(claim.status, 'needs_you');
+  assert.equal(claim.code, 'provenance_rejected');
+  assert.equal(claim.http_status, 422);
+  assert.equal(sent.length, 1, 'the owner is told');
+  const text = sent[0].body.text;
+  for (const banned of ['outcome unknown', 'may have posted', 'ledger-resolve', 'Check TikTok']) {
+    assert.equal(text.includes(banned), false, `provenance alert says "${banned}"`);
+  }
+  assert.match(text, /Keep the clip set aside\. Only if its manifest/);
+  assert.ok(text.endsWith(`rm "${h.inboxOf(root)}/jobA/.claims/01_clip.mp4.json"'`), text);
+  assert.deepEqual(resultRows(pick).rows.map((r) => [r[7], r[8]]), [['provenance_rejected err-123', 'needs_you']]);
+});
+
+s.check('provenance_rejected: the refused clip is never picked again; the freed slot goes to the next clip', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'jobA', { rows: [{ filename: '01_clip.mp4', description: CAPTION }, { filename: '02_clip.mp4', description: CAPTION }], mtime: '2026-10-15T10:00:00' });
+  const picks = [];
+  for (const t of ['12:00', '12:15', '12:30', '12:45', '13:00', '15:00', '15:15', '18:00', '18:15']) {
+    h.setNow(`2026-10-17T${t}:00`);
+    const [item] = await h.runNode(h.loadNode('pick-due-clip.jsCode.js', { root, live: true }));
+    if (!item) continue;
+    picks.push(item.json.clip_key);
+    await log(root, item.json, sidecar(422, 'provenance_rejected'), { sast: `2026-10-17T${t}:05` });
+  }
+  assert.deepEqual(picks, ['jobA/01_clip.mp4', 'jobA/02_clip.mp4'], 'a refused clip was picked again');
+  assert.deepEqual(h.listClaims(root).map((c) => [c.file, c.data.status]).sort(), [['01_clip.mp4.json', 'needs_you'], ['02_clip.mp4.json', 'needs_you']]);
 });
 
 s.check('a real "posted" answer is kept even if the run was a dry run', async () => {

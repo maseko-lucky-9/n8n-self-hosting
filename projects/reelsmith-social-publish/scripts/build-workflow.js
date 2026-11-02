@@ -45,7 +45,10 @@ function buildWorkflow() {
         url: SIDECAR_UPLOAD_URL,
         sendBody: true,
         contentType: 'multipart-form-data',
-        // Contract v1: exactly these field names (workflow-contract.selfcheck.js).
+        // Contract v1: exactly these field names (workflow-contract.selfcheck.js), plus the
+        // provenance pair clip_source/segment_origin (Pick Due Clip's validated values; the
+        // sidecar refuses anything else with 422 provenance_rejected). `source` stays the
+        // caller label n8n.
         bodyParameters: {
           parameters: [
             formField('clip_path', '={{ $json.clip_path }}'),
@@ -53,6 +56,8 @@ function buildWorkflow() {
             formField('hashtags', '={{ $json.hashtags }}'),
             formField('account', 'reelsmith'),
             formField('source', 'n8n'),
+            formField('clip_source', '={{ $json.clip_source }}'),
+            formField('segment_origin', '={{ $json.segment_origin }}'),
             // Always explicit; anything but a literal false is a dry run.
             formField('dry_run', "={{ $json.dryRun === false ? 'false' : 'true' }}"),
           ],

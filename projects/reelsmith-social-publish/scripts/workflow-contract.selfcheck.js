@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 // Contract + drift checks for workflow/reelsmith-social-publish.json:
-//  - the TikTok Sidecar Upload node sends EXACTLY the Contract v1 form fields;
+//  - the TikTok Sidecar Upload node sends EXACTLY the Contract v1 form fields plus the
+//    provenance pair clip_source/segment_origin from Pick Due Clip (source stays n8n);
+//  - the legacy job list in Pick Due Clip equals the sidecar's LEGACY_YOUTUBE_JOBS;
 //  - fullResponse/neverError/continueOnFail on, retries off, per-item timeout;
 //  - settings the n8n 2.39.8 public API accepts (no maxConcurrency);
 //  - DRY_RUN defaults to true;
@@ -24,6 +26,9 @@ const { render, WORKFLOW_FILE, SIDECAR_UPLOAD_URL } = require('./build-workflow'
 // Contract v1 (sidecar <-> n8n). `simulate` is optional and dry-run only; the
 // committed workflow never sends it (deploy-workflow.sh --simulate adds it in memory).
 const CONTRACT_V1_FIELDS = ['clip_path', 'caption', 'hashtags', 'account', 'source', 'dry_run'];
+// Provenance (owner rule: YouTube videos with chapters only). The sidecar refuses an
+// ineligible pair with 422 provenance_rejected; an older sidecar ignores both fields.
+const PROVENANCE_FIELDS = ['clip_source', 'segment_origin'];
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 // Overridable only so the mutation check can point it at an edited copy.
 const MANIFESTS_DIR = process.env.MANIFESTS_DIR || path.join(__dirname, '..', 'manifests');
@@ -31,6 +36,7 @@ const SETTINGS_ALLOWED = ['saveExecutionProgress', 'saveManualExecutions', 'save
   'saveDataSuccessExecution', 'executionTimeout', 'errorWorkflow', 'timezone', 'executionOrder',
   'binaryMode', 'callerPolicy', 'callerIds', 'timeSavedMode', 'timeSavedPerExecution',
   'redactionPolicy', 'availableInMCP', 'customTelemetryTags', 'credentialResolverId'];
+const LEGACY_JOB = '1979f8a4a33643b5a43d8f0fb4337d3e';
 const SCRIPTS = {
   'Pick Due Clip': 'pick-due-clip.jsCode.js',
   'Log Results': 'log-results.jsCode.js',
@@ -47,7 +53,7 @@ const node = (name) => {
 };
 const upload = () => node('TikTok Sidecar Upload');
 
-s.check('upload sends exactly the Contract v1 form fields', () => {
+s.check('upload sends exactly the Contract v1 form fields plus clip_source and segment_origin', () => {
   const p = upload().parameters;
   assert.equal(p.method, 'POST');
   assert.equal(p.url, SIDECAR_UPLOAD_URL);
@@ -55,7 +61,7 @@ s.check('upload sends exactly the Contract v1 form fields', () => {
   assert.equal(p.sendBody, true);
   assert.equal(p.contentType, 'multipart-form-data');
   const fields = p.bodyParameters.parameters;
-  assert.deepEqual(fields.map((f) => f.name).sort(), [...CONTRACT_V1_FIELDS].sort());
+  assert.deepEqual(fields.map((f) => f.name).sort(), [...CONTRACT_V1_FIELDS, ...PROVENANCE_FIELDS].sort());
   assert.equal(new Set(fields.map((f) => f.name)).size, fields.length, 'duplicate field');
   for (const f of fields) assert.equal(f.parameterType, 'formData', `${f.name} must be plain form data`);
   const value = Object.fromEntries(fields.map((f) => [f.name, f.value]));
@@ -63,7 +69,47 @@ s.check('upload sends exactly the Contract v1 form fields', () => {
   assert.equal(value.caption, '={{ $json.caption }}');
   assert.equal(value.hashtags, '={{ $json.hashtags }}');
   assert.equal(value.account, 'reelsmith');
-  assert.equal(value.source, 'n8n');
+  assert.equal(value.source, 'n8n', 'source is the caller label and stays n8n');
+  assert.equal(value.clip_source, '={{ $json.clip_source }}');
+  assert.equal(value.segment_origin, '={{ $json.segment_origin }}');
+});
+
+s.check('the provenance fields reach the upload node with Pick Due Clip\'s values', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'jobA', { rows: [{ filename: '01_clip.mp4' }], mtime: '2026-10-15T10:00:00' });
+  h.addJob(root, LEGACY_JOB, { rows: [{ filename: '01_old.mp4' }], legacy: true, mtime: '2026-10-14T10:00:00' });
+  const fields = upload().parameters.bodyParameters.parameters;
+  // n8n evaluates `={{ expr }}` against the incoming item's json.
+  const evalField = (name, json) => {
+    const expr = fields.find((f) => f.name === name).value;
+    const m = expr.match(/^=\{\{ (.*) \}\}$/);
+    return m ? new Function('$json', `return (${m[1]});`)(json) : expr;
+  };
+  const sent = [];
+  for (const t of ['09:00', '09:05']) {
+    h.setNow(`2026-10-17T${t}:00`);
+    const [item] = await h.runNode(node('Pick Due Clip').parameters.jsCode.replace(
+      "const DATA_ROOT = '/data/reelsmith-inbox';", `const DATA_ROOT = ${JSON.stringify(root)};`));
+    sent.push([item.json.clip_key, evalField('source', item.json), evalField('clip_source', item.json), evalField('segment_origin', item.json)]);
+  }
+  assert.deepEqual(sent.sort(), [
+    [`${LEGACY_JOB}/01_old.mp4`, 'n8n', 'youtube', 'legacy_youtube'],
+    ['jobA/01_clip.mp4', 'n8n', 'youtube', 'chapters'],
+  ]);
+});
+
+s.check('drift guard: Pick Due Clip\'s YOUTUBE_LEGACY_JOBS equals the sidecar\'s LEGACY_YOUTUBE_JOBS (same ids, same order)', () => {
+  const js = fs.readFileSync(path.join(__dirname, SCRIPTS['Pick Due Clip']), 'utf8');
+  const m = js.match(/^const YOUTUBE_LEGACY_JOBS = \[([^\]]*)\];/m);
+  assert.ok(m, 'YOUTUBE_LEGACY_JOBS not found in Pick Due Clip');
+  const jsList = [...m[1].matchAll(/'([^']*)'/g)].map((x) => x[1]);
+  assert.equal(jsList.length, 5, 'the owner confirmed 5 legacy jobs');
+  const sidecarEnv = sidecarContainerEnv();
+  assert.ok('LEGACY_YOUTUBE_JOBS' in sidecarEnv, 'LEGACY_YOUTUBE_JOBS not set in tiktok-sidecar-deployment.yaml');
+  assert.deepEqual(String(sidecarEnv.LEGACY_YOUTUBE_JOBS).split(','), jsList, 'legacy lists drifted');
+  // Pinned to "log" for the rollout (README Deploy step 6). Flipping to enforce (or off) is a
+  // deliberate edit of this line in the rollout PR, never a side effect of another change.
+  assert.equal(sidecarEnv.PROVENANCE_MODE, 'log', `PROVENANCE_MODE is ${sidecarEnv.PROVENANCE_MODE}, expected "log"`);
 });
 
 s.check('dry_run is always sent, fail-safe to "true"', () => {
@@ -200,6 +246,12 @@ s.check('Code nodes need only fs/path and the global DateTime', () => {
 });
 
 const { loadManifests } = h;
+function sidecarContainerEnv() {
+  const dep = loadManifests(MANIFESTS_DIR).find((d) => d.kind === 'Deployment' && d.metadata.name === 'tiktok-sidecar');
+  assert.ok(dep, 'no tiktok-sidecar Deployment under manifests/');
+  const c = dep.spec.template.spec.containers.find((x) => x.name === 'tiktok-sidecar');
+  return Object.fromEntries((c.env || []).map((e) => [e.name, e.value]));
+}
 const isSubset = (labels, of) => Boolean(labels) && Object.keys(labels).length > 0
   && Object.entries(labels).every(([k, v]) => of[k] === v);
 

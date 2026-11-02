@@ -146,26 +146,138 @@ s.check('stale-claim sweep releases unresolved claims older than 30 min only', a
   assert.equal(h.readJson(path.join(claims, '01_clip.mp4.json')).execId, 'test-exec', 'fresh claim');
 });
 
-s.check('YouTube only: source column, legacy allowlist (also an empty cell), TikTok/unknown skipped', async () => {
-  const root = h.makeRoot();
-  h.addJob(root, 'tiktokJob', { rows: [{ filename: 'a.mp4', source: 'tiktok' }], mtime: '2026-10-16T12:00:00' });
-  h.addJob(root, 'blankSource', { rows: [{ filename: 'b.mp4', source: '' }], mtime: '2026-10-16T11:00:00' });
-  h.addJob(root, 'uploadJob', { rows: [{ filename: 'c.mp4', source: 'upload' }], mtime: '2026-10-16T10:00:00' });
-  h.addJob(root, 'ba634deeLegacy', { rows: [{ filename: 'd.mp4' }], legacy: true, mtime: '2026-10-16T09:00:00' });
-  h.addJob(root, LEGACY_JOB, { rows: [{ filename: 'e.mp4' }], legacy: true, mtime: '2026-10-15T09:00:00' });
-  h.addJob(root, 'ytJob', { rows: [{ filename: 'f.mp4', source: 'youtube' }], mtime: '2026-10-14T09:00:00' });
-  // a legacy job re-exported with the new column: its DB source is NULL, so the cell is empty
-  h.addJob(root, LEGACY_JOB_2, { rows: [{ filename: 'g.mp4', source: '' }, { filename: 'h.mp4', source: 'tiktok' }], mtime: '2026-10-13T09:00:00' });
+// Every clip a dry run would pick, in order (claims stay 'claimed', all within 30 min,
+// so nothing is released and each pick takes the next clip).
+async function pickAll(root) {
   const got = [];
-  for (const t of ['09:00', '09:05', '09:10', '09:15']) { // within 30 min: no stale release
-    const items = await pick(root, `2026-10-17T${t}:00`, { live: false });
-    if (items.length) got.push(items[0].json.clip_key);
+  for (let i = 0; i < 25; i++) {
+    const items = await pick(root, h.DateTime.fromISO('2026-10-17T09:00:00', { zone: h.TZ }).plus({ minutes: i }), { live: false });
+    if (!items.length) break;
+    got.push(items[0].json);
   }
-  assert.deepEqual(got, [`${LEGACY_JOB}/e.mp4`, 'ytJob/f.mp4', `${LEGACY_JOB_2}/g.mp4`]);
-  assert.equal(h.exists(path.join(h.inboxOf(root), LEGACY_JOB_2, '.claims', 'h.mp4.json')), false, 'tiktok row in a legacy job picked');
-  for (const skipped of ['tiktokJob', 'blankSource', 'uploadJob', 'ba634deeLegacy']) {
-    assert.equal(h.exists(path.join(h.inboxOf(root), skipped, '.claims')), false, skipped + ' touched');
-  }
+  return got;
+}
+const keys = (items) => items.map((j) => j.clip_key).sort();
+const origins = (items) => Object.fromEntries(items.map((j) => [j.clip_key, `${j.clip_source}/${j.segment_origin}`]));
+const touched = (root, job) => h.exists(path.join(h.inboxOf(root), job, '.claims'));
+
+s.check('provenance: only youtube + chapters; discovered, full_video, tiktok, upload, blank skipped silently', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'mixed', {
+    rows: [
+      { filename: 'a.mp4' }, // youtube / chapters (the defaults)
+      { filename: 'b.mp4', segment_origin: 'discovered' },
+      { filename: 'c.mp4', segment_origin: 'full_video' },
+      { filename: 'd.mp4', source: 'tiktok' },
+      { filename: 'e.mp4', source: 'upload' },
+      { filename: 'f.mp4', source: '' },
+      { filename: 'g.mp4', segment_origin: '' },
+      { filename: 'h.mp4', source: 'generate', segment_origin: 'chapters' },
+    ],
+    mtime: '2026-10-16T12:00:00',
+  });
+  h.addJob(root, 'discoveredJob', { rows: [{ filename: 'x.mp4', segment_origin: 'discovered' }], mtime: '2026-10-16T11:00:00' });
+  h.addJob(root, 'fullVideoJob', { rows: [{ filename: 'y.mp4', segment_origin: 'full_video' }], mtime: '2026-10-16T10:00:00' });
+  h.addJob(root, 'tiktokJob', { rows: [{ filename: 'z.mp4', source: 'tiktok' }], mtime: '2026-10-16T09:00:00' });
+  const got = await pickAll(root);
+  assert.deepEqual(keys(got), ['mixed/a.mp4']);
+  assert.deepEqual(origins(got), { 'mixed/a.mp4': 'youtube/chapters' });
+  for (const job of ['discoveredJob', 'fullVideoJob', 'tiktokJob']) assert.equal(touched(root, job), false, job + ' touched');
+  // Skipped like a non-YouTube row always was: no notice, nothing in manifestErrors.
+  assert.deepEqual(got[0].manifestErrors, []);
+  assert.equal(h.exists(path.join(root, '.state', 'notices.json')), false, 'a skipped row raised a notice');
+});
+
+s.check('provenance: a source column without a segment_origin column is not eligible (non-legacy)', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'noOrigin', { rows: [{ filename: 'a.mp4' }, { filename: 'b.mp4' }], drop: ['segment_origin'], mtime: '2026-10-16T12:00:00' });
+  assert.deepEqual(await pickAll(root), []);
+  assert.equal(touched(root, 'noOrigin'), false);
+});
+
+s.check('provenance: a non-legacy manifest without provenance columns is skipped', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'ba634deeLegacy', { rows: [{ filename: 'a.mp4' }], legacy: true, mtime: '2026-10-16T12:00:00' });
+  assert.deepEqual(await pickAll(root), []);
+  assert.equal(touched(root, 'ba634deeLegacy'), false);
+});
+
+s.check('provenance: a legacy job without the columns is picked and sent as youtube / legacy_youtube', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, LEGACY_JOB, { rows: [{ filename: 'a.mp4' }, { filename: 'b.mp4' }], legacy: true, mtime: '2026-10-16T12:00:00' });
+  const got = await pickAll(root);
+  assert.deepEqual(origins(got), { [`${LEGACY_JOB}/a.mp4`]: 'youtube/legacy_youtube', [`${LEGACY_JOB}/b.mp4`]: 'youtube/legacy_youtube' });
+});
+
+s.check('provenance: a legacy job with the columns: empty cells are legacy, chapters stays chapters, anything named otherwise is skipped', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, LEGACY_JOB, {
+    rows: [
+      { filename: 'a.mp4', source: '', segment_origin: '' },
+      { filename: 'b.mp4', source: 'youtube', segment_origin: '' },
+      { filename: 'c.mp4' }, // youtube / chapters
+      { filename: 'd.mp4', source: 'tiktok', segment_origin: '' },
+      { filename: 'e.mp4', source: 'youtube', segment_origin: 'discovered' },
+      { filename: 'f.mp4', source: '', segment_origin: 'full_video' },
+      { filename: 'j.mp4', source: '', segment_origin: 'chapters' }, // only youtube + chapters is chapters
+      { filename: 'l.mp4', source: 'youtube', segment_origin: 'empty' }, // a literal word, not an empty cell
+    ],
+    mtime: '2026-10-16T12:00:00',
+  });
+  // a legacy job exported with `source` but before `segment_origin`
+  h.addJob(root, LEGACY_JOB_2, {
+    rows: [{ filename: 'g.mp4', source: '' }, { filename: 'h.mp4', source: 'tiktok' }, { filename: 'i.mp4' }],
+    drop: ['segment_origin'],
+    mtime: '2026-10-15T12:00:00',
+  });
+  const got = await pickAll(root);
+  assert.deepEqual(origins(got), {
+    [`${LEGACY_JOB}/a.mp4`]: 'youtube/legacy_youtube',
+    [`${LEGACY_JOB}/b.mp4`]: 'youtube/legacy_youtube',
+    [`${LEGACY_JOB}/c.mp4`]: 'youtube/chapters',
+    [`${LEGACY_JOB_2}/g.mp4`]: 'youtube/legacy_youtube',
+    [`${LEGACY_JOB_2}/i.mp4`]: 'youtube/legacy_youtube',
+  });
+});
+
+s.check('provenance: cells are trimmed, then compared exactly (no case folding)', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'casing', {
+    rows: [
+      { filename: 'a.mp4', source: ' youtube ', segment_origin: '\tchapters ' },
+      { filename: 'b.mp4', source: 'YouTube' },
+      { filename: 'c.mp4', segment_origin: 'Chapters' },
+      { filename: 'd.mp4', source: 'YOUTUBE', segment_origin: 'CHAPTERS' },
+      { filename: 'e.mp4', source: 'you tube' },
+      { filename: 'f.mp4', segment_origin: 'chapter' },
+      { filename: 'm.mp4', segment_origin: 'empty' },
+    ],
+    mtime: '2026-10-16T12:00:00',
+  });
+  h.addJob(root, LEGACY_JOB, { rows: [{ filename: 'g.mp4', source: ' YouTube', segment_origin: '' }, { filename: 'k.mp4', source: '  ', segment_origin: ' ' }], mtime: '2026-10-15T12:00:00' });
+  const got = await pickAll(root);
+  assert.deepEqual(origins(got), { 'casing/a.mp4': 'youtube/chapters', [`${LEGACY_JOB}/k.mp4`]: 'youtube/legacy_youtube' });
+});
+
+s.check('provenance: a skipped manifest is never claimed or archived, even when an eligible one archives', async () => {
+  const root = h.makeRoot();
+  const ok = h.addJob(root, 'okJob', { rows: [{ filename: '01_a.mp4' }], mtime: '2026-10-16T12:00:00' });
+  const skipped = h.addJob(root, 'skippedJob', { rows: [{ filename: '01_b.mp4', segment_origin: 'discovered' }], mtime: '2026-10-16T13:00:00' });
+  // Even a skipped manifest whose clip has a posted claim (as if it would count as done) stays put.
+  fs.mkdirSync(path.join(skipped.jobDir, '.claims'));
+  fs.writeFileSync(path.join(skipped.jobDir, '.claims', '01_b.mp4.json'), JSON.stringify({ status: 'posted' }));
+  const [item] = await pick(root, '2026-10-17T12:00:00');
+  assert.equal(item.json.clip_key, 'okJob/01_a.mp4');
+  markPosted(item.json);
+  h.setNow('2026-10-17T12:05:00');
+  await h.runNode(h.loadNode('archive-manifest.jsCode.js'), {
+    input: [{ json: { outcome: 'posted', clip_key: item.json.clip_key } }], nodes: { 'Pick Due Clip': [item] },
+  });
+  assert.equal(h.exists(ok.manifestPath), false, 'eligible manifest not archived');
+  assert.equal(h.exists(skipped.manifestPath), true, 'skipped manifest archived');
+  assert.equal(h.exists(path.join(skipped.jobDir, 'processed')), false);
+  assert.deepEqual(await pick(root, '2026-10-17T15:00:00'), [], 'the skipped clip was picked');
+  assert.deepEqual(fs.readdirSync(path.join(skipped.jobDir, '.claims')), ['01_b.mp4.json']);
 });
 
 s.check('RFC 4180: quoted newlines, commas and quotes stay inside one row', async () => {

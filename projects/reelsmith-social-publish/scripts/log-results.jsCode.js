@@ -27,8 +27,9 @@ const REFUSALS_KEPT = 50;       // per-clip refusal counts kept in the state fil
 // stays under this cap (Telegram's own limit is 4096).
 const ALERT_MAX_CHARS = 2000;
 // Three kinds of message are always sent: "uploaded as Only me" (the owner's one
-// manual step), a clip refused for bad input or size (400/413: the homelab desk cannot
-// see those), and an unknown upload outcome (a timed-out or unexpected answer may still
+// manual step), a clip refused before upload for bad input, size or provenance (400/413,
+// or 422 provenance_rejected: not YouTube-with-chapters; the homelab desk cannot see
+// those), and an unknown upload outcome (a timed-out or unexpected answer may still
 // be on TikTok as Only me, and only the owner can check). Two more have their own gate
 // below (owner decision 2026-10-31, both on). Every other notice (first refusal,
 // set-aside after two refusals, throttle or signing failure, a clip blocked by an
@@ -117,6 +118,11 @@ function classify(r) {
   if (httpStatus === 409) return code === 'duplicate' ? out('posted_elsewhere', 'duplicate') : out('needs_you', 'ambiguous');
   if (httpStatus === 401) return out('auth_invalid', 'auth_invalid');
   if (httpStatus === 400) return out('needs_you', 'bad_input');
+  // The sidecar's provenance check (owner rule: YouTube-with-chapters clips only) refuses
+  // BEFORE any upload, like a 400: nothing reached TikTok, so the claim is kept as
+  // needs_you (never picked again) and the outcome is never "unknown". Any other 422
+  // stays unexpected (ambiguous) below.
+  if (httpStatus === 422 && code === 'provenance_rejected') return out('needs_you', 'provenance_rejected');
   if (httpStatus === 413) return out('needs_you', 'too_large');
   if (httpStatus === 429) return out('daily_cap', 'daily_cap');
   if (httpStatus === 503) return out('retryable', 'unavailable');
@@ -373,8 +379,9 @@ function queue(list, text, always = false) {
   list.push(text);
   return true;
 }
-// 400 and 413 are about this clip and invisible to the desk: always told.
-const clipFault = outcome.kind === 'needs_you' && (outcome.httpStatus === 400 || outcome.httpStatus === 413);
+// 400, 413 and a provenance refusal are about this clip and invisible to the desk: always told.
+const provenanceRejected = outcome.kind === 'needs_you' && outcome.code === 'provenance_rejected';
+const clipFault = outcome.kind === 'needs_you' && (outcome.httpStatus === 400 || outcome.httpStatus === 413 || provenanceRejected);
 if (outcome.kind === 'auth_invalid' && due(authCount, AUTH_ALERT_AFTER)) {
   queue(safety, `🔑 Reelsmith: TikTok session invalid (${authCount} in a row). Run \`make refresh-cookies\` in tiktok-sidecar; clips wait and retry every 15 min.` + detail,
     NOTIFY_SESSION);
@@ -390,6 +397,11 @@ if (outcome.kind === 'auth_invalid' && due(authCount, AUTH_ALERT_AFTER)) {
     ? 'Reelsmith: the sidecar\'s signing helper failed (not posted). Check the signing helper in tiktok-sidecar.'
     : 'Reelsmith: TikTok says "posting too fast" (not posted). Possible throttling: if it repeats, lower DAILY_CAP.')
     + ' The clip is released for a later slot; this slot stays used.' + detail);
+} else if (provenanceRejected) {
+  queue(safety, 'Reelsmith: the sidecar refused a clip that is not from a YouTube video with chapters (not posted, will not be retried).'
+    + (needsCount > NEEDS_SLOT_RELEASES ? '\n3+ clips refused in a row: check the sidecar contract.' : '')
+    + detail + releaseSteps(false, 'Keep the clip set aside. Only if its manifest (source / segment_origin) or the legacy job list was wrong: fix that first, then release the claim:'),
+  clipFault);
 } else if (outcome.kind === 'needs_you') {
   queue(safety, (outcome.code === 'ambiguous'
     ? 'Reelsmith: a clip is blocked by an earlier upload that may have posted (it will not be retried).'

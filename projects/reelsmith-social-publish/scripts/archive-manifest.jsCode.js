@@ -3,7 +3,7 @@
 // not .mp4, 1 KB or less) or the video's intro (00_* or titled "Intro", never posted). A missing clip (Syncthing still copying), a failed
 // or needs-you clip, a clip Pick Due Clip reports as never postable (refused
 // name, over 300 MiB, no usable caption, not a regular file), a row that
-// cannot be checked, or a row from a non-YouTube source keeps the manifest
+// cannot be checked, or a row that is not YouTube-with-chapters keeps the manifest
 // where it is. Canonical source: scripts/archive-manifest.jsCode.js.
 const fs = require('fs');
 const path = require('path');

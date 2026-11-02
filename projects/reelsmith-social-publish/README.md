@@ -33,10 +33,35 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
   Within a video, manifest row order. **A video's intro is never posted**: a clip whose filename
   starts with `00_` or whose title is "Intro". It is skipped silently (no notice) and does not stop
   its manifest from archiving, even if an old claim on it never resolved.
-- **YouTube-sourced jobs only.** If a manifest has a `source` column, the row must say
-  `youtube` (an empty cell is accepted only for an allowlisted job; any other value is skipped). A manifest without one (the backlog) qualifies only if its job id is in the legacy
-  allowlist `YOUTUBE_LEGACY_JOBS` in `scripts/pick-due-clip.jsCode.js` (5 jobs). Everything else,
-  TikTok-sourced jobs included, is skipped and never archived.
+- **YouTube videos with chapters only** (owner rule). Reelsmith's `manifest.csv` carries three
+  provenance columns: `source` (`youtube`, `tiktok`, `upload`, `generate`, ...), `source_url`
+  (informational; n8n does not read it) and `segment_origin` (`chapters`: cut from the source
+  video's own chapter list; `discovered`; `full_video`). A row qualifies only if `source` is
+  `youtube` **and** `segment_origin` is `chapters`. Cells are trimmed and compared exactly, so
+  `YouTube` or `Chapters` do not qualify. Any other `segment_origin` value, a literal `empty`
+  or an unknown word included, makes the row not eligible: it is skipped.
+  - A manifest with a `source` column but no `segment_origin` column (exported before that
+    column existed) does not qualify, and neither does one with no `source` column at all.
+  - The exception is the legacy allowlist `YOUTUBE_LEGACY_JOBS` in
+    `scripts/pick-due-clip.jsCode.js`: 5 jobs exported before these columns existed, confirmed
+    as YouTube by the owner, who chose to keep them. A row of a legacy job also qualifies when
+    it has no `segment_origin` (no column, or an empty cell) and its `source` is `youtube`,
+    empty, or not a column at all. A legacy row that names another source (`tiktok`) or another
+    origin (`discovered`) is skipped like any other, and so is a legacy row with an empty
+    `source` and `segment_origin` `chapters` (only `youtube` + `chapters` counts as chapters).
+  - Each qualifying upload sends its provenance to the sidecar as two form fields:
+    `clip_source=youtube` and `segment_origin=chapters`, or `segment_origin=legacy_youtube` for
+    a legacy row (`source=n8n` stays the caller label). The sidecar checks them again
+    (`PROVENANCE_MODE`, below) and refuses an ineligible upload with 422 `provenance_rejected`.
+  - Everything else (TikTok, upload or generated jobs, discovered segments, full videos) is
+    skipped silently, as non-YouTube jobs were before: no claim, no notice, no Telegram
+    message, and the manifest is never archived.
+  - **To keep a clip out:** a manifest whose rows are not `youtube`/`chapters` is already
+    skipped. To keep one specific YouTube clip out by hand, use the existing set-aside
+    mechanisms: archive its manifest by hand (the `mv manifest.csv processed/...` command
+    below, which also skips the manifest's remaining clips), or, for a clip already set aside,
+    leave its claim in place ([When a clip is set aside](#when-a-clip-is-set-aside): a clip
+    with a claim is never picked again).
 - **Missing file = wait** (Syncthing may still be copying it). **Ordinary junk** (empty
   filename, not `.mp4`, 1 KB or less) is skipped and does not hold up archiving.
 - **A clip that can never be posted as it is** is skipped too, but reported and never archived
@@ -64,8 +89,8 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
   - it holds the **kill switch** `POSTING_ENABLED`, `false` until go-live step 7 and `"true"` after it.
     While it is off, every request is a dry run.
 - **Log Results** records each outcome in `results.log.csv` and the claim files, and decides what
-  happens to the clip: cookie expired: clips wait and retry every 15 min; bad input: that clip is
-  set aside and the next takes its slot; TikTok refused to publish it: the slot stays used and the
+  happens to the clip: cookie expired: clips wait and retry every 15 min; bad input, or a
+  provenance refusal (422 `provenance_rejected`): that clip is set aside and the next takes its slot; TikTok refused to publish it: the slot stays used and the
   clip is retried once, after another clip, at a later slot, then set aside at its 2nd refusal;
   TikTok throttling or a signing failure: the clip is retried at a later slot; an upload that may
   or may not have posted: the clip waits for you to check TikTok. If the workflow is live while
@@ -95,7 +120,7 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
 |---|---|
 | `pvc-reelsmith-inbox.yaml` | Syncthing's PVC (`syncthing-reelsmith-pvc`); n8n mounts it at `/data/reelsmith-inbox`, the sidecar mounts its `reelsmith-inbox` folder at `/inbox` |
 | `syncthing-deployment.yaml`, `syncthing-networkpolicy.yaml` | Syncthing receiver (NodePort 32200) |
-| `tiktok-sidecar-deployment.yaml` | the gatekeeper; settings are env vars (`POSTING_ENABLED`, `DAILY_CAP`, `ATTEMPT_CAP`, `MAX_CLIP_MB`, `INBOX_DIR`, `LEDGER_PATH`) |
+| `tiktok-sidecar-deployment.yaml` | the gatekeeper; settings are env vars (`POSTING_ENABLED`, `DAILY_CAP`, `ATTEMPT_CAP`, `MAX_CLIP_MB`, `INBOX_DIR`, `LEDGER_PATH`, `PROVENANCE_MODE`, `LEGACY_YOUTUBE_JOBS`) |
 | `tiktok-sidecar-service.yaml`, `tiktok-sidecar-pvc.yaml` | Service on 8000 (API) and 9100 (metrics); cookies and ledger PVC |
 | `tiktok-sidecar-networkpolicy.yaml` | ingress to the sidecar from n8n, the n8n worker and the watchdog on 8000, and from Prometheus on 9100 only; egress from n8n to the sidecar; the sidecar's own egress |
 | `tiktok-sidecar-servicemonitor.yaml` | Prometheus scrapes the sidecar's `/metrics` on 9100 every 30 s (job `tiktok-sidecar`) |
@@ -143,6 +168,7 @@ constants in `scripts/log-results.jsCode.js`; shipped values: `NOTIFY_INFO = fal
 |---|---|
 | "uploaded as Only me, set it to Everyone" | always: the one manual step you must take |
 | a clip refused as bad input (400) or too large (413) | always, with the commands to release it: the desk cannot see these |
+| a clip the sidecar refused as not YouTube-with-chapters (422 `provenance_rejected`) | always: n8n's own filter should have skipped it, so the message says to keep it set aside and to release the claim only after fixing a wrong manifest or legacy list |
 | upload outcome unknown (a timeout or unexpected answer: it may have posted) | always, with the commands to check and release it: a clip may be on TikTok as Only me, and only you can check |
 | "TikTok session invalid (N in a row). Run `make refresh-cookies` ..." (401 `auth_invalid`) | `NOTIFY_SESSION`: the 1st in a row, then every 12th (about every 3 h). The alert rules see a dead cookie only at the next session probe, so this is the fast path |
 | "sidecar unavailable N times in a row; clips are waiting." for 503 `network_before_upload` (the sidecar cannot reach TikTok) or `clock_unsynced` | `NOTIFY_SIDECAR_DOWN`: the 3rd in a row, then every 12th. No alert rule sees either (requests still arrive, nothing is paused). N counts every unavailable answer in a row, but only the answer that lands on the 3rd (15th, 27th, ...) decides: `network_before_upload`, `network_before_upload`, `busy` sends nothing at 3, where the workflow deployed on 2026-10-18 sent it |
@@ -425,6 +451,27 @@ one is a desk change too.
      - delete the n8n API key in the n8n UI.
    - **Rollback:** revert this change in a PR and sync, outside a slot. For the workflow,
      follow go-live step 10 (`--deactivate` first; the deploy saved the old copy in `backups/`).
+6. **Provenance rule (YouTube videos with chapters only).** The sidecar reads two env vars from
+   `manifests/tiktok-sidecar-deployment.yaml`: `PROVENANCE_MODE` (`log`: log the verdict and
+   allow; `enforce`: refuse an ineligible upload with 422 `provenance_rejected`; `off`; the code
+   default is `enforce`) and `LEGACY_YOUTUBE_JOBS` (comma-separated job ids, the same 5 ids in
+   the same order as `YOUTUBE_LEGACY_JOBS` in `scripts/pick-due-clip.jsCode.js`;
+   `workflow-contract.selfcheck.js` fails if they differ). Git ships `PROVENANCE_MODE: "log"`.
+   An image older than the provenance check ignores both env vars, and it ignores the new
+   `clip_source`/`segment_origin` form fields (FastAPI binds only the fields it declares). Roll
+   out in this order, each step outside a slot:
+   1. **Sidecar image first**, with `PROVENANCE_MODE` `log`: pin the new image's digest in a PR,
+      merge, and sync as in step 4.
+   2. **Then the workflow**: `deploy-workflow.sh --dry-run`, check one execution, then `--live`
+      (step 5's checks).
+   3. **After a day of logs** with no unexpected refusal verdict in
+      `ssh homelab 'microk8s kubectl -n n8n-live logs deploy/tiktok-sidecar -c tiktok-sidecar --since=24h' | grep '"result":"would_reject"'`
+      (no output = nothing would have been refused), change `PROVENANCE_MODE` to `enforce` in
+      a PR, merge and sync; that PR also changes the `PROVENANCE_MODE` pin in
+      `workflow-contract.selfcheck.js`. A pod restart (a sync, `make refresh-cookies`) loses
+      the earlier logs, so read them before any restart.
+   Rollback: set `PROVENANCE_MODE` back to `log` (or `off`) and sync; the workflow's own filter
+   keeps skipping ineligible clips either way.
 
 ## Mac setup
 
@@ -564,6 +611,14 @@ click "Revert Local Changes"** on the cluster's Syncthing folder: it deletes eve
        another ambiguous 409.
 - **Refused clip** (400 bad input or 413 too large): fix or re-export the clip, then release the
   claim with the same command. Or leave it set aside.
+- **Provenance refused** (422 `provenance_rejected`): the sidecar decided, BEFORE any upload,
+  that the clip is not from a YouTube video with chapters. Nothing reached TikTok, so it is
+  never an unknown outcome and there is no ledger to resolve. Log Results handles it like a 400:
+  the claim is kept as `needs_you`, so the clip is never picked again, and the slot is freed for
+  the next clip (the first 2 refusals in a row; from the 3rd the message adds "check the sidecar
+  contract"). Keep it set aside. n8n and the sidecar disagree only when the manifest or a legacy
+  list is wrong: fix the manifest's `source`/`segment_origin` or the lists (both must match,
+  `workflow-contract.selfcheck.js` checks it), then release the claim with the same command.
 - **TikTok refused to publish it** (502 `publish_rejected`; not posted, the sidecar's ledger key
   is already free). Refusals are often intermittent: the same clip and caption can post on a later
   try. The 1st refusal releases the clip back to the pool (a "refusal 1 of 2" notice only with
