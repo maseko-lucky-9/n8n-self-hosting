@@ -146,7 +146,7 @@ fi
 if [ -n "$KEY_FILE" ]; then
   [ -f "$KEY_FILE" ] && [ ! -L "$KEY_FILE" ] || die "--key-file must be a regular file"
   [ -O "$KEY_FILE" ] || die "--key-file must be owned by you"
-  case "$(stat -f %Lp "$KEY_FILE" 2>/dev/null || stat -c %a "$KEY_FILE")" in
+  case "$(stat -c %a "$KEY_FILE" 2>/dev/null || stat -f %Lp "$KEY_FILE")" in
     600|400) ;;
     *) die "--key-file must be mode 600 or 400 (chmod 600 it)" ;;
   esac
