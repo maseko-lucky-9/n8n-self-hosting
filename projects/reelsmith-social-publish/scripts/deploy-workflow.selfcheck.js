@@ -86,6 +86,24 @@ s.check('N8N_SSH_HOST that looks like an ssh option is refused', () => {
   assert.equal(r.sshCalled, false);
 });
 
+s.check('--key-file must be a private regular file holding a usable key; refused before any ssh', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'keyfile-'));
+  const f = path.join(dir, 'key');
+  fs.writeFileSync(f, 'a'.repeat(30) + '\n', { mode: 0o644 });
+  fs.chmodSync(f, 0o644);
+  const open = run(['--workflow-id', 'abcdefgh12345678', '--dry-run', '--key-file', f]);
+  assert.match(open.err, /must be mode 600 or 400/);
+  fs.chmodSync(f, 0o600);
+  fs.writeFileSync(f, 'short\n');
+  const bad = run(['--workflow-id', 'abcdefgh12345678', '--dry-run', '--key-file', f]);
+  assert.match(bad.err, /no usable API key in --key-file/);
+  const link = path.join(dir, 'link');
+  fs.symlinkSync(f, link);
+  assert.match(run(['--workflow-id', 'abcdefgh12345678', '--dry-run', '--key-file', link]).err, /regular file/);
+  assert.match(run(['--workflow-id', 'abcdefgh12345678', '--dry-run', '--key-file', path.join(dir, 'nope')]).err, /regular file/);
+  assert.equal(open.sshCalled || bad.sshCalled, false);
+});
+
 s.check('--simulate only with --dry-run; --workflow-id required', () => {
   const live = run(['--workflow-id', 'abcdefgh12345678', '--live', '--simulate', 'auth_invalid']);
   assert.match(live.err, /--simulate only works with --dry-run/);
