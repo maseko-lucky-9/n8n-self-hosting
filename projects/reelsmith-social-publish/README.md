@@ -38,7 +38,8 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
   (informational; n8n does not read it) and `segment_origin` (`chapters`: cut from the source
   video's own chapter list; `discovered`; `full_video`). A row qualifies only if `source` is
   `youtube` **and** `segment_origin` is `chapters`. Cells are trimmed and compared exactly, so
-  `YouTube` or `Chapters` do not qualify.
+  `YouTube` or `Chapters` do not qualify. Any other `segment_origin` value, a literal `empty`
+  or an unknown word included, makes the row not eligible: it is skipped.
   - A manifest with a `source` column but no `segment_origin` column (exported before that
     column existed) does not qualify, and neither does one with no `source` column at all.
   - The exception is the legacy allowlist `YOUTUBE_LEGACY_JOBS` in
@@ -46,7 +47,8 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
     as YouTube by the owner, who chose to keep them. A row of a legacy job also qualifies when
     it has no `segment_origin` (no column, or an empty cell) and its `source` is `youtube`,
     empty, or not a column at all. A legacy row that names another source (`tiktok`) or another
-    origin (`discovered`) is skipped like any other.
+    origin (`discovered`) is skipped like any other, and so is a legacy row with an empty
+    `source` and `segment_origin` `chapters` (only `youtube` + `chapters` counts as chapters).
   - Each qualifying upload sends its provenance to the sidecar as two form fields:
     `clip_source=youtube` and `segment_origin=chapters`, or `segment_origin=legacy_youtube` for
     a legacy row (`source=n8n` stays the caller label). The sidecar checks them again
@@ -463,8 +465,11 @@ one is a desk change too.
    2. **Then the workflow**: `deploy-workflow.sh --dry-run`, check one execution, then `--live`
       (step 5's checks).
    3. **After a day of logs** with no unexpected refusal verdict in
-      `ssh homelab 'microk8s kubectl -n n8n-live logs deploy/tiktok-sidecar -c tiktok-sidecar --since=24h'`,
-      change `PROVENANCE_MODE` to `enforce` in a PR, merge and sync.
+      `ssh homelab 'microk8s kubectl -n n8n-live logs deploy/tiktok-sidecar -c tiktok-sidecar --since=24h' | grep '"result":"would_reject"'`
+      (no output = nothing would have been refused), change `PROVENANCE_MODE` to `enforce` in
+      a PR, merge and sync; that PR also changes the `PROVENANCE_MODE` pin in
+      `workflow-contract.selfcheck.js`. A pod restart (a sync, `make refresh-cookies`) loses
+      the earlier logs, so read them before any restart.
    Rollback: set `PROVENANCE_MODE` back to `log` (or `off`) and sync; the workflow's own filter
    keeps skipping ineligible clips either way.
 

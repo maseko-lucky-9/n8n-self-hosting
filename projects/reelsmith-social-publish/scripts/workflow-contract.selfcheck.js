@@ -107,7 +107,9 @@ s.check('drift guard: Pick Due Clip\'s YOUTUBE_LEGACY_JOBS equals the sidecar\'s
   const sidecarEnv = sidecarContainerEnv();
   assert.ok('LEGACY_YOUTUBE_JOBS' in sidecarEnv, 'LEGACY_YOUTUBE_JOBS not set in tiktok-sidecar-deployment.yaml');
   assert.deepEqual(String(sidecarEnv.LEGACY_YOUTUBE_JOBS).split(','), jsList, 'legacy lists drifted');
-  assert.ok(['log', 'enforce', 'off'].includes(sidecarEnv.PROVENANCE_MODE), `PROVENANCE_MODE is ${sidecarEnv.PROVENANCE_MODE}`);
+  // Pinned to "log" for the rollout (README Deploy step 6). Flipping to enforce (or off) is a
+  // deliberate edit of this line in the rollout PR, never a side effect of another change.
+  assert.equal(sidecarEnv.PROVENANCE_MODE, 'log', `PROVENANCE_MODE is ${sidecarEnv.PROVENANCE_MODE}, expected "log"`);
 });
 
 s.check('dry_run is always sent, fail-safe to "true"', () => {

@@ -219,6 +219,8 @@ s.check('provenance: a legacy job with the columns: empty cells are legacy, chap
       { filename: 'd.mp4', source: 'tiktok', segment_origin: '' },
       { filename: 'e.mp4', source: 'youtube', segment_origin: 'discovered' },
       { filename: 'f.mp4', source: '', segment_origin: 'full_video' },
+      { filename: 'j.mp4', source: '', segment_origin: 'chapters' }, // only youtube + chapters is chapters
+      { filename: 'l.mp4', source: 'youtube', segment_origin: 'empty' }, // a literal word, not an empty cell
     ],
     mtime: '2026-10-16T12:00:00',
   });
@@ -248,6 +250,7 @@ s.check('provenance: cells are trimmed, then compared exactly (no case folding)'
       { filename: 'd.mp4', source: 'YOUTUBE', segment_origin: 'CHAPTERS' },
       { filename: 'e.mp4', source: 'you tube' },
       { filename: 'f.mp4', segment_origin: 'chapter' },
+      { filename: 'm.mp4', segment_origin: 'empty' },
     ],
     mtime: '2026-10-16T12:00:00',
   });
