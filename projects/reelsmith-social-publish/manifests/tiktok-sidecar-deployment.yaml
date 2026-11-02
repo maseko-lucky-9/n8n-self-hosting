@@ -99,7 +99,7 @@ spec:
           # linux/amd64 plus BuildKit's provenance entry). To ship a new version:
           # `make remote-ship TAG=<new>` in tiktok-sidecar, read the digest from the
           # registry, and change this line in a PR.
-          image: localhost:32000/reelsmith/tiktok-sidecar@sha256:4fd0ffdcb69c32f03ef56c58ef677162f57a6f09977bd9d7f5c916a0d31e4a18
+          image: localhost:32000/reelsmith/tiktok-sidecar@sha256:d8cecca4b7b0097ea1c89ab2cbf85073698879fa3a86e617cc8e52f4b48b0237
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
