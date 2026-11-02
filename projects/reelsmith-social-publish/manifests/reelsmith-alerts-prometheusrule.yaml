@@ -140,7 +140,7 @@ spec:
             summary: Reelsmith posting is paused
             description: >-
               The sidecar has paused posting. Its reason label says why: failures (2 failed
-              uploads in a row, a 12 hour pause) or attempt_cap (the daily attempt cap is
+              uploads in a row on one day, a pause for the rest of that day) or attempt_cap (the daily attempt cap is
               used, until midnight SAST). The failed runs are in ledger.failures.jsonl on the
               cookies PVC.
 
