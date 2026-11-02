@@ -366,9 +366,9 @@ one is a desk change too.
      | daily cap reached | not sent | not sent (only with `NOTIFY_INFO`) |
    - **Expect `ReelsmithNoPostToday` about one day in four.** It fires at 13:15 SAST whenever the
      12:00 attempt is refused: the ledger since 2026-10-18 holds 7 `publish_rejected` of 28
-     attempts (15 posted, 6 `internal`). The sidecar's failure streak also spans midnight: a
-     refused last attempt yesterday plus a refused 12:00 today pause posting for 12 hours, so the
-     rest of that day has 1 attempt and 0 posts.
+     attempts (15 posted, 6 `internal`). Since sidecar 0.5.2 the sidecar's failure streak is
+     per SAST day: a refused 12:00 costs only that slot, and two refusals on one day pause posting
+     until midnight (before 0.5.2 a refusal could also carry over from the day before).
    - **Claims the old workflow wrote for TikTok refusals stay `failed`** and are never retried:
      see "When a clip is set aside" for releasing one, one clip at a time, and only a clip that
      is not on TikTok (a released one is uploaded again; nothing answers 409 for it).
