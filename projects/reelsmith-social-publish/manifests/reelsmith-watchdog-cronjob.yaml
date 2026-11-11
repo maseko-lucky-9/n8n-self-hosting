@@ -62,6 +62,10 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
+      # Garbage-collect a finished Job (and its pods) after 48h: long enough to
+      # investigate a failure, short enough that a long-fixed failed run stops
+      # holding the KubeJobFailed alert red until three newer failures push it out.
+      ttlSecondsAfterFinished: 172800
       backoffLimit: 1
       activeDeadlineSeconds: 300
       template:
