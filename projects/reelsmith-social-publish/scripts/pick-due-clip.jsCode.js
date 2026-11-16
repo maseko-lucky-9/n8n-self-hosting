@@ -56,6 +56,16 @@ const YOUTUBE_LEGACY_JOBS = [
   '48ac096bd9db4976a06f63be654a2900',
 ];
 const JOB_RE = /^[A-Za-z0-9_-]+$/;
+// Inbox layouts. Legacy flat: INBOX/<job_id>/. Grouped (Reelsmith's per-source export):
+// INBOX/<Group>/<job_id>/, Group being 'YouTube Videos', 'TikTok Videos' or 'Facebook
+// Videos'. Posting is YouTube-only, so ONLY 'YouTube Videos' is ever read: the other two
+// groups are never listed or opened. The job id (state, claim, slot and ledger keys,
+// clip_key) is always the bare job_id; the real folder travels as jobDir, and the sidecar
+// gets the group as a path prefix on clip_path (tiktok-sidecar clip.py accepts exactly
+// this one literal group name). A job id present in both layouts is ONE job: the flat
+// folder wins and the grouped duplicate is skipped, so two folders can never both be
+// picked or share a claim key. Keep GROUP_DIR in step with the sidecar's allow-list.
+const GROUP_DIR = 'YouTube Videos';
 // Rotation: a claim counts as "this video was used" when the upload may have reached
 // TikTok (posted, failed = ambiguous, claimed = in flight) or it predates the status
 // field. needs_you and posted_elsewhere keep their claim but did not post here (most
@@ -131,14 +141,29 @@ function readClaimedAt(file, claim) { // claim: the already-parsed file, to save
 
 // A missing inbox means Syncthing's folder was renamed or unmounted: fail the
 // run (the watchdog sees errors) instead of reporting "nothing to post".
+// -> [{job, dir, clipPrefix}]: job = bare job id, dir = its real folder, clipPrefix = what
+// goes before <job>/<file> in the sidecar's clip_path ('' flat, 'YouTube Videos/' grouped).
+// lstat, never stat: a symlinked group or job folder is ignored.
 function listJobs() {
   const st = lstatOrNull(INBOX);
   if (!st || !st.isDirectory()) throw new Error('Pick Due Clip: inbox missing or not a directory: ' + INBOX);
-  return fs.readdirSync(INBOX).filter((n) => {
-    if (!JOB_RE.test(n)) return false;
-    const st = lstatOrNull(path.join(INBOX, n));
-    return Boolean(st && st.isDirectory());
-  });
+  const jobs = [];
+  const seen = new Set();
+  const addFrom = (root, clipPrefix) => {
+    for (const n of fs.readdirSync(root)) {
+      if (!JOB_RE.test(n) || seen.has(n)) continue; // seen: flat wins over a grouped duplicate
+      const dir = path.join(root, n);
+      const dst = lstatOrNull(dir);
+      if (!dst || !dst.isDirectory()) continue;
+      seen.add(n);
+      jobs.push({ job: n, dir, clipPrefix });
+    }
+  };
+  addFrom(INBOX, ''); // 'YouTube Videos' & co. have a space: JOB_RE never takes them for a job
+  const groupDir = path.join(INBOX, GROUP_DIR);
+  const gst = lstatOrNull(groupDir);
+  if (gst && gst.isDirectory()) addFrom(groupDir, GROUP_DIR + '/');
+  return jobs;
 }
 
 // RFC 4180: quoted fields may hold commas, doubled quotes and newlines.
@@ -246,8 +271,8 @@ function hashtagsField(raw) {
 //   that slot (at most 3 a day); the safe direction for an upload that may
 //   have posted.
 const lastUsedMs = {}; // job -> newest counted claim, in ms
-for (const job of listJobs()) {
-  const claimDir = path.join(INBOX, job, '.claims');
+for (const { job, dir } of listJobs()) {
+  const claimDir = path.join(dir, '.claims');
   const dirSt = lstatOrNull(claimDir);
   if (!dirSt || !dirSt.isDirectory()) continue;
   for (const name of fs.readdirSync(claimDir)) {
@@ -296,11 +321,11 @@ if (!DRY_RUN) {
 // newest first, rows in file order. (Step 4b rotates across videos.)
 const cutoffMs = DateTime.fromISO(CUTOFF, { zone: TZ }).toMillis();
 const manifests = [];
-for (const job of listJobs()) {
-  const manifestPath = path.join(INBOX, job, 'manifest.csv');
+for (const { job, dir, clipPrefix } of listJobs()) {
+  const manifestPath = path.join(dir, 'manifest.csv');
   const st = lstatOrNull(manifestPath);
   if (!st || !st.isFile() || st.mtimeMs < cutoffMs) continue;
-  manifests.push({ job, jobDir: path.join(INBOX, job), manifestPath, mtimeMs: st.mtimeMs });
+  manifests.push({ job, jobDir: dir, clipPrefix, manifestPath, mtimeMs: st.mtimeMs });
 }
 manifests.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (a.job < b.job ? -1 : a.job > b.job ? 1 : 0));
 
@@ -456,7 +481,7 @@ for (const { m, rowIndex, row, clip, title, caption, segmentOrigin } of candidat
 
   return [{
     json: {
-      clip_path: clipKey,
+      clip_path: m.clipPrefix + clipKey, // sidecar: [YouTube Videos/]<job>/<file>
       clip_key: clipKey,
       caption,
       hashtags: hashtagsField(row.hashtags),

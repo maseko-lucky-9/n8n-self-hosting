@@ -49,6 +49,7 @@ const HEADER = 'timestamp,filename,title,tiktok_post_id,tiktok_post_url,youtube_
 // have posted. These codes count on their own only when there is no message.
 const RETRYABLE_CODES = ['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EHOSTDOWN', 'ENOTFOUND', 'EAI_AGAIN'];
 const JOB_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const GROUP_DIR = 'YouTube Videos'; // the one grouped inbox folder posting reads (as Pick Due Clip)
 const NAME_RE = /^(?!\.)[\p{L}\p{N}_. -]{1,251}\.mp4$/u; // as Pick Due Clip
 const MAX_NAME_BYTES = 200;
 // The sidecar passes TikTok's message through only for this throttling refusal.
@@ -346,14 +347,21 @@ const due = (n, first) => n >= first && (n - first) % REALERT_EVERY === 0;
 
 function releaseSteps(withLedger, fixLine) {
   if (pick.dryRun === true) return ''; // a dry run already released its claim
-  const job = path.basename(String(pick.jobDir || ''));
+  // The job folder relative to INBOX: <job> (legacy flat) or YouTube Videos/<job> (grouped).
+  // The ledger KEY stays the bare <job>/<file>; only the claim path carries the group.
+  const rel = path.relative(INBOX, String(pick.jobDir || ''));
+  const parts = rel.split(path.sep);
+  const job = parts[parts.length - 1];
+  const layoutOk = parts.length === 1 || (parts.length === 2 && parts[0] === GROUP_DIR);
   const file = String(pick.filename || '');
-  if (!JOB_RE.test(job) || !NAME_RE.test(file) || Buffer.byteLength(file, 'utf8') > MAX_NAME_BYTES) {
+  if (!layoutOk || !JOB_RE.test(job) || !NAME_RE.test(file) || Buffer.byteLength(file, 'utf8') > MAX_NAME_BYTES) {
     return '\nThen delete the clip\'s claim file under .claims/ in its job folder to let n8n retry it.';
   }
-  // NAME_RE allows no quote, so single quotes keep a name with spaces one KEY.
+  // NAME_RE and GROUP_DIR allow no quote, so single quotes keep a name with spaces one KEY, and
+  // the double quotes keep the claim path (a space in the group folder or the file name) one
+  // rm argument on the remote shell.
   const key = `'${job}/${file}'`;
-  const release = `${SSH_EXEC} rm "${INBOX}/${job}/.claims/${file}.json"'`;
+  const release = `${SSH_EXEC} rm "${INBOX}/${rel}/.claims/${file}.json"'`;
   if (fixLine) return `\n${fixLine}\n${release}`;
   if (!withLedger) {
     return `\n1. Fix the clip (re-export it), or leave it set aside.\n2. To let n8n retry it, release the n8n claim:\n${release}`;

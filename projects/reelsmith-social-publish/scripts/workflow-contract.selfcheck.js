@@ -333,4 +333,18 @@ s.check('passes scripts/disclosure-sweep.sh', () => {
   assert.match(out, /disclosure-sweep: clean \(1 file\(s\)\)/);
 });
 
+s.check('grouped inbox: the group allow-list is the same literal in Pick Due Clip and Log Results, and only YouTube is scanned', () => {
+  const read = (f) => fs.readFileSync(path.join(__dirname, f), 'utf8');
+  const groupOf = (src) => (src.match(/^const GROUP_DIR = '([^']*)';/m) || [])[1];
+  const pickSrc = read('pick-due-clip.jsCode.js');
+  assert.equal(groupOf(pickSrc), 'YouTube Videos');
+  assert.equal(groupOf(read('log-results.jsCode.js')), groupOf(pickSrc), 'Log Results builds the claim path from another group name');
+  for (const f of ['pick-due-clip.jsCode.js', 'log-results.jsCode.js', 'archive-manifest.jsCode.js']) {
+    assert.equal(/TikTok Videos|Facebook Videos/.test(read(f).replace(/^\s*\/\/.*$/gm, '')), false, f + ' reads a posting-irrelevant group');
+  }
+  // the clip_path the sidecar gets is the group prefix + <job>/<file>; keys stay bare
+  assert.match(pickSrc, /clip_path: m\.clipPrefix \+ clipKey/);
+  assert.match(pickSrc, /const clipKey = `\$\{m\.job\}\/\$\{clip\.nfc\}`;/);
+});
+
 s.run();

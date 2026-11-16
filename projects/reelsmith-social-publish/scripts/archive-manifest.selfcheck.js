@@ -147,4 +147,19 @@ s.check('a never-posted intro (00_*, or titled Intro) does not pin the manifest;
   assert.equal(h.exists(kept.manifestPath), true, 'b.mp4 is unposted: keep');
 });
 
+s.check('a grouped job (INBOX/YouTube Videos/<job>, space in the path) archives into its own processed/ and keeps unposted rows', async () => {
+  const done = setup([{ filename: 'a.mp4' }, { filename: 'b b.mp4' }], { group: 'YouTube Videos' });
+  assert.ok(done.jobDir.includes(path.join('YouTube Videos', 'jobA')));
+  claim(done.jobDir, 'a.mp4', 'posted');
+  claim(done.jobDir, 'b b.mp4', 'posted_elsewhere');
+  const out = await archive(done);
+  assert.equal(h.exists(done.manifestPath), false);
+  assert.equal(path.dirname(out.archived_to), path.join(done.jobDir, 'processed'));
+  assert.equal(h.exists(out.archived_to), true);
+  const kept = setup([{ filename: 'a.mp4' }, { filename: 'b.mp4' }], { group: 'YouTube Videos' });
+  claim(kept.jobDir, 'a.mp4', 'posted');
+  await archive(kept);
+  assert.equal(h.exists(kept.manifestPath), true);
+});
+
 s.run();

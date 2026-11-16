@@ -107,8 +107,9 @@ const PROVENANCE_COLUMNS = ['source', 'source_url', 'segment_origin'];
 //   onDisk: the name to create on disk (default: filename)
 // Rows default to source youtube, segment_origin chapters (eligible).
 // legacy: no provenance columns at all (the backlog); drop: header columns to leave out.
-function addJob(root, job, { rows, mtime, legacy = false, drop = [], raw } = {}) {
-  const jobDir = path.join(inboxOf(root), job);
+// group: put the job under INBOX/<group>/<job> (Reelsmith's grouped export) instead of INBOX/<job>.
+function addJob(root, job, { rows, mtime, legacy = false, drop = [], raw, group } = {}) {
+  const jobDir = group ? path.join(inboxOf(root), group, job) : path.join(inboxOf(root), job);
   fs.mkdirSync(jobDir, { recursive: true });
   const dropped = legacy ? [...PROVENANCE_COLUMNS, ...drop] : drop;
   const header = MANIFEST_HEADER.filter((h) => !dropped.includes(h));
@@ -154,10 +155,18 @@ function exists(p) {
 function listClaims(root) {
   const out = [];
   const inbox = inboxOf(root);
-  for (const job of fs.readdirSync(inbox)) {
-    const dir = path.join(inbox, job, '.claims');
-    if (!exists(dir)) continue;
-    for (const f of fs.readdirSync(dir)) out.push({ job, file: f, data: readJson(path.join(dir, f)) });
+  const isDir = (p) => { try { return fs.lstatSync(p).isDirectory(); } catch (e) { return false; } };
+  const collect = (job, base, group) => {
+    const dir = path.join(base, '.claims');
+    if (!exists(dir)) return;
+    for (const f of fs.readdirSync(dir)) out.push({ job, group, file: f, data: readJson(path.join(dir, f)) });
+  };
+  // flat INBOX/<job>/.claims and grouped INBOX/<Group>/<job>/.claims (any group folder)
+  for (const entry of fs.readdirSync(inbox)) {
+    const base = path.join(inbox, entry);
+    if (!isDir(base)) continue;
+    collect(entry, base, undefined);
+    for (const job of fs.readdirSync(base)) if (isDir(path.join(base, job))) collect(job, path.join(base, job), entry);
   }
   return out;
 }
