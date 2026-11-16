@@ -1169,4 +1169,116 @@ s.check('rotation: a claim that vanishes between the listing and the read is ski
   assert.equal(item.json.clip_key, 'A/02_clip.mp4');
 });
 
+// ---- inbox layouts: legacy flat INBOX/<job>, grouped INBOX/YouTube Videos/<job> ------------
+
+const GROUP = 'YouTube Videos';
+function groupedJob(root, name, n, { group = GROUP, mtime = '2026-10-15T10:00:00', prefix = '' } = {}) {
+  const rows = [];
+  for (let i = 1; i <= n; i++) rows.push({ filename: `${prefix}${String(i).padStart(2, '0')}_clip.mp4` });
+  return h.addJob(root, name, { rows, mtime, group });
+}
+
+s.check('layout: flat only: unchanged (clip_path <job>/<file>, claim in the flat folder)', async () => {
+  const root = h.makeRoot();
+  const { jobDir } = job(root, 'jobA', 3);
+  const [item] = await pick(root, '2026-10-17T12:00:00');
+  assert.equal(item.json.clip_path, 'jobA/01_clip.mp4');
+  assert.equal(item.json.clip_key, 'jobA/01_clip.mp4');
+  assert.equal(item.json.jobDir, jobDir);
+  assert.equal(item.json.claimPath, path.join(jobDir, '.claims', '01_clip.mp4.json'));
+});
+
+s.check('layout: grouped only: found under YouTube Videos, bare job id in every key, group in clip_path and jobDir', async () => {
+  const root = h.makeRoot();
+  const { jobDir, manifestPath } = groupedJob(root, 'jobG', 3);
+  assert.equal(jobDir, path.join(h.inboxOf(root), GROUP, 'jobG'));
+  const [item] = await pick(root, '2026-10-17T12:00:00');
+  const j = item.json;
+  assert.equal(j.clip_path, 'YouTube Videos/jobG/01_clip.mp4', 'what the sidecar is sent');
+  assert.equal(j.clip_key, 'jobG/01_clip.mp4', 'the ledger / state key stays bare');
+  assert.equal(j.jobDir, jobDir);
+  assert.equal(j.manifestPath, manifestPath);
+  assert.equal(j.claimPath, path.join(jobDir, '.claims', '01_clip.mp4.json'));
+  assert.equal(h.readJson(j.claimPath).clip_key, 'jobG/01_clip.mp4');
+  assert.equal(h.readJson(j.slotMarker).clip_key, 'jobG/01_clip.mp4');
+  assert.deepEqual(h.listClaims(root).map((c) => [c.job, c.group, c.file]), [['jobG', GROUP, '01_clip.mp4.json']]);
+  assert.equal(h.exists(path.join(h.inboxOf(root), 'jobG')), false, 'no flat folder is created');
+});
+
+s.check('layout: both layouts hold different jobs: both are posted in turn, each with its own path', async () => {
+  const root = h.makeRoot();
+  job(root, 'jobA', 3, '2026-10-16T10:00:00');
+  groupedJob(root, 'jobG', 3, { mtime: '2026-10-15T10:00:00' });
+  const seen = [];
+  for (const t of ['12:00', '15:00', '18:00']) {
+    const [item] = await pick(root, `2026-10-17T${t}:00`);
+    markPosted(item.json);
+    seen.push([item.json.clip_key, item.json.clip_path]);
+  }
+  assert.deepEqual(seen, [
+    ['jobA/01_clip.mp4', 'jobA/01_clip.mp4'],
+    ['jobG/01_clip.mp4', 'YouTube Videos/jobG/01_clip.mp4'],
+    ['jobA/02_clip.mp4', 'jobA/02_clip.mp4'],
+  ]);
+});
+
+s.check('layout: the same job id in both layouts: flat wins, the grouped copy is never picked or claimed', async () => {
+  const root = h.makeRoot();
+  const { jobDir: flatDir } = job(root, 'jobD', 2);
+  const { jobDir: groupDir } = groupedJob(root, 'jobD', 3, { prefix: 'g' }); // gNN_clip.mp4: distinguishable
+  for (const t of ['12:00', '15:00', '18:00']) {
+    const out = await pick(root, `2026-10-17T${t}:00`);
+    if (!out.length) break; // the flat copy's 2 clips are used up
+    assert.equal(out[0].json.jobDir, flatDir, t);
+    assert.equal(out[0].json.clip_path, 'jobD/' + out[0].json.filename);
+    assert.ok(!out[0].json.filename.startsWith('g'), 'a clip of the grouped duplicate was picked');
+    markPosted(out[0].json);
+  }
+  assert.equal(h.exists(path.join(groupDir, '.claims')), false, 'the grouped duplicate got a claim');
+  assert.deepEqual(h.listClaims(root).map((c) => c.group), [undefined, undefined]);
+  assert.deepEqual(await pick(root, '2026-10-18T12:00:00'), [], 'after the flat clips: nothing, not the grouped copy');
+});
+
+s.check('layout: TikTok Videos and Facebook Videos are never scanned, whatever they hold', async () => {
+  const root = h.makeRoot();
+  const tt = groupedJob(root, 'jobT', 3, { group: 'TikTok Videos' });
+  const fb = groupedJob(root, 'jobF', 3, { group: 'Facebook Videos' });
+  assert.deepEqual(await pick(root, '2026-10-17T12:00:00'), [], 'nothing but the other groups');
+  assert.deepEqual(await pick(root, '2026-10-17T12:00:00', { live: false }), []);
+  const { jobDir } = job(root, 'jobA', 3);
+  const [item] = await pick(root, '2026-10-17T12:00:00');
+  assert.equal(item.json.jobDir, jobDir, 'only the flat job');
+  for (const d of [tt.jobDir, fb.jobDir]) assert.equal(h.exists(path.join(d, '.claims')), false, d);
+  // a flat job whose folder is a group name (it has spaces, so never a job id) is not read either
+  const root2 = h.makeRoot();
+  fs.mkdirSync(path.join(h.inboxOf(root2), 'TikTok Videos', 'jobT', 'x'), { recursive: true });
+  groupedJob(root2, 'jobT2', 2, { group: 'TikTok Videos' });
+  assert.deepEqual(await pick(root2, '2026-10-17T12:00:00'), []);
+});
+
+s.check('layout: a folder name with a space: the group folder and clip names with spaces reach clip_path whole', async () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'jobS', { rows: [{ filename: 'Wait... what 01.mp4' }], mtime: '2026-10-15T10:00:00', group: GROUP });
+  const [item] = await pick(root, '2026-10-17T12:00:00');
+  assert.equal(item.json.clip_path, 'YouTube Videos/jobS/Wait... what 01.mp4');
+  assert.equal(item.json.clip_key, 'jobS/Wait... what 01.mp4');
+  assert.ok(item.json.claimPath.includes('/YouTube Videos/jobS/.claims/'));
+});
+
+s.check('layout: the stale-claim sweep and rotation reach grouped jobs; a symlinked group folder is ignored', async () => {
+  const root = h.makeRoot();
+  const { jobDir } = groupedJob(root, 'jobG', 3);
+  const claims = path.join(jobDir, '.claims');
+  fs.mkdirSync(claims);
+  fs.writeFileSync(path.join(claims, '01_clip.mp4.json'), JSON.stringify({ status: 'claimed', claimedAt: '2026-10-17T11:29:00.000+02:00' }));
+  const [item] = await pick(root, '2026-10-17T12:00:00');
+  assert.equal(item.json.clip_key, 'jobG/01_clip.mp4', 'a stale claim in a grouped job is released');
+  assert.equal(h.readJson(path.join(claims, '01_clip.mp4.json')).execId, 'test-exec');
+  const root2 = h.makeRoot();
+  const elsewhere = path.join(root2, 'elsewhere');
+  fs.mkdirSync(path.join(elsewhere, 'jobL'), { recursive: true });
+  fs.symlinkSync(elsewhere, path.join(h.inboxOf(root2), GROUP));
+  assert.deepEqual(await pick(root2, '2026-10-17T12:00:00'), [], 'a symlinked YouTube Videos folder is not followed');
+});
+
 s.run();

@@ -94,12 +94,13 @@ spec:
       containers:
         - name: tiktok-sidecar
           # Pinned by digest (go-live step 2). The in-cluster registry has no auth, so
-          # any pod that reaches it could push a different :0.5.0. This is the 0.5.0
-          # image from tiktok-sidecar main 8262556 (PR #5: GET /metrics on :9100;
-          # linux/amd64 plus BuildKit's provenance entry). To ship a new version:
+          # any pod that reaches it could push a different :0.5.6. This is the 0.5.6
+          # image from tiktok-sidecar main a01534b (PR #12: accepts an optional
+          # "YouTube Videos/" group folder before the job; manifest list, linux/amd64
+          # plus BuildKit's provenance entry). To ship a new version:
           # `make remote-ship TAG=<new>` in tiktok-sidecar, read the digest from the
           # registry, and change this line in a PR.
-          image: localhost:32000/reelsmith/tiktok-sidecar@sha256:d8cecca4b7b0097ea1c89ab2cbf85073698879fa3a86e617cc8e52f4b48b0237
+          image: localhost:32000/reelsmith/tiktok-sidecar@sha256:903a80b480cf3c474a3b9ed6fb2eff0cd904c6d8f962de910d391175d5814c09
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

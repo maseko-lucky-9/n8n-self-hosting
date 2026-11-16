@@ -25,6 +25,16 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
   21:00. The sidecar enforces the same cap (`DAILY_CAP` 3). Each slot leaves a marker named by
   its position, `.slots/<day>-<i>.json` (0 = 12:00, 1 = 15:00, 2 = 18:00): never reorder
   `SLOTS` in `scripts/pick-due-clip.jsCode.js`, or a deploy reads today's markers as other slots.
+- **Inbox layout:** two layouts are read. Legacy flat: `<inbox>/<job_id>/{*.mp4, manifest.csv}`.
+  Grouped (Reelsmith's per-source export, `YTVIDEO_EXPORT_GROUP_BY_SOURCE`):
+  `<inbox>/<Group>/<job_id>/{*.mp4, manifest.csv}` with Group one of `YouTube Videos`,
+  `TikTok Videos`, `Facebook Videos`. Posting is YouTube-only, so only `<inbox>/YouTube Videos/`
+  is read; `TikTok Videos` and `Facebook Videos` are never listed or opened (the
+  `source`/`segment_origin` row filter below still applies). The job id used for claims, slot
+  markers, `retryAfter`, refusal counts and the ledger key stays the bare `<job_id>`, and the real
+  folder travels as `jobDir`. A job id found in both layouts is one job: the **flat folder wins**,
+  the grouped duplicate is skipped (`unpublished-inventory.js` prints a "skipped grouped
+  duplicate" line). A symlinked group or job folder is ignored.
 - **Candidates:** manifests under the inbox modified on or after **2026-10-11** (the cutoff),
   taken in turns across source videos (a job is one video): never the same video twice in a row; a
   video holding more than half of all ready clips goes every other post; otherwise the video used
@@ -76,9 +86,14 @@ Schedule (*/15 12-20 * * *, Africa/Johannesburg) → Pick Due Clip → TikTok Si
   - It pins its manifest: Archive Manifest keeps the manifest until you fix the clip (re-export
     it so it passes) or archive the manifest by hand, which also skips its remaining clips:
     `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- sh -c "cd /data/reelsmith-inbox/reelsmith-inbox/<job> && mkdir -p processed && mv manifest.csv processed/manifest-by-hand.csv"'`.
-- **No video bytes pass through n8n.** n8n sends `clip_path` = `<job>/<filename>`. The sidecar
+    For a grouped job replace the `cd` target with `cd \"/data/reelsmith-inbox/reelsmith-inbox/YouTube Videos/<job>\"` (escaped double quotes keep the space one argument inside the `sh -c "..."`).
+- **No video bytes pass through n8n.** n8n sends `clip_path` = `<job>/<filename>` (flat job) or
+  `YouTube Videos/<job>/<filename>` (grouped job). The sidecar
   mounts the PVC's `reelsmith-inbox` folder read-only at `/inbox` (subPath, so Syncthing's keys
-  and config at the PVC root stay invisible) and reads `/inbox/<job>/<filename>` itself.
+  and config at the PVC root stay invisible) and reads `/inbox/[YouTube Videos/]<job>/<filename>`
+  itself. **Deploy order:** the sidecar release that accepts the `YouTube Videos/` prefix must be
+  rolled out before this workflow version is deployed with the grouped export switched on: a
+  sidecar without it answers 400 `bad_input`, and the clip is parked as `needs_you`.
 - **The sidecar decides** (image `0.4.0`, code in the `tiktok-sidecar` repo, which documents the
   n8n contract):
   - it validates the path and the file;
@@ -601,7 +616,7 @@ click "Revert Local Changes"** on the cluster's Syncthing folder: it deletes eve
        clip is on TikTok all the same, leave the claim in place and stop: a free key gets no 409
        `duplicate`, so a release would upload it again.
   2. then release the n8n claim:
-     `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "/data/reelsmith-inbox/reelsmith-inbox/<job>/.claims/<filename>.json"'`.
+     `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "/data/reelsmith-inbox/reelsmith-inbox/<job>/.claims/<filename>.json"'` (a grouped job: `<job>` is `YouTube Videos/<job>`; the alert prints the exact line).
      - After `not_posted`, or when the key was free, the clip is uploaded again at a later slot.
      - After a successful `posted` (an ambiguous key only), the retry gets a 409 `duplicate`
        from the sidecar and is logged as `posted_elsewhere`. That frees the slot, posts nothing,
@@ -659,7 +674,7 @@ click "Revert Local Changes"** on the cluster's Syncthing folder: it deletes eve
      resolved as not posted: go on. If it is refused for any other reason (for example "...; it
      is duplicate": the ledger says posted), stop and leave the claim in place;
   4. release the claim (the same command as above):
-     `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "/data/reelsmith-inbox/reelsmith-inbox/<job>/.claims/<filename>.json"'`.
+     `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "/data/reelsmith-inbox/reelsmith-inbox/<job>/.claims/<filename>.json"'` (a grouped job: `<job>` is `YouTube Videos/<job>`; the alert prints the exact line).
   The clip goes back to the pool and is uploaded at its turn; a new refusal counts as refusal 1
   of 2.
   A `00_` intro claim (for example `00_Convenience and productivity.mp4`, refused 2026-10-30) is

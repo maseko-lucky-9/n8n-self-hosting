@@ -57,10 +57,28 @@ function parseCSV(txt) {
 }
 const nonEmpty = v => v != null && String(v).trim().length > 0;
 
+// Two inbox layouts, as Pick Due Clip reads them: legacy flat ROOT/<job_id> and grouped
+// ROOT/YouTube Videos/<job_id>. The TikTok Videos and Facebook Videos groups hold no posts
+// from this dispatcher and are never listed (nor taken for a flat job). A job id in both
+// layouts is one job: the flat folder wins, the grouped duplicate is skipped (reported).
+const GROUP_DIR = 'YouTube Videos';
+const OTHER_GROUPS = ['TikTok Videos', 'Facebook Videos'];
+const skippedDuplicates = [];
 function listJobDirs(root) {
   if (!fs.existsSync(root)) return [];
-  return fs.readdirSync(root, { withFileTypes: true })
-    .filter(d => d.isDirectory()).map(d => path.join(root, d.name));
+  const dirsOf = d => fs.readdirSync(d, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name);
+  const flat = dirsOf(root).filter(n => n !== GROUP_DIR && !OTHER_GROUPS.includes(n));
+  const seen = new Set(flat);
+  const out = flat.map(n => path.join(root, n));
+  const groupDir = path.join(root, GROUP_DIR);
+  if (fs.existsSync(groupDir) && fs.lstatSync(groupDir).isDirectory()) {
+    for (const n of dirsOf(groupDir)) {
+      if (seen.has(n)) { skippedDuplicates.push(n); continue; }
+      seen.add(n);
+      out.push(path.join(groupDir, n));
+    }
+  }
+  return out;
 }
 function manifestFiles(jobDir) {
   const files = [];
@@ -144,6 +162,7 @@ for (const k of unpublished) { const j = k.split('/')[0]; (byJob[j] ||= []).push
 
 console.log('=== Reelsmith un-republished inventory ===');
 console.log('ROOT:', ROOT);
+if (skippedDuplicates.length) console.log(`skipped grouped duplicate job id(s) (flat wins): ${skippedDuplicates.sort().join(', ')}`);
 console.log(`catalog clips        : ${catalog.size}`);
 console.log(`published (TT or YT) : ${published.length}`);
 console.log(`posted_unverified    : ${unverified.length}`);

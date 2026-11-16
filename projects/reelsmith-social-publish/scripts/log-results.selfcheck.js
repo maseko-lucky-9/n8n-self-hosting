@@ -1016,4 +1016,62 @@ s.check('results.log.csv keeps the live columns and escapes like the live node',
   assert.ok(text.includes(',"Quote ""this"", ok",'));
 });
 
+// ---- grouped inbox: INBOX/YouTube Videos/<job> -----------------------------------------------
+
+async function pickedGrouped({ filename = '01_clip.mp4', group = 'YouTube Videos', job = 'jobG' } = {}) {
+  const root = h.makeRoot();
+  h.addJob(root, job, { rows: [{ filename, description: CAPTION }], mtime: '2026-10-15T10:00:00', group });
+  h.setNow(T);
+  const [item] = await h.runNode(h.loadNode('pick-due-clip.jsCode.js', { root, live: true }));
+  assert.ok(item, 'fixture picked nothing');
+  return { root, pick: item.json };
+}
+
+s.check('grouped job: the claim-release command names the grouped folder, quoted, while the ledger KEY stays bare', async () => {
+  const name = 'Wait... what 01.mp4';
+  const { root, pick } = await pickedGrouped({ filename: name });
+  const rm = `ssh homelab 'microk8s kubectl -n n8n-live exec deploy/n8n-application-worker -- rm "${h.inboxOf(root)}/YouTube Videos/jobG/.claims/${name}.json"'`;
+  const amb = (await log(root, pick, sidecar(504, 'timeout'))).sent[0].body.text;
+  assert.ok(amb.endsWith('\n' + rm), amb);
+  assert.ok(amb.includes(`make ledger-resolve KEY='jobG/${name}' OUTCOME=posted\n`), 'ledger key is the bare <job>/<file>');
+  assert.equal(amb.includes("KEY='YouTube Videos"), false, 'the group leaked into the ledger key');
+  const bad = (await log(root, pick, sidecar(400, 'bad_input'))).sent[0].body.text;
+  assert.ok(bad.endsWith('\n' + rm), bad);
+  const refused = (await log(root, pick, sidecar(409, 'ambiguous'))).sent[0].body.text;
+  assert.ok(refused.endsWith('\n' + rm), refused);
+});
+
+s.check('grouped job: claim, result row and counters are written in the grouped folder and the bare key', async () => {
+  const { root, pick } = await pickedGrouped();
+  const { out } = await log(root, pick, sidecar(200, 'posted'));
+  assert.equal(out.clip_key, 'jobG/01_clip.mp4');
+  assert.equal(out.jobDir, pick.jobDir);
+  assert.ok(pick.jobDir.endsWith(path.join('YouTube Videos', 'jobG')));
+  const claim = h.readJson(pick.claimPath);
+  assert.equal(claim.status, 'posted');
+  assert.equal(claim.clip_key, 'jobG/01_clip.mp4');
+  assert.deepEqual(resultRows(pick).rows.map((r) => r[1]), ['01_clip.mp4']);
+  assert.equal(h.exists(path.join(h.inboxOf(root), 'jobG')), false, 'no flat folder appears');
+});
+
+s.check('grouped job: a job folder outside flat / YouTube Videos/<job> (TikTok Videos, deeper, outside the inbox) gets no shell command', async () => {
+  const { root, pick } = await pickedGrouped();
+  const inbox = h.inboxOf(root);
+  const dirs = [
+    path.join(inbox, 'YouTube Videos', 'extra', 'jobG'),
+    path.join(inbox, 'TikTok Videos', 'jobG'),
+    path.join(inbox, 'Facebook Videos', 'jobG'),
+    path.join(root, 'jobG'), // beside the inbox
+  ];
+  for (const jobDir of dirs) {
+    fs.mkdirSync(jobDir, { recursive: true });
+    const { sent } = await log(root, { ...pick, jobDir }, sidecar(504, 'timeout'));
+    assert.equal(sent.length, 1, jobDir);
+    const text = sent[0].body.text;
+    assert.equal(text.includes('ssh homelab'), false, text);
+    assert.equal(text.includes('ledger-resolve'), false, text);
+    assert.match(text, /delete the clip's claim file under \.claims\//);
+  }
+});
+
 s.run();

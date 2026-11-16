@@ -58,4 +58,49 @@ s.check('claims, tiktok_status (also as a 9th cell under the old header) and the
   assert.match(out, /\[1\] jobOld: y\.mp4/);
 });
 
+const GROUP = 'YouTube Videos';
+function claim(jobDir, file, data) {
+  fs.mkdirSync(path.join(jobDir, '.claims'), { recursive: true });
+  fs.writeFileSync(path.join(jobDir, '.claims', file + '.json'), JSON.stringify(data));
+}
+
+s.check('layouts: flat and YouTube Videos jobs are both listed (job-scoped keys, space in the group folder)', () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'jobFlat', { rows: [{ filename: 'a.mp4' }, { filename: 'b.mp4' }] });
+  const { jobDir } = h.addJob(root, 'jobGrp', { rows: [{ filename: 'c.mp4' }, { filename: 'd d.mp4' }], group: GROUP });
+  claim(jobDir, 'c.mp4', { status: 'posted' });
+  claim(jobDir, 'd d.mp4', { status: 'needs_you', code: 'bad_input' });
+  const out = inventory(root);
+  assert.equal(count(out, 'catalog clips'), 4, out);
+  assert.equal(count(out, 'published \\(TT or YT\\)'), 1);
+  assert.equal(count(out, 'NEVER republished'), 3);
+  assert.match(out, /\[2\] jobFlat: a\.mp4, b\.mp4/);
+  assert.match(out, /\[1\] jobGrp: d d\.mp4/);
+  assert.match(out, /jobGrp\/d d\.mp4 \(needs_you: bad_input\)/);
+  assert.equal(out.includes('YouTube Videos'), false, 'the group folder must not be taken for a job: ' + out);
+});
+
+s.check('layouts: grouped only works; flat wins for a job id in both; TikTok / Facebook Videos are ignored', () => {
+  const root = h.makeRoot();
+  h.addJob(root, 'jobG', { rows: [{ filename: 'g.mp4' }], group: GROUP });
+  assert.equal(count(inventory(root), 'catalog clips'), 1);
+
+  h.addJob(root, 'jobD', { rows: [{ filename: 'flat.mp4' }] });
+  h.addJob(root, 'jobD', { rows: [{ filename: 'grouped-only.mp4' }, { filename: 'flat.mp4' }], group: GROUP });
+  h.addJob(root, 'jobT', { rows: [{ filename: 'tt-one.mp4' }, { filename: 'tt-two.mp4' }], group: 'TikTok Videos' });
+  h.addJob(root, 'jobF', { rows: [{ filename: 'fb-one.mp4' }], group: 'Facebook Videos' });
+  // a stray manifest straight inside a group folder must not make the folder a job either
+  for (const g of ['TikTok Videos', 'Facebook Videos']) {
+    fs.writeFileSync(path.join(h.inboxOf(root), g, 'manifest.csv'), 'filename,title\nstray-in-group.mp4,x\n');
+  }
+  const out = inventory(root);
+  assert.equal(count(out, 'catalog clips'), 2, 'jobG/g.mp4 + the flat jobD/flat.mp4 only\n' + out);
+  assert.match(out, /\[1\] jobD: flat\.mp4/);
+  assert.equal(out.includes('grouped-only.mp4'), false, 'the duplicate grouped copy was read');
+  assert.match(out, /skipped grouped duplicate job id\(s\) \(flat wins\): jobD/);
+  for (const ignored of ['stray-in-group', 'jobT', 'jobF', 'tt-one.mp4', 'fb-one.mp4', 'TikTok Videos', 'Facebook Videos']) {
+    assert.equal(out.includes(ignored), false, ignored + ' leaked into the inventory\n' + out);
+  }
+});
+
 s.run();
